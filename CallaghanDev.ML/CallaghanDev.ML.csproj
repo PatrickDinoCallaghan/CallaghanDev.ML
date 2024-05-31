@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="GeneralPRNGCracking\**" />
+    <EmbeddedResource Remove="GeneralPRNGCracking\**" />
+    <None Remove="GeneralPRNGCracking\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Neural Network\NeuralNetwork-Desktop-PC.cs" />
+    <Compile Remove="NeuralNetwork-LAPTOP-PC.cs" />
+    <Compile Remove="Program-Desktop-PC.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="mnist_train.csv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CsvHelper" Version="31.0.4" />
+    <PackageReference Include="ILGPU" Version="1.5.1" />
+    <PackageReference Include="ILGPU.Algorithms" Version="1.5.1" />
+    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="CallaghanDev.Utilities">
+      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.Utilities.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="CallaghanDev.XML">
+      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.XML.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
