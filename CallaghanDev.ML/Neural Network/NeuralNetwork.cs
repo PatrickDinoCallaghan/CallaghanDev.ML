@@ -1,4 +1,4 @@
-﻿using CallaghanDev.Utilities.Code;
+﻿using CallaghanDev.ML.Neural_Network.Exceptions;
 using CallaghanDev.Utilities.ConsoleHelper;
 using CallaghanDev.Utilities.MathTools;
 using ILGPU;
@@ -184,124 +184,6 @@ namespace CallaghanDev.ML
             return inputNeurons;
         }
 
-        // Helper method to evaluate the performance of the network on validation data
-        public double Evaluate(double[][] inputs, double[][] outputs)
-        {
-            double totalError = 0.0;
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                var prediction = Predict(inputs[i]);
-                totalError += CalculateError(prediction, outputs[i]);
-            }
-            return totalError / inputs.Length;
-        }
-
-        // Helper method to calculate the error between prediction and actual output
-        private double CalculateError(double[] prediction, double[] actual)
-        {
-            double error = 0.0;
-            for (int i = 0; i < prediction.Length; i++)
-            {
-                error += Math.Pow(prediction[i] - actual[i], 2);
-            }
-            return error;
-        }
-        public static Dictionary<string, object> GetBestSettings(double[][] trainingInputs, double[][] trainingOutputs, double[][] validationInputs, double[][] validationOutputs, int epochs = 100)
-        {
-            Console.WriteLine("Get Best Settings");
-            var bestSettings = new Dictionary<string, object>();
-            double bestPerformance = double.MaxValue;
-
-            var activationTypes = Enum.GetValues(typeof(ActivationType)).Cast<ActivationType>().ToList();
-            var costFunctionTypes = Enum.GetValues(typeof(CostFunctionType)).Cast<CostFunctionType>().ToList();
-
-           // var huberLossDeltas = new float[] { 0.1f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f };
-           // var l2RegulationLambdas = new double[] { 0, 0.001, 0.01, 0.1, 1.0, 10.0 };
-            //var clippingLimits = new float[] { 0.1f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f };
-
-            var huberLossDeltas = new float[] { 0.1f, 0.5f, 1.0f };
-            var l2RegulationLambdas = new double[] { 0, 0.01, 0.1 };
-            var clippingLimits = new float[] { 0.5f, 1.0f, 1.5f };
-
-            long Counter = 0;
-
-            long MaxVal = costFunctionTypes.Count() * costFunctionTypes.Count() * huberLossDeltas.Length * l2RegulationLambdas.Length * clippingLimits.Length;
-            Console.WriteLine($"Number of trainable networks {MaxVal}");
-            foreach (var activationType in activationTypes)
-            {
-                foreach (var costFunction in costFunctionTypes)
-                {
-                    foreach (var l2Lambda in l2RegulationLambdas)
-                    {
-                        foreach (var upperLimit in clippingLimits)
-                        {
-                            foreach (var lowerLimit in clippingLimits)
-                            {
-                                if (costFunction == CostFunctionType.huberLoss)
-                                {
-                                    foreach (var huberDelta in huberLossDeltas)
-                                    {
-                                        var nn = new NeuralNetwork(GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationType, costFunction, huberDelta, l2Lambda, upperLimit, -lowerLimit);
-                                        nn.Train(trainingInputs, trainingOutputs, 0.01, epochs);
-                                        var performance = nn.Evaluate(validationInputs, validationOutputs);
-
-                                        if (performance < bestPerformance)
-                                        {
-                                            bestPerformance = performance;
-                                            bestSettings["ActivationType"] = activationType;
-                                            bestSettings["CostFunction"] = costFunction;
-                                            bestSettings["L2RegulationLambda"] = l2Lambda;
-                                            bestSettings["ClippingLimit_Upper"] = upperLimit;
-                                            bestSettings["ClippingLimit_Lower"] = lowerLimit;
-                                            bestSettings["HuberLossDelta"] = huberDelta;
-
-                                            Debug.WriteLine($"Best Performance: {bestPerformance}");
-                                            foreach (var setting in bestSettings)
-                                            {
-                                                Debug.WriteLine($"{setting.Key}: {setting.Value}");
-                                            }
-                                        }
-
-
-                                        cnsl.DisplayProgressBar(++Counter, MaxVal, " Progress");
-                                    }
-                                }
-                                else
-                                {
-                                    var nn = new NeuralNetwork(GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationType, costFunction, l2Lambda, upperLimit, -lowerLimit);
-                                    nn.Train(trainingInputs, trainingOutputs, 0.01, epochs);
-                                    var performance = nn.Evaluate(validationInputs, validationOutputs);
-
-                                    if (performance < bestPerformance)
-                                    {
-                                        bestPerformance = performance;
-                                        bestSettings["ActivationType"] = activationType;
-                                        bestSettings["CostFunction"] = costFunction;
-                                        bestSettings["L2RegulationLambda"] = l2Lambda;
-                                        bestSettings["ClippingLimit_Upper"] = upperLimit;
-                                        bestSettings["ClippingLimit_Lower"] = lowerLimit;
-
-                                        Debug.WriteLine($"Best Performance: {bestPerformance}");
-                                        foreach (var setting in bestSettings)
-                                        {
-                                            Debug.WriteLine($"{setting.Key}: {setting.Value}");
-                                        }
-                                    }
-                                    cnsl.DisplayProgressBar(++Counter, MaxVal, " Progress");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Debug.WriteLine($"Best Performance: {bestPerformance}");
-            foreach (var setting in bestSettings)
-            {
-                Debug.WriteLine($"{setting.Key}: {setting.Value}");
-            }
-            return bestSettings;
-        }
         #endregion
 
         #region initialization methods
@@ -459,24 +341,34 @@ namespace CallaghanDev.ML
 
         public void ForwardPropagate()
         {
-            for (int j = 1; j < Data.ColumnCount(); j++)
+            int columnCount = Data.ColumnCount();
+            for (int j = 1; j < columnCount; j++)
             {
-                double[] SourceNeurons_Activations = Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray();
-                double[,] neurites_Weights = NeuriteTensorT[j - 1].Select(r => r.Weight).ToArray();
+                int previousLayerNeuronCount = Neurons[j - 1].Length;
+                int currentLayerNeuronCount = Neurons[j].Length;
 
-                double[] dotproduct = CalculateDotProduct(neurites_Weights, SourceNeurons_Activations);
+                // Initialize arrays
+                double[] dotProduct = new double[currentLayerNeuronCount];
 
-                Parallel.For(0, dotproduct.Length, c =>
+                //TODO: Optimize thisA AAP
+                double[] sourceNeuronsActivations = Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray();
+
+                //TODO: this too
+                double[,] neuritesWeights = NeuriteTensorT[j - 1].Select(r => r.Weight).ToArray();
+                
+                dotProduct = CalculateDotProduct(neuritesWeights, sourceNeuronsActivations);
+
+                Parallel.For(0, dotProduct.Length, c =>
                 {
-                    Neurons[j][c].Activation = Neurons[j][c].activationFunction(dotproduct[c] + Neurons[j][c].Bias);
+                    Neurons[j][c].Activation = Neurons[j][c].activationFunction(dotProduct[c] + Neurons[j][c].Bias);
 
                     if (double.IsNaN(Neurons[j][c].Activation))
                     {
-                        throw new Exception($"NaN detected in forward propagation at layer {j}, neuron {c}, type:{Neurons[j][c].GetType().Name}");
+                        throw new InfinityException($"NaN detected in forward propagation at layer {j}, neuron {c}, type:{Neurons[j][c].GetType().Name}");
                     }
-                    if ( double.IsInfinity(Neurons[j][c].Activation))
+                    if (double.IsInfinity(Neurons[j][c].Activation))
                     {
-                        throw new Exception($"Infinity detected in forward propagation at layer {j}, neuron {c}, type:{Neurons[j][c].GetType().Name}");
+                        throw new NaNException($"Infinity detected in forward propagation at layer {j}, neuron {c}, type:{Neurons[j][c].GetType().Name}");
                     }
                 });
             }
@@ -529,56 +421,42 @@ namespace CallaghanDev.ML
         public void UpdateOutputLayerGradients(double[] costs, double learningRate, double lambda = 0)
         {
             INeuron[] MotorNeurons = Data.Column(Data.ColumnCount() - 1).ToArray();
+            int motorNeuronCount = MotorNeurons.Length;
 
-            for (int i = 0; i < MotorNeurons.Length; i++)
+            // Preallocate variables to avoid repeated allocations
+            double activationDerivative;
+            double gradient;
+
+            Parallel.For(0, motorNeuronCount, i =>
             {
-                // Calculate the derivative of the activation function for each neuron's current activation level.
-                double activationDerivative = MotorNeurons[i].activationFunctionDeriv(MotorNeurons[i].Activation);
-
-                // Compute the gradient of the loss with respect to the neuron's output (Delta).
-                // This is derived from the derivative of the cost function with respect to the output
-                // multiplied by the derivative of the activation function.
-                double gradient = -costs[i] * activationDerivative;
+                INeuron motorNeuron = MotorNeurons[i];
+                activationDerivative = motorNeuron.activationFunctionDeriv(motorNeuron.Activation);
+                gradient = -costs[i] * activationDerivative;
                 gradient = Math.Max(_clippingLimit_Lower, Math.Min(_clippingLimit_Upper, gradient));
-                MotorNeurons[i].Delta = gradient;
+                motorNeuron.Delta = gradient;
 
+                Neurite[] dendrites = motorNeuron.Dendrites.ToArray();
+                int dendriteCount = dendrites.Length;
 
-
-                Parallel.ForEach(MotorNeurons[i].Dendrites, connection =>
+                for (int j = 0; j < dendriteCount; j++)
                 {
-                    // Calculate the weight update, which is a product of the learning rate, the delta, and
-                    // the activation of the neuron from which this dendrite receives input.
-                    // double weightUpdate = learningRate * (gradient * connection.SourceNeuron.Activation + lambda * connection.Weight);
-
-                    // Calculate the weight update, which is a product of the learning rate, the delta, and
-                    // the activation of the neuron from which this dendrite receives input, plus the regularization term.
-                    // The regularization term (lambda * connection.Weight) helps to prevent overfitting by penalizing large weights.
-                    // Lambda is a hyperparameter that controls the strength of this penalty: 
-                    // a higher lambda value increases the penalty, encouraging smaller weights and thus simpler models.
+                    Neurite connection = dendrites[j];
                     double weightUpdate = learningRate * (gradient * connection.SourceNeuron.Activation + lambda * connection.Weight);
-
-
-
-
-                    // Apply the update: since we are minimizing the loss, we subtract the update.
                     connection.Weight -= weightUpdate;
-
 
                     if (double.IsNaN(connection.Weight))
                     {
-                        throw new Exception($"NaN detected");
+                        throw new NaNException();
                     }
                     if (double.IsInfinity(connection.Weight))
                     {
-                        throw new Exception($"Infinity detected");
+                        throw new InfinityException();
                     }
-                });
+                }
 
-                // Update the bias of the neuron as well, using the learning rate and the calculated delta.
-                MotorNeurons[i].Bias -= learningRate * gradient;
-            }
+                motorNeuron.Bias -= learningRate * gradient;
+            });
         }
-
         #region Back propagation
         // Utility function to extract the weight matrix of a specific layer
         public double[,] GetWeightsMatrix(int layerIndex)
@@ -586,11 +464,30 @@ namespace CallaghanDev.ML
 
             double[,] Weights = new double[NeuriteTensor[layerIndex].RowCount(), NeuriteTensor[layerIndex].ColumnCount()];// NeuriteTensor[layerIndex].Select(r => r.Weight).ToArray();
 
-            Parallel.ForEach(NeuriteTensor[layerIndex], item =>
-            {
-                Weights[item.Key.Row, item.Key.Column] = item.Value.Weight;
-            });
+            int rowCount = NeuriteTensor[layerIndex].RowCount();
+            int colCount = NeuriteTensor[layerIndex].ColumnCount();
+     
 
+            if (rowCount > colCount)
+            { 
+                Parallel.For(0, rowCount, i =>
+                {
+                    for (int j = 0; j < colCount; j++)
+                    {
+                        Weights[i, j] = NeuriteTensor[layerIndex][i, j].Weight;
+                    }
+                });
+            }
+            else
+            {
+                Parallel.For(0, colCount, j =>
+                {
+                    for (int i = 0; i < rowCount; i++)
+                    {
+                        Weights[i, j] = NeuriteTensor[layerIndex][i, j].Weight;
+                    }
+                });
+            }
             return Weights;
         }
 
@@ -655,6 +552,8 @@ namespace CallaghanDev.ML
                     }
                     hiddenNeurons[i].Bias = GPUBackpropResult.updatedBiases[i];
                 });
+
+
             }
         }
         public (double[] updatedBiases, double[,] updatedWeights, double[] updatedDeltas) LaunchBackpropagationKernel(
@@ -805,16 +704,15 @@ namespace CallaghanDev.ML
         }
         private double[] CalculateCost(double[] expectedOutputValues)
         {
-            INeuron[] MotorNeurons = Data.Column(Data.ColumnCount() - 1).Select(r => r).ToArray();
+            int columnIndex = Data.ColumnCount() - 1;
+            INeuron[] MotorNeurons = Data.Column(columnIndex);
+            double[] costDifferences = new double[_NumberOfOutputs];
 
-            double[] NNOutputValues = MotorNeurons.Select(r => r.Activation).ToArray();
-
-            double[] costDifferences = new double[expectedOutputValues.Length];
-
-            for (int i = 0; i < expectedOutputValues.Length; i++)
+            Parallel.For(0, _NumberOfOutputs, i =>
             {
-                costDifferences[i] = CostFunctionDeriv( NNOutputValues[i], expectedOutputValues[i]);
-            }
+                double nnOutputValue = MotorNeurons[i].Activation;
+                costDifferences[i] = CostFunctionDeriv(nnOutputValue, expectedOutputValues[i]);
+            });
 
             return costDifferences;
         }
@@ -856,6 +754,144 @@ namespace CallaghanDev.ML
             UpdateOutputLayerGradients(costs, learningRate, _L2RegulationLamda);
             UpdateHiddenLayerGradients(learningRate);
         }
+        #endregion
+
+        #region GetSettings
+
+        public double Evaluate(double[][] inputs, double[][] outputs)
+        {
+            double totalError = 0.0;
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var prediction = Predict(inputs[i]);
+                totalError += CalculateError(prediction, outputs[i]);
+            }
+            return totalError / inputs.Length;
+        }
+
+        private double CalculateError(double[] prediction, double[] actual)
+        {
+            double error = 0.0;
+            for (int i = 0; i < prediction.Length; i++)
+            {
+                error += Math.Pow(prediction[i] - actual[i], 2);
+            }
+            return error;
+        }
+        public static Dictionary<string, object> GetBestSettings(double[][] trainingInputs, double[][] trainingOutputs, double[][] validationInputs, double[][] validationOutputs, int epochs = 100)
+        {
+            Console.WriteLine("Get Best Settings");
+            var bestSettings = new Dictionary<string, object>();
+            double bestPerformance = double.MaxValue;
+
+            var activationTypes = Enum.GetValues(typeof(ActivationType)).Cast<ActivationType>().ToList();
+            var costFunctionTypes = Enum.GetValues(typeof(CostFunctionType)).Cast<CostFunctionType>().ToList();
+
+            // var huberLossDeltas = new float[] { 0.1f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f };
+            // var l2RegulationLambdas = new double[] { 0, 0.001, 0.01, 0.1, 1.0, 10.0 };
+            //var clippingLimits = new float[] { 0.1f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f };
+
+            var huberLossDeltas = new float[] { 0.1f, 0.5f, 1.0f };
+            var l2RegulationLambdas = new double[] { 0, 0.01, 0.1 };
+            var clippingLimits = new float[] { 0.5f, 1.0f, 1.5f };
+
+            long Counter = 0;
+
+            long MaxVal = costFunctionTypes.Count() * costFunctionTypes.Count() * huberLossDeltas.Length * l2RegulationLambdas.Length * clippingLimits.Length;
+            Console.WriteLine($"Number of trainable networks {MaxVal}");
+            foreach (var activationType in activationTypes)
+            {
+                foreach (var costFunction in costFunctionTypes)
+                {
+                    foreach (var l2Lambda in l2RegulationLambdas)
+                    {
+                        foreach (var upperLimit in clippingLimits)
+                        {
+                            foreach (var lowerLimit in clippingLimits)
+                            {
+                                try
+                                {
+                                    if (costFunction == CostFunctionType.huberLoss)
+                                    {
+                                        foreach (var huberDelta in huberLossDeltas)
+                                        {
+                                            var nn = new NeuralNetwork(GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationType, costFunction, huberDelta, l2Lambda, upperLimit, -lowerLimit);
+                                            nn.Train(trainingInputs, trainingOutputs, 0.01, epochs);
+                                            var performance = nn.Evaluate(validationInputs, validationOutputs);
+
+                                            if (performance < bestPerformance)
+                                            {
+                                                bestPerformance = performance;
+                                                bestSettings["ActivationType"] = activationType;
+                                                bestSettings["CostFunction"] = costFunction;
+                                                bestSettings["L2RegulationLambda"] = l2Lambda;
+                                                bestSettings["ClippingLimit_Upper"] = upperLimit;
+                                                bestSettings["ClippingLimit_Lower"] = lowerLimit;
+                                                bestSettings["HuberLossDelta"] = huberDelta;
+
+                                                Debug.WriteLine($"Best Performance: {bestPerformance}");
+                                                foreach (var setting in bestSettings)
+                                                {
+                                                    Debug.WriteLine($"{setting.Key}: {setting.Value}");
+                                                }
+                                            }
+
+
+                                            cnsl.DisplayProgressBar(++Counter, MaxVal, " Progress");
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var nn = new NeuralNetwork(GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationType, costFunction, l2Lambda, upperLimit, -lowerLimit);
+                                        nn.Train(trainingInputs, trainingOutputs, 0.01, epochs);
+                                        var performance = nn.Evaluate(validationInputs, validationOutputs);
+
+                                        if (performance < bestPerformance)
+                                        {
+                                            bestPerformance = performance;
+                                            bestSettings["ActivationType"] = activationType;
+                                            bestSettings["CostFunction"] = costFunction;
+                                            bestSettings["L2RegulationLambda"] = l2Lambda;
+                                            bestSettings["ClippingLimit_Upper"] = upperLimit;
+                                            bestSettings["ClippingLimit_Lower"] = lowerLimit;
+
+                                            Debug.WriteLine($"Best Performance: {bestPerformance}");
+                                            foreach (var setting in bestSettings)
+                                            {
+                                                Debug.WriteLine($"{setting.Key}: {setting.Value}");
+                                            }
+                                        }
+                                        cnsl.DisplayProgressBar(++Counter, MaxVal, " Progress");
+                                    }
+                                }
+                                catch (NaNException nanEx)
+                                {
+                                    Debug.WriteLine($"{nanEx.Message} \n activationType:{activationType}, costFunction:{costFunction.ToString()}, clippingLimits:[{lowerLimit},{upperLimit}], l2Lambda:{l2Lambda}" );
+                        
+                                }
+                                catch (InfinityException infinityEx)
+                                {
+                                    Debug.WriteLine($"{infinityEx.Message} \n activationType:{activationType}, costFunction:{costFunction.ToString()}, clippingLimits:[{lowerLimit},{upperLimit}], l2Lambda:{l2Lambda}");
+
+                                }
+                                catch (Exception ex)
+                                {
+                                    throw new Exception(ex.Message);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Debug.WriteLine($"Best Performance: {bestPerformance}");
+            foreach (var setting in bestSettings)
+            {
+                Debug.WriteLine($"{setting.Key}: {setting.Value}");
+            }
+            return bestSettings;
+        }
+
         #endregion
 
         public double[] Predict(double[] inputValues)
