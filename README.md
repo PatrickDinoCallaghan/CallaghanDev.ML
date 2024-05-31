@@ -7,13 +7,13 @@ enhance performance. The class is designed to be extensible, allowing
 for easy modifications and additions to the network architecture, making
 it suitable for various machine learning applications.
 
-I used a matrix to store neurons (called INeuron), and another structure
+I used a custom matrix class to store neurons (called INeuron), and another structure
 called NeuriteTensor to manage connections between these neurons across
 different layers. You can easily set the number of inputs, outputs,
-hidden layers, and their width, and it even includes gradient clipping
+hidden layers, and their width, it even includes gradient clipping
 to keep training stable.
 
-For performance, it uses a TaskManager with TaskContainer objects to
+For performance, it uses a custom TaskManager with TaskContainer objects to
 handle various tasks asynchronously, which makes everything run smoother
 and faster. During initialization, it sets up all the neurons and
 layers, and loads GPU kernels for efficient calculations. When training,
