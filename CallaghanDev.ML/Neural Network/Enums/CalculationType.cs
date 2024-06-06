@@ -6,11 +6,11 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML
 {
-    public enum CalculationType
+    public enum AccelerationType
     {
         CPU,
         GPU,
-        Hybrid
+        CUDA
     }
 
 }
