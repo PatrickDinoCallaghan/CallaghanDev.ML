@@ -9,6 +9,7 @@ using ILGPU.Runtime.OpenCL;
 using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace CallaghanDev.ML
 {
@@ -92,16 +93,6 @@ namespace CallaghanDev.ML
         [JsonIgnore]
         private CostFunction costFunction { get; set; }
 
-        #region Task Containers
-
-        TaskManager taskManager = new TaskManager();
-
-        TaskContainer<double[]> deltasArrayTaskContainer;
-        TaskContainer<double[]> precedingLayerNeuronsActivationsTaskContainer;
-        TaskContainer<double[]> hiddenNeuronsActivationFunctionDerivTaskContainer;
-        TaskContainer<double[]> hiddenNeuronsBiasesTaskContainer;
-
-        #endregion
 
         #region ctor
 
@@ -223,7 +214,6 @@ namespace CallaghanDev.ML
             InitMotorLayers();
             InitCalculationTensors();
             LoadBackpropergationKernel();
-            InitTaskContainers();
         }
 
         private void LoadBackpropergationKernel()
@@ -336,15 +326,7 @@ namespace CallaghanDev.ML
             }
 
         }
-        private void InitTaskContainers()
-        {
-            deltasArrayTaskContainer = taskManager.GetOrCreateContainer<double[]>("deltasArrayTask");
-            precedingLayerNeuronsActivationsTaskContainer = taskManager.GetOrCreateContainer<double[]>("precedingLayerNeuronsActivationsTask");
-            hiddenNeuronsActivationFunctionDerivTaskContainer = taskManager.GetOrCreateContainer<double[]>("hiddenNeuronsActivationFunctionDerivTask");
-            hiddenNeuronsBiasesTaskContainer = taskManager.GetOrCreateContainer<double[]>("hiddenNeuronsBiasesTask");
 
-
-        }
         #endregion
 
         #region Forward Propagate
@@ -467,6 +449,7 @@ namespace CallaghanDev.ML
                 motorNeuron.Bias -= learningRate * gradient;
             });
         }
+
         #region Back propagation
         // Utility function to extract the weight matrix of a specific layer
         public double[,] GetWeightsMatrix(int layerIndex)
@@ -524,20 +507,20 @@ namespace CallaghanDev.ML
                 int numCurrentNeurons = hiddenNeurons.Length;
                 int numPrecedingNeurons = precedingLayerNeurons.Length;
 
-                taskManager.SetOrCreateTask(deltasArrayTaskContainer, () => nextLayerNeurons.Select(neuron => neuron.Delta).ToArray());
-                taskManager.SetOrCreateTask(precedingLayerNeuronsActivationsTaskContainer, () => precedingLayerNeurons.Select(r => r.Activation).ToArray());
-                taskManager.SetOrCreateTask(hiddenNeuronsActivationFunctionDerivTaskContainer, () => hiddenNeurons.Select(r => r.activationFunctionDeriv(r.Activation)).ToArray());
-                taskManager.SetOrCreateTask(hiddenNeuronsBiasesTaskContainer, () => hiddenNeurons.Select(r => r.Bias).ToArray());
+                Task<double[]> taskDeltasArray = Task.Run(() => nextLayerNeurons.Select(neuron => neuron.Delta).ToArray());
+                Task<double[]> taskPrecedingLayerNeuronsActivations = Task.Run(() => precedingLayerNeurons.Select(r => r.Activation).ToArray());
+                Task<double[]> taskHiddenNeuronsActivationFunctionDeriv = Task.Run(() => hiddenNeurons.Select(r => r.activationFunctionDeriv(r.Activation)).ToArray());
+                Task<double[]> taskHiddenNeuronsBiases = Task.Run(() => hiddenNeurons.Select(r => r.Bias).ToArray());
 
                 // Wait for all tasks to complete
-                taskManager.WaitForAll(deltasArrayTaskContainer, precedingLayerNeuronsActivationsTaskContainer, hiddenNeuronsActivationFunctionDerivTaskContainer, hiddenNeuronsBiasesTaskContainer);
+                Task.WaitAll(taskDeltasArray, taskPrecedingLayerNeuronsActivations, taskHiddenNeuronsActivationFunctionDeriv, taskHiddenNeuronsBiases);
 
+                // Retrieve results
+                double[] deltasArray = taskDeltasArray.Result;
+                double[] precedingLayerNeuronsActivations = taskPrecedingLayerNeuronsActivations.Result;
+                double[] hiddenNeurons_activationFunctionDeriv = taskHiddenNeuronsActivationFunctionDeriv.Result;
+                double[] hiddenNeurons_Biases = taskHiddenNeuronsBiases.Result;
 
-                // Retrieve the results
-                double[] deltasArray = deltasArrayTaskContainer.Task.Result;
-                double[] precedingLayerNeuronsActivations = precedingLayerNeuronsActivationsTaskContainer.Task.Result;
-                double[] hiddenNeurons_activationFunctionDeriv = hiddenNeuronsActivationFunctionDerivTaskContainer.Task.Result;
-                double[] hiddenNeurons_Biases = hiddenNeuronsBiasesTaskContainer.Task.Result;
 
                 var GPUBackpropResult = LaunchBackpropagationKernel(
                     accelerator,
@@ -601,15 +584,16 @@ namespace CallaghanDev.ML
             activationsBuffer.CopyFromCPU(activations);
             activationDerivativesBuffer.CopyFromCPU(activationDerivatives);
             biasesBuffer.CopyFromCPU(biases);
-            /*
-            taskManager.SetOrCreateTask<int>(weightsMatrixBufferTaskContainer, () => { weightsMatrixBuffer.CopyFromCPU(weightsMatrix); return 0; });
-            taskManager.SetOrCreateTask<int>(deltasBuffersTaskContainer, () => { deltasBuffer.CopyFromCPU(deltas); return 0; });
-            taskManager.SetOrCreateTask<int>(activationsBufferTaskContainer, () => { activationsBuffer.CopyFromCPU(activations); return 0; });
-            taskManager.SetOrCreateTask<int>(activationDerivativesBufferTaskContainer, () => { activationDerivativesBuffer.CopyFromCPU(activationDerivatives); return 0; });
-            taskManager.SetOrCreateTask<int>(biasesBufferTaskContainer, () => { biasesBuffer.CopyFromCPU(biases); return 0; });
-            // Wait for all tasks to complete
-            taskManager.WaitForAll(weightsMatrixBufferTaskContainer, deltasBuffersTaskContainer, activationsBufferTaskContainer, activationDerivativesBufferTaskContainer, biasesBufferTaskContainer);
-            */
+
+            Task task1 = Task.Run(() => weightsMatrixBuffer.CopyFromCPU(weightsMatrix));
+            Task task2 = Task.Run(() => deltasBuffer.CopyFromCPU(deltas));
+            Task task3 = Task.Run(() => activationsBuffer.CopyFromCPU(activations));
+            Task task4 = Task.Run(() => activationDerivativesBuffer.CopyFromCPU(activationDerivatives));
+            Task task5 = Task.Run(() => biasesBuffer.CopyFromCPU(biases));
+
+            Task.WaitAll(task1, task2, task3, task4, task5);
+
+
             // Launch the kernel function with the appropriate parameters
             double_GPUBackpropResult(
                    numNeurons_CurrentLayer,
