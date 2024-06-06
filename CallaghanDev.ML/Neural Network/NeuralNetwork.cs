@@ -342,13 +342,14 @@ namespace CallaghanDev.ML
                 // Initialize arrays
                 double[] dotProduct = new double[currentLayerNeuronCount];
 
-                //TODO: Optimize thisA AAP
-                double[] sourceNeuronsActivations = Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray();
+                Task<double[]> sourceNeuronsActivationsTask = Task.Run(() => Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray());
+                Task<double[,]> neuritesWeightsTask = Task.Run(() => NeuriteTensorT[j - 1].Select(r => r.Weight).ToArray());
 
-                //TODO: this too
-                double[,] neuritesWeights = NeuriteTensorT[j - 1].Select(r => r.Weight).ToArray();
+                // Wait for all tasks to complete
+                Task.WaitAll(sourceNeuronsActivationsTask, neuritesWeightsTask);
 
-                dotProduct = CalculateDotProduct(neuritesWeights, sourceNeuronsActivations);
+
+                dotProduct = CalculateDotProduct(neuritesWeightsTask.Result, sourceNeuronsActivationsTask.Result);
 
                 Parallel.For(0, dotProduct.Length, c =>
                 {
@@ -970,125 +971,7 @@ namespace CallaghanDev.ML
 
             return new Tuple<Dictionary<string, object>, NeuralNetwork>(new Dictionary<string, object>(bestSettings), bestNeuralNetwork);
         }
-        /*
-        public static Tuple<Dictionary<string, object>, NeuralNetwork> GetBestSettings(double TrainingRate, double[][] trainingInputs, double[][] trainingOutputs, double[][] validationInputs, double[][] validationOutputs, int epochs = 1000)
-        {
-            Console.WriteLine("Get Best Settings");
-            var bestSettings = new Dictionary<string, object>();
-            double bestPerformance = double.MaxValue;
-
-            var activationTypes = Enum.GetValues(typeof(ActivationType)).Cast<ActivationType>().ToList();
-            var costFunctionTypes = Enum.GetValues(typeof(CostFunctionType)).Cast<CostFunctionType>().ToList();
-
-            var huberLossDeltas = new float[] { 0.1f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f };
-            var l2RegulationLambdas = new double[] { 0, 0.001, 0.01, 0.1, 1.0, 10.0 };
-            var clippingLimits = new float[] { 0.1f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f };
-
-            //  var huberLossDeltas = new float[] { 0.1f, 0.5f, 1.0f };
-            //  var l2RegulationLambdas = new double[] { 0, 0.01, 0.1 };
-            //  var clippingLimits = new float[] { 0.5f, 1.0f, 1.5f };
-
-            long Counter = 0;
-
-            long MaxVal = costFunctionTypes.Count() * costFunctionTypes.Count() * huberLossDeltas.Length * l2RegulationLambdas.Length * clippingLimits.Length;
-
-            Console.WriteLine($"Number of trainable networks {MaxVal}");
-
-            NeuralNetwork BestNuralNetwork = null;
-
-            for (int i = 0; i < activationTypes.Count; i++)
-            {
-                foreach (var costFunction in costFunctionTypes)
-                {
-                    foreach (var l2Lambda in l2RegulationLambdas)
-                    {
-                        foreach (var upperLimit in clippingLimits)
-                        {
-                            foreach (var lowerLimit in clippingLimits)
-                            {
-                                try
-                                {
-                                    if (costFunction == CostFunctionType.huberLoss)
-                                    {
-                                        foreach (var huberDelta in huberLossDeltas)
-                                        {
-                                            var nn = new NeuralNetwork(AccelerationType.GPU, GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationTypes[i], costFunction, huberDelta, l2Lambda, upperLimit, -lowerLimit);
-                                            nn.Train(trainingInputs, trainingOutputs, TrainingRate, epochs, true);
-                                            var performance = nn.Evaluate(validationInputs, validationOutputs);
-
-                                            if (performance > bestPerformance)
-                                            {
-                                                bestPerformance = performance;
-                                                bestSettings["ActivationType"] = activationTypes[i];
-                                                bestSettings["CostFunction"] = costFunction;
-                                                bestSettings["L2RegulationLambda"] = l2Lambda;
-                                                bestSettings["ClippingLimit_Upper"] = upperLimit;
-                                                bestSettings["ClippingLimit_Lower"] = lowerLimit;
-                                                bestSettings["HuberLossDelta"] = huberDelta;
-
-                                                Debug.WriteLine($"Best Performance: {bestPerformance}");
-
-                                                foreach (var setting in bestSettings)
-                                                {
-                                                    Debug.WriteLine($"{setting.Key}: {setting.Value}");
-                                                }
-                                                BestNuralNetwork = nn;
-                                            }
-                                            cnsl.DisplayProgressBar(++Counter, MaxVal, " Progress");
-                                        }
-                                    }
-                                    else
-                                    {
-                                        var nn = new NeuralNetwork(AccelerationType.GPU, GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationTypes[i], costFunction, l2Lambda, upperLimit, -lowerLimit);
-                                        nn.Train(trainingInputs, trainingOutputs, TrainingRate, epochs, true);
-                                        var performance = nn.Evaluate(validationInputs, validationOutputs);
-
-                                        if (performance > bestPerformance)
-                                        {
-                                            bestPerformance = performance;
-                                            bestSettings["ActivationType"] = activationTypes[i];
-                                            bestSettings["CostFunction"] = costFunction;
-                                            bestSettings["L2RegulationLambda"] = l2Lambda;
-                                            bestSettings["ClippingLimit_Upper"] = upperLimit;
-                                            bestSettings["ClippingLimit_Lower"] = lowerLimit;
-
-                                            Debug.WriteLine($"Best Performance: {bestPerformance}");
-                                            foreach (var setting in bestSettings)
-                                            {
-                                                Debug.WriteLine($"{setting.Key}: {setting.Value}");
-                                            }
-
-                                            BestNuralNetwork = nn;
-                                        }
-                                        cnsl.DisplayProgressBar(++Counter, MaxVal, " Progress");
-                                    }
-                                }
-                                catch (NaNException nanEx)
-                                {
-                                    Debug.WriteLine($"{nanEx.Message} \n activationType:{activationTypes[i]}, costFunction:{costFunction.ToString()}, clippingLimits:[{lowerLimit},{upperLimit}], l2Lambda:{l2Lambda}");
-
-                                }
-                                catch (InfinityException infinityEx)
-                                {
-                                    Debug.WriteLine($"{infinityEx.Message} \n activationType:{activationTypes[i]}, costFunction:{costFunction.ToString()}, clippingLimits:[{lowerLimit},{upperLimit}], l2Lambda:{l2Lambda}");
-
-                                }
-                                catch (Exception ex) {}
-                            }
-                        }
-                    }
-                }
-
-            };
-
-            Debug.WriteLine($"Best Performance: {bestPerformance}");
-            foreach (var setting in bestSettings)
-            {
-                Debug.WriteLine($"{setting.Key}: {setting.Value}");
-            }
-            return new Tuple<Dictionary<string, object>, NeuralNetwork>(bestSettings, BestNuralNetwork);
-        }
-        */
+        
         #endregion
 
         public double[] Predict(double[] inputValues)
