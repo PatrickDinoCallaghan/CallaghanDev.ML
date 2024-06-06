@@ -41,7 +41,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(InputNeurons.ToArray(), 3, 784, 10, ActivationType.Leakyrelu, CostFunctionType.mse);  // Correct input size for MNIST
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, InputNeurons.ToArray(), 3, 784, 10, ActivationType.Leakyrelu, CostFunctionType.mse);  // Correct input size for MNIST
 
             // Assuming you want to train on a small subset for testing
             int trainSize = 1000; // Small number for demonstration; typically use more
@@ -93,7 +93,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(inputNeurons.ToArray(), 5, 5, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, inputNeurons.ToArray(), 5, 5, 1, ActivationType.Tanh, CostFunctionType.mse);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
@@ -136,7 +136,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(inputNeurons.ToArray(), 2, 2, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, inputNeurons.ToArray(), 2, 2, 1, ActivationType.Tanh, CostFunctionType.mse);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
@@ -177,7 +177,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(inputNeurons.ToArray(), 2, 2, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, inputNeurons.ToArray(), 2, 2, 1, ActivationType.Tanh, CostFunctionType.mse);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
@@ -218,7 +218,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             inputNeurons.Add(new SensoryNeuron(1, 5));
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(inputNeurons.ToArray(), 3, 3, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, inputNeurons.ToArray(), 3, 3, 1, ActivationType.Tanh, CostFunctionType.mse);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
