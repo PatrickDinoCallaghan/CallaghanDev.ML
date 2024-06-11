@@ -551,23 +551,21 @@ namespace CallaghanDev.ML
             }
         }
         public (double[] updatedBiases, double[,] updatedWeights, double[] updatedDeltas) LaunchBackpropagationKernel(
-            Accelerator accelerator,
-            int numNeurons_CurrentLayer,
-            int NumNeurons_PreviousLayer,
-            double[,] weightsMatrix,
-            double[] deltas,
-            double[] activations,
-            double[] activationDerivatives,
-            double[] biases,
-            double learningRate,
-            double clippingLowerLimit,
-            double clippingUpperLimit)
+        Accelerator accelerator,
+        int numNeurons_CurrentLayer,
+        int NumNeurons_PreviousLayer,
+        double[,] weightsMatrix,
+        double[] deltas,
+        double[] activations,
+        double[] activationDerivatives,
+        double[] biases,
+        double learningRate,
+        double clippingLowerLimit,
+        double clippingUpperLimit)
         {
-
             double[,] updatedWeights = new double[NumNeurons_PreviousLayer, numNeurons_CurrentLayer];
             double[] updatedBiases = new double[numNeurons_CurrentLayer];
             double[] updatedDeltas = new double[numNeurons_CurrentLayer];
-
 
             // Allocate GPU buffers with accurate sizes
             using var weightsMatrixBuffer = accelerator.Allocate2DDenseX<double>(new Index2D(weightsMatrix.GetLength(0), weightsMatrix.GetLength(1)));
@@ -578,26 +576,16 @@ namespace CallaghanDev.ML
             using var updatedDeltasBuffer = accelerator.Allocate1D<double>(numNeurons_CurrentLayer);
             using var updatedWeightsView = accelerator.Allocate2DDenseX<double>(new Index2D(NumNeurons_PreviousLayer, numNeurons_CurrentLayer));
 
-
-            // Copy input data to GPU buffers      
+            // Copy input data to GPU buffers sequentially
             weightsMatrixBuffer.CopyFromCPU(weightsMatrix);
             deltasBuffer.CopyFromCPU(deltas);
             activationsBuffer.CopyFromCPU(activations);
             activationDerivativesBuffer.CopyFromCPU(activationDerivatives);
             biasesBuffer.CopyFromCPU(biases);
 
-            Task task1 = Task.Run(() => weightsMatrixBuffer.CopyFromCPU(weightsMatrix));
-            Task task2 = Task.Run(() => deltasBuffer.CopyFromCPU(deltas));
-            Task task3 = Task.Run(() => activationsBuffer.CopyFromCPU(activations));
-            Task task4 = Task.Run(() => activationDerivativesBuffer.CopyFromCPU(activationDerivatives));
-            Task task5 = Task.Run(() => biasesBuffer.CopyFromCPU(biases));
-
-            Task.WaitAll(task1, task2, task3, task4, task5);
-
-
             // Launch the kernel function with the appropriate parameters
             double_GPUBackpropResult(
-                   numNeurons_CurrentLayer,
+                numNeurons_CurrentLayer,
                 weightsMatrixBuffer.View,
                 deltasBuffer.View,
                 activationsBuffer.View,
@@ -614,9 +602,6 @@ namespace CallaghanDev.ML
             updatedWeightsView.CopyToCPU(updatedWeights);
             biasesBuffer.CopyToCPU(updatedBiases);
             updatedDeltasBuffer.CopyToCPU(updatedDeltas);
-
-
-
 
             return (updatedBiases, updatedWeights, updatedDeltas);
         }
@@ -829,7 +814,6 @@ namespace CallaghanDev.ML
             return error;
         }
 
-
         public static Tuple<Dictionary<string, object>, NeuralNetwork> GetBestSettings(double TrainingRate, double[][] trainingInputs, double[][] trainingOutputs, double[][] validationInputs, double[][] validationOutputs, int epochs = 1000)
         {
             Console.WriteLine("Get Best Settings");
@@ -855,8 +839,7 @@ namespace CallaghanDev.ML
             var options = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
 
 
-                     //for (int i = 0; i < activationTypes.Count(); i++)
-
+            //for (int i = 0; i < activationTypes.Count(); i++)
             Parallel.For(0, activationTypes.Count(), i =>
             {
                 foreach (var costFunction in costFunctionTypes)
@@ -873,7 +856,7 @@ namespace CallaghanDev.ML
                                     {
                                         foreach (var huberDelta in huberLossDeltas)
                                         {
-                                            var nn = new NeuralNetwork(AccelerationType.GPU, GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationTypes[(int)i], costFunction, huberDelta, l2Lambda, upperLimit, -lowerLimit);
+                                            NeuralNetwork nn = new NeuralNetwork(AccelerationType.GPU, GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationTypes[(int)i], costFunction, huberDelta, l2Lambda, upperLimit, -lowerLimit);
                                             nn.Train(trainingInputs, trainingOutputs, TrainingRate, epochs, true);
                                             var performance = nn.Evaluate(validationInputs, validationOutputs);
 
@@ -898,6 +881,7 @@ namespace CallaghanDev.ML
 
                                                     lock (bestNetworkLock)
                                                     {
+                                                        bestNeuralNetwork?.Dispose();
                                                         bestNeuralNetwork = nn;
                                                     }
                                                 }
@@ -907,9 +891,10 @@ namespace CallaghanDev.ML
                                             cnsl.DisplayProgressBar(counter, maxVal, " Progress");
                                         }
                                     }
+
                                     else
                                     {
-                                        var nn = new NeuralNetwork(AccelerationType.GPU, GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationTypes[(int)i], costFunction, l2Lambda, upperLimit, -lowerLimit);
+                                        NeuralNetwork nn = new NeuralNetwork(AccelerationType.GPU, GetSensoryNeurons(trainingInputs), 5, trainingInputs[0].Length, trainingOutputs[0].Length, activationTypes[(int)i], costFunction, l2Lambda, upperLimit, -lowerLimit);
                                         nn.Train(trainingInputs, trainingOutputs, TrainingRate, epochs, true);
                                         var performance = nn.Evaluate(validationInputs, validationOutputs);
 
@@ -932,6 +917,7 @@ namespace CallaghanDev.ML
 
                                                 lock (bestNetworkLock)
                                                 {
+                                                    bestNeuralNetwork?.Dispose();
                                                     bestNeuralNetwork = nn;
                                                 }
                                             }
@@ -939,23 +925,23 @@ namespace CallaghanDev.ML
 
                                         Interlocked.Increment(ref counter);
                                         cnsl.DisplayProgressBar(counter, maxVal, " Progress");
+
                                     }
                                 }
                                 catch (NaNException nanEx)
                                 {
                                     Debug.WriteLine($"{nanEx.Message} \n activationType:{activationTypes[(int)i]}, costFunction:{costFunction.ToString()}, clippingLimits:[{lowerLimit},{upperLimit}], l2Lambda:{l2Lambda}");
-
                                     continue; // Skip the rest of the loop body and move to the next iteration
                                 }
                                 catch (InfinityException infinityEx)
                                 {
-                                    continue; // Skip the rest of the loop body and move to the next iteration
                                     Debug.WriteLine($"{infinityEx.Message} \n activationType:{activationTypes[(int)i]}, costFunction:{costFunction.ToString()}, clippingLimits:[{lowerLimit},{upperLimit}], l2Lambda:{l2Lambda}");
+                                    continue; // Skip the rest of the loop body and move to the next iteration
                                 }
                                 catch (Exception ex)
                                 {
-                                    continue; // Skip the rest of the loop body and move to the next iteration
                                     Debug.WriteLine(ex.Message);
+                                    continue; // Skip the rest of the loop body and move to the next iteration
                                 }
                             }
                         }
@@ -970,8 +956,9 @@ namespace CallaghanDev.ML
             }
 
             return new Tuple<Dictionary<string, object>, NeuralNetwork>(new Dictionary<string, object>(bestSettings), bestNeuralNetwork);
+
         }
-        
+
         #endregion
 
         public double[] Predict(double[] inputValues)
@@ -1001,5 +988,50 @@ namespace CallaghanDev.ML
         {
             InitCalculationTensors();
         }
+
+
+        #region IDisposable
+
+        private bool disposed = false;
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposed)
+            {
+                if (disposing)
+                {
+                    // Dispose managed resources
+                    if (accelerator != null)
+                    {
+                        accelerator.Dispose();
+                        accelerator = null;
+                    }
+
+                    if (Data != null)
+                    {
+                        Data.Dispose();
+                        Data = null;
+                    }
+                }
+
+                // Dispose unmanaged resources
+                // (none in this example)
+
+                disposed = true;
+            }
+        }
+
+        ~NeuralNetwork()
+        {
+            Dispose(false);
+        }
+
+        #endregion
+
     }
 }
