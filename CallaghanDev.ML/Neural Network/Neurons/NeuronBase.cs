@@ -8,26 +8,25 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML
 {
+    [JsonObject(MemberSerialization.OptIn)]
     public class NeuronBase
     {
         #region Activation Function Methods
-
 
         [JsonIgnore]
         public INeuron.ActivationFunction _activationFunction;
         [JsonIgnore]
         public INeuron.ActivationFunction _activationFunctionDeriv;
 
-        public NeuronBase(ActivationType activationType) 
+        public NeuronBase(ActivationType activationType)
         {
-
-            this.activationType = activationType; 
+            this.activationType = activationType;
             this.activationFunction = GetActivationFunction(activationType);
             activationFunctionDeriv = GetActivationFunctionDeriv(activationType);
         }
 
         [JsonIgnore]
-        public INeuron.ActivationFunction activationFunction 
+        public INeuron.ActivationFunction activationFunction
         {
             get
             {
@@ -43,10 +42,11 @@ namespace CallaghanDev.ML
                 _activationFunction = value;
             }
         }
+
         [JsonIgnore]
         public INeuron.ActivationFunction activationFunctionDeriv
         {
-            get 
+            get
             {
                 if (_activationFunctionDeriv == null)
                 {
@@ -59,8 +59,8 @@ namespace CallaghanDev.ML
             {
                 _activationFunctionDeriv = value;
             }
-        
         }
+
         internal INeuron.ActivationFunction GetActivationFunction(ActivationType type)
         {
             switch (type)
@@ -77,8 +77,7 @@ namespace CallaghanDev.ML
                     return x => Function.sigmoid(x);
             }
         }
-        [JsonProperty]
-        public ActivationType activationType { get; set; }
+
         internal INeuron.ActivationFunction GetActivationFunctionDeriv(ActivationType type)
         {
             switch (type)
@@ -98,9 +97,9 @@ namespace CallaghanDev.ML
 
         #endregion
 
-
-        
+        [JsonProperty]
         public double Activation { get; set; }
+
         public void Dispose()
         {
             throw new NotImplementedException();
@@ -109,7 +108,8 @@ namespace CallaghanDev.ML
         [JsonProperty]
         public double Bias { get; set; }
 
-        //Dendrites receive signals from the other neurons to the cell body
+        // Dendrites receive signals from the other neurons to the cell body
+        [JsonProperty]
         public List<Neurite> Dendrites
         {
             get
@@ -121,7 +121,10 @@ namespace CallaghanDev.ML
         [JsonProperty]
         internal List<Neurite> _Dendrites;
 
+        [JsonProperty]
         public double Delta { get; set; }
 
+        [JsonProperty]
+        public ActivationType activationType { get; set; }
     }
 }

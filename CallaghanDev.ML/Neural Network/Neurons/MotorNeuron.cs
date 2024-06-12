@@ -9,15 +9,14 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML
 {
+    [JsonObject(MemberSerialization.OptIn)]
     public class MotorNeuron : NeuronBase, INeuron
     {
-
-
+        [JsonProperty]
         public int LayerIndex { get; set; }
 
         public MotorNeuron(ActivationType activationType) : base(activationType)
         {
-
             _Dendrites = new List<Neurite>();
             this.Bias = 0;
         }

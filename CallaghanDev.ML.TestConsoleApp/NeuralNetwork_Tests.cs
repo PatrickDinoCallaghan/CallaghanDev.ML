@@ -59,8 +59,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             Console.WriteLine("Input Label: " + Array.IndexOf(trainingOutputs[0], 1));
             Console.WriteLine("Predicted Label: " + Array.IndexOf(prediction, prediction.Max()));
 
-            neuralNetwork.
-            Save(DateTime.Now.ToString("ss.mm.dd.yyyy"));
+
+            NeuralNetwork.Save(neuralNetwork, DateTime.Now.ToString("ss.mm.dd.yyyy") );
             Console.ReadKey();
         }
 
@@ -97,6 +97,9 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
+
+           // NeuralNetwork.Save(neuralNetwork, "test");
+          //  neuralNetwork = NeuralNetwork.Load("test");
             Console.WriteLine();
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML
 {
+    [JsonObject(MemberSerialization.OptIn)]
     public class SensoryNeuron : NeuronBase, INeuron
     {
         private double _MaxValue;
@@ -18,9 +19,13 @@ namespace CallaghanDev.ML
         [JsonIgnore]
         public new List<Neurite> Dendrites { get { throw new WrongNeuronException("Sensory Neuron contains no Dendrites as it has no source neurons"); } set { } }
 
+        [JsonIgnore]
         public new double Bias { get { return 1; } set { throw new WrongNeuronException("Cannot set the Bias function of an Sensory neuron."); } }
 
+        [JsonProperty]
         public int LayerIndex { get; set; }
+
+        [JsonProperty]
         public new double Activation
         {
             get
@@ -34,14 +39,11 @@ namespace CallaghanDev.ML
             }
         }
 
-
         public SensoryNeuron(double MaxValue, double MinValue) : base(ActivationType.None)
         {
-
             if (_MaxValue < _MinValue)
             {
                 throw new Exception();
-
             }
 
             _MaxValue = MaxValue;
@@ -54,7 +56,6 @@ namespace CallaghanDev.ML
         {
             _MaxValue = Max;
             _MinValue = Min;
-        }      
-
+        }
     }
 }

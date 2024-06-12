@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Neural_Network.Exceptions;
+﻿using CallaghanDev.ML.Neural_Network;
+using CallaghanDev.ML.Neural_Network.Exceptions;
 using CallaghanDev.Utilities.ConsoleHelper;
 using CallaghanDev.Utilities.MathTools;
 using ILGPU;
@@ -9,6 +10,7 @@ using ILGPU.Runtime.OpenCL;
 using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Reflection;
 using System.Threading.Tasks;
 
 namespace CallaghanDev.ML
@@ -77,16 +79,16 @@ namespace CallaghanDev.ML
         private double _L2RegulationLamda = 0;
 
         float _HuberLossDelta = 1;
+        private ActivationType _DefaultActivationType;
+        private CostFunctionType _costFunction;
 
         //See how the bottom two are related and try and remove one. Its unneeded overhead
         private INeuron[][] neuronsJaggedArray;
         private INeuron[][] Neurons;
-        private Random random;
         private ParallelOptions options;
         private Accelerator accelerator;
-        private ActivationType _DefaultActivationType;
-        CostFunctionType _costFunction;
 
+        private Random random;
 
         private CostFunction CostFunctionDeriv { get; set; }
         private delegate double CostFunction(double value, double prediction);
@@ -133,6 +135,10 @@ namespace CallaghanDev.ML
             _AccelerationType = accelerationType;
             InitSensoryNeurons(sensoryNeurons);
             Initialize();
+        }
+        public NeuralNetwork()
+        {
+
         }
 
         public static SensoryNeuron[] GetSensoryNeurons(double[][] TrainingData)
@@ -972,13 +978,38 @@ namespace CallaghanDev.ML
 
             return outputNeurons.Select(neuron => neuron.Activation).ToArray();
         }
-        public void Load(string FileName)
+        public static NeuralNetwork Load(string FileName)
         {
-            Data = Matrix<INeuron>.LoadFromFile(FileName);
+            var settings = new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.All,
+                Formatting = Formatting.Indented
+            };
+
+            string json = File.ReadAllText(FileName);
+            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings);
+
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, neuralNetworkDto.sensoryNeurons, neuralNetworkDto.NoHiddenLayers, neuralNetworkDto.HiddenLayerWidth, neuralNetworkDto.NumberOfOutputs, neuralNetworkDto.DefaultActivationType, neuralNetworkDto.costFunction, neuralNetworkDto.l2RegulationLamda, neuralNetworkDto.clippingLimit_Upper, neuralNetworkDto.clippingLimit_Lower);
+
+
+            Type type = neuralNetwork.GetType();
+
+            FieldInfo DataField = type.GetField("Data", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            DataField.SetValue(neuralNetwork, neuralNetworkDto.Data);
+
+            return neuralNetwork;
         }
-        public void Save(string FileName)
+        public static void Save(NeuralNetwork neuralNetwork, string FileName)
         {
-            Data.ExportToFile(FileName);
+            var settings = new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.All,
+                Formatting = Formatting.Indented
+            };
+
+            string json = JsonConvert.SerializeObject(neuralNetwork.MapToDto(), settings);
+            File.WriteAllText(FileName, json);
         }
 
         /// <summary>
