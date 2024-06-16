@@ -16,7 +16,7 @@ namespace CallaghanDev.ML
 
         public AssociativeNeuron(ActivationType activationType) : base(activationType)
         {
-            _Dendrites = new List<Neurite>();
+
         }
     }
 

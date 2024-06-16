@@ -65,7 +65,6 @@ namespace CallaghanDev.ML
         // Each row corresponds to a neuron's dendrites in the hidden layer, indicating these neurons originate from the current layer, and connect to each neuron in the next layer.
         // Transposing this matrix switches the focus from source neurons in the current layer to target neurons in the subsequent layer, and their connections to each neuron in the subsequent layer.
         private Matrix<Neurite>[] NeuriteTensor;
-        private Matrix<Neurite>[] NeuriteTensorT;
 
         private int _NumberOfInputs;
         private int _NumberOfOutputs;
@@ -83,7 +82,6 @@ namespace CallaghanDev.ML
         private CostFunctionType _costFunction;
 
         //See how the bottom two are related and try and remove one. Its unneeded overhead
-        private INeuron[][] neuronsJaggedArray;
         private INeuron[][] Neurons;
         private ParallelOptions options;
         private Accelerator accelerator;
@@ -277,7 +275,6 @@ namespace CallaghanDev.ML
 
                         NeuriteTensor[j][h, i] = neurite;
 
-                        neuron.Dendrites.Add(neurite);
                     }
                 }
 
@@ -307,7 +304,6 @@ namespace CallaghanDev.ML
 
                     NeuriteTensor[_NoHiddenLayers][m, i] = neurite;
 
-                    neuron.Dendrites.Add(neurite);
                 }
             }
         }
@@ -319,18 +315,16 @@ namespace CallaghanDev.ML
 
         private void InitCalculationTensors()
         {
-            NeuriteTensorT = NeuriteTensor.Select(r => r.Transpose()).ToArray();
-            Neurons = Data.ConvertToColumnArray();
 
-            int colCount = Data.ColumnCount() - 2;
-            neuronsJaggedArray = new INeuron[colCount + 2][];
+            INeuron[][] Neurons_WithNulls = Data.ConvertToColumnArray();
 
-            for (int layerIndex = colCount; layerIndex >= 0; layerIndex--)
+            int colCount = Data.ColumnCount();
+            Neurons = new INeuron[colCount][];
+
+            for (int layerIndex = colCount-1; layerIndex >= 0; layerIndex--)
             {
-                neuronsJaggedArray[layerIndex + 1] = Neurons[layerIndex + 1].Where(r => r != null).ToArray();
-                neuronsJaggedArray[layerIndex] = Neurons[layerIndex].Where(r => r != null).ToArray();
+                Neurons[layerIndex] = Neurons_WithNulls[layerIndex].Where(r => r != null).ToArray();
             }
-
         }
 
         #endregion
@@ -349,11 +343,11 @@ namespace CallaghanDev.ML
                 double[] dotProduct = new double[currentLayerNeuronCount];
 
                 Task<double[]> sourceNeuronsActivationsTask = Task.Run(() => Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray());
-                Task<double[,]> neuritesWeightsTask = Task.Run(() => NeuriteTensorT[j - 1].Select(r => r.Weight).ToArray());
+
+                Task<double[,]> neuritesWeightsTask = Task.Run(() => NeuriteTensor[j - 1].SelectTranspose(r => r.Weight).ToArray());
 
                 // Wait for all tasks to complete
                 Task.WaitAll(sourceNeuronsActivationsTask, neuritesWeightsTask);
-
 
                 dotProduct = CalculateDotProduct(neuritesWeightsTask.Result, sourceNeuronsActivationsTask.Result);
 
@@ -419,35 +413,35 @@ namespace CallaghanDev.ML
 
         public void UpdateOutputLayerGradients(double[] costs, double learningRate, double lambda = 0)
         {
-            INeuron[] MotorNeurons = Data.Column(Data.ColumnCount() - 1).ToArray();
+            int LastColumn = Data.ColumnCount() - 1;
+            INeuron[] MotorNeurons = Data.Column(LastColumn).ToArray();
             int motorNeuronCount = MotorNeurons.Length;
 
-            // Preallocate variables to avoid repeated allocations
-            double activationDerivative;
-            double gradient;
+
+            double[,] dendritesWeights = GetWeightsMatrix(LastColumn-1);
 
             Parallel.For(0, motorNeuronCount, i =>
-            {
+            { 
                 INeuron motorNeuron = MotorNeurons[i];
-                activationDerivative = motorNeuron.activationFunctionDeriv(motorNeuron.Activation);
-                gradient = -costs[i] * activationDerivative;
+                double activationDerivative = motorNeuron.activationFunctionDeriv(motorNeuron.Activation);
+                double gradient = -costs[i] * activationDerivative;
                 gradient = Math.Max(_clippingLimit_Lower, Math.Min(_clippingLimit_Upper, gradient));
                 motorNeuron.Delta = gradient;
 
-                Neurite[] dendrites = motorNeuron.Dendrites.ToArray();
-                int dendriteCount = dendrites.Length;
+                int dendriteCount = dendritesWeights.GetUpperBound(1) + 1;
+
 
                 for (int j = 0; j < dendriteCount; j++)
                 {
-                    Neurite connection = dendrites[j];
-                    double weightUpdate = learningRate * (gradient * connection.SourceNeuron.Activation + lambda * connection.Weight);
-                    connection.Weight -= weightUpdate;
+                    double weightUpdate = learningRate * (gradient * Neurons[LastColumn - 1][j].Activation + lambda * NeuriteTensor[LastColumn - 1][i, j].Weight);
 
-                    if (double.IsNaN(connection.Weight))
+                    NeuriteTensor[LastColumn - 1][i, j].Weight -= weightUpdate;
+
+                    if (double.IsNaN(NeuriteTensor[LastColumn - 1][i, j].Weight))
                     {
                         throw new NaNException();
                     }
-                    if (double.IsInfinity(connection.Weight))
+                    if (double.IsInfinity(NeuriteTensor[LastColumn - 1][i, j].Weight))
                     {
                         throw new InfinityException();
                     }
@@ -497,11 +491,11 @@ namespace CallaghanDev.ML
 
             for (int layerIndex = colCount; layerIndex > 0; layerIndex--)
             {
-                INeuron[] precedingLayerNeurons = neuronsJaggedArray[layerIndex - 1];
+                INeuron[] precedingLayerNeurons = Neurons[layerIndex - 1];
 
-                INeuron[] hiddenNeurons = neuronsJaggedArray[layerIndex];
+                INeuron[] hiddenNeurons = Neurons[layerIndex];
 
-                INeuron[] nextLayerNeurons = neuronsJaggedArray[layerIndex + 1];
+                INeuron[] nextLayerNeurons = Neurons[layerIndex + 1];
 
 
                 if (nextLayerNeurons.Length == 0 || hiddenNeurons.Length == 0 || precedingLayerNeurons.Length == 0)
@@ -722,6 +716,12 @@ namespace CallaghanDev.ML
                 }
             }
         }
+        public void Train(AccelerationType accelerationType, double[][] trainingDataCollection, double[][] ExpectedResults, double LearningRate, int epochs, bool Silent = false)
+        {
+            _AccelerationType = accelerationType;
+            Train(trainingDataCollection, ExpectedResults, LearningRate, epochs, Silent);
+        }
+
         private void Learn(double[] trainingData, double[] ExpectedResult, double LearningRate)
         {
             SetSensoryNeuronsValues(trainingData);
@@ -978,7 +978,7 @@ namespace CallaghanDev.ML
 
             return outputNeurons.Select(neuron => neuron.Activation).ToArray();
         }
-        public static NeuralNetwork Load(string FileName)
+        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType)
         {
             var settings = new JsonSerializerSettings
             {
@@ -989,8 +989,7 @@ namespace CallaghanDev.ML
             string json = File.ReadAllText(FileName);
             NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings);
 
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.GPU, neuralNetworkDto.sensoryNeurons, neuralNetworkDto.NoHiddenLayers, neuralNetworkDto.HiddenLayerWidth, neuralNetworkDto.NumberOfOutputs, neuralNetworkDto.DefaultActivationType, neuralNetworkDto.costFunction, neuralNetworkDto.l2RegulationLamda, neuralNetworkDto.clippingLimit_Upper, neuralNetworkDto.clippingLimit_Lower);
-
+            NeuralNetwork neuralNetwork = new NeuralNetwork(accelerationType, neuralNetworkDto.Data.Row(0).Select(r=>(SensoryNeuron)r).ToArray(), neuralNetworkDto.NoHiddenLayers, neuralNetworkDto.HiddenLayerWidth, neuralNetworkDto.NumberOfOutputs, neuralNetworkDto.DefaultActivationType, neuralNetworkDto.costFunction, neuralNetworkDto.l2RegulationLamda, neuralNetworkDto.clippingLimit_Upper, neuralNetworkDto.clippingLimit_Lower);
 
             Type type = neuralNetwork.GetType();
 
@@ -1008,6 +1007,8 @@ namespace CallaghanDev.ML
                 Formatting = Formatting.Indented
             };
 
+            var neuralNetworkDto = neuralNetwork.MapToDto();
+            
             string json = JsonConvert.SerializeObject(neuralNetwork.MapToDto(), settings);
             File.WriteAllText(FileName, json);
         }

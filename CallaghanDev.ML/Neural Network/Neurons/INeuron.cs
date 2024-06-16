@@ -12,8 +12,6 @@ namespace CallaghanDev.ML
 
         double Activation { get; set; }
 
-        List<Neurite> Dendrites { get; }
-
 
         public delegate double ActivationFunction(double x);
         public INeuron.ActivationFunction activationFunction { get; set; }

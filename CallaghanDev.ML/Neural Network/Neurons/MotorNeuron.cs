@@ -17,7 +17,6 @@ namespace CallaghanDev.ML
 
         public MotorNeuron(ActivationType activationType) : base(activationType)
         {
-            _Dendrites = new List<Neurite>();
             this.Bias = 0;
         }
     }

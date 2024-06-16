@@ -35,7 +35,6 @@ namespace CallaghanDev.ML
 
             return new NeuralNetworkDto()
             {
-                sensoryNeurons = ((Matrix<INeuron>)DataField.GetValue(neuralNetworkInstance)).Where(r => r.Value.GetType() == typeof(SensoryNeuron)).Select(r => (SensoryNeuron)r.Value).ToArray(),
                 NoHiddenLayers = (int)noHiddenLayersField.GetValue(neuralNetworkInstance),
                 HiddenLayerWidth = (int)hiddenLayerWidthField.GetValue(neuralNetworkInstance),
                 NumberOfOutputs = (int)numberOfOutputsField.GetValue(neuralNetworkInstance),

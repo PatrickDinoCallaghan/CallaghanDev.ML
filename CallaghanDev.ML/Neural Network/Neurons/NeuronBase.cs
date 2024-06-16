@@ -108,18 +108,6 @@ namespace CallaghanDev.ML
         [JsonProperty]
         public double Bias { get; set; }
 
-        // Dendrites receive signals from the other neurons to the cell body
-        [JsonProperty]
-        public List<Neurite> Dendrites
-        {
-            get
-            {
-                return _Dendrites;
-            }
-        }
-
-        [JsonProperty]
-        internal List<Neurite> _Dendrites;
 
         [JsonProperty]
         public double Delta { get; set; }

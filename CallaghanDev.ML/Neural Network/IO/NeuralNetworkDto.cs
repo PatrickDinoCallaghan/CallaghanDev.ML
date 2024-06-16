@@ -13,8 +13,6 @@ namespace CallaghanDev.ML.Neural_Network
     public class NeuralNetworkDto
     {
         [JsonProperty]
-        public SensoryNeuron[] sensoryNeurons;
-        [JsonProperty]
         public int NoHiddenLayers;
         [JsonProperty]
         public int HiddenLayerWidth;
