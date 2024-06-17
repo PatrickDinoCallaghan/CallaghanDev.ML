@@ -94,17 +94,36 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 5, 5, 1, ActivationType.Tanh, CostFunctionType.mse);
-            //neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+         
+
+            // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
             // Train the neural network
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
-
-            NeuralNetwork.Save(neuralNetwork, "test");
-
-
-            //
-
 
             Console.WriteLine();
+
+            // Evaluate the network with sample inputs
+
+            //neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
+
+             //NeuralNetwork.Save(neuralNetwork, "test");
+            neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+            Console.WriteLine();
+
+            // Evaluate the network with sample inputs
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;  // Threshold at 0.5
+                int expectedLabel = (int)expectedOutputs[i][0];
+
+                // Assertions
+                Console.WriteLine($"Expected Label:{expectedLabel}, PredictedLabel:{predictedLabel}");
+            }
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 100);  // Train with 1000 epochs
+
+            neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+            Console.WriteLine();
+
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {

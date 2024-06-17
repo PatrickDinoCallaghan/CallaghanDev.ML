@@ -1,6 +1,7 @@
 ﻿using CallaghanDev.ML.Neural_Network;
 using CallaghanDev.ML.Neural_Network.Exceptions;
 using CallaghanDev.Utilities.ConsoleHelper;
+using CallaghanDev.Utilities.Math;
 using CallaghanDev.Utilities.MathTools;
 using ILGPU;
 using ILGPU.Algorithms;
@@ -110,8 +111,7 @@ namespace CallaghanDev.ML
             _NumberOfOutputs = NumberOfOutputs;
             _HiddenLayerWidth = HiddenLayerWidth;
             _AccelerationType = accelerationType;
-            InitSensoryNeurons(sensoryNeurons);
-            Initialize();
+            Initialize(sensoryNeurons);
         }
         public NeuralNetwork(AccelerationType accelerationType, SensoryNeuron[] sensoryNeurons, int NoHiddenLayers, int HiddenLayerWidth, int NumberOfOutputs, ActivationType DefaultActivationType, CostFunctionType costFunction, float HuberLossDelta, double l2RegulationLamda = 0, float clippingLimit_Upper = 1, float clippingLimit_Lower = -1)
         {
@@ -131,11 +131,30 @@ namespace CallaghanDev.ML
             _HiddenLayerWidth = HiddenLayerWidth;
             _HuberLossDelta = HuberLossDelta;
             _AccelerationType = accelerationType;
-            InitSensoryNeurons(sensoryNeurons);
-            Initialize();
+            Initialize(sensoryNeurons);
         }
         public NeuralNetwork()
         {
+
+        }
+        private NeuralNetwork(Matrix<INeuron> InData, Matrix<Neurite>[] InNeuriteTensor, AccelerationType accelerationType, SensoryNeuron[] sensoryNeurons, int NoHiddenLayers, int HiddenLayerWidth, int NumberOfOutputs, ActivationType DefaultActivationType, CostFunctionType costFunction, float HuberLossDelta, double l2RegulationLamda = 0, float clippingLimit_Upper = 1, float clippingLimit_Lower = -1)
+        {
+            Data = InData;
+
+            NeuriteTensor = InNeuriteTensor;
+            _L2RegulationLamda = l2RegulationLamda;
+            _clippingLimit_Upper = clippingLimit_Upper;
+            _clippingLimit_Lower = clippingLimit_Lower;
+            _costFunction = costFunction;
+            _DefaultActivationType = DefaultActivationType;
+            _NoHiddenLayers = NoHiddenLayers;
+            _NumberOfInputs = sensoryNeurons.Count();
+            _NumberOfOutputs = NumberOfOutputs;
+            _HiddenLayerWidth = HiddenLayerWidth;
+            _HuberLossDelta = HuberLossDelta;
+            _AccelerationType = accelerationType;
+            //
+            Initialize(sensoryNeurons, true);
 
         }
 
@@ -191,8 +210,9 @@ namespace CallaghanDev.ML
 
         private Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>> double_MatrixVectorKernel;
 
-        public void Initialize()
+        public void Initialize(SensoryNeuron[] sensoryNeurons, bool LoadingFromFile = false)
         {
+            InitSensoryNeurons(sensoryNeurons);
             Context context = Context.Create(builder => builder.AllAccelerators());
             if (_AccelerationType == AccelerationType.CPU)
             {
@@ -212,10 +232,13 @@ namespace CallaghanDev.ML
 
             InitCostFunction(_costFunction);
 
-            NeuriteTensor = new Matrix<Neurite>[_NoHiddenLayers + 1];
 
-            InitHiddenLayer();
-            InitMotorLayers();
+            if (!LoadingFromFile)
+            {
+                NeuriteTensor = new Matrix<Neurite>[_NoHiddenLayers + 1];
+                InitHiddenLayer();
+                InitMotorLayers();
+            }
             InitCalculationTensors();
             LoadBackpropergationKernel();
         }
@@ -271,7 +294,7 @@ namespace CallaghanDev.ML
                         //double weight = GetRandomdouble(random,-1, 1);
                         double weight = LeakyReLUInitializer(NumberOfNeronsInpreviousLayer);
 
-                        Neurite neurite = new Neurite(Data[i, j], weight);
+                        Neurite neurite = new Neurite( weight);
 
                         NeuriteTensor[j][h, i] = neurite;
 
@@ -300,7 +323,7 @@ namespace CallaghanDev.ML
                 {
                     //double weight = GetRandomdouble(random, -1,1);
                     double weight = LeakyReLUInitializer(NumberOfNeronsInpreviousLayer);
-                    Neurite neurite = new Neurite(Data[i, PreviousColIndex], weight);
+                    Neurite neurite = new Neurite( weight);
 
                     NeuriteTensor[_NoHiddenLayers][m, i] = neurite;
 
@@ -321,7 +344,7 @@ namespace CallaghanDev.ML
             int colCount = Data.ColumnCount();
             Neurons = new INeuron[colCount][];
 
-            for (int layerIndex = colCount-1; layerIndex >= 0; layerIndex--)
+            for (int layerIndex = colCount - 1; layerIndex >= 0; layerIndex--)
             {
                 Neurons[layerIndex] = Neurons_WithNulls[layerIndex].Where(r => r != null).ToArray();
             }
@@ -418,10 +441,10 @@ namespace CallaghanDev.ML
             int motorNeuronCount = MotorNeurons.Length;
 
 
-            double[,] dendritesWeights = GetWeightsMatrix(LastColumn-1);
+            double[,] dendritesWeights = GetWeightsMatrix(LastColumn - 1);
 
             Parallel.For(0, motorNeuronCount, i =>
-            { 
+            {
                 INeuron motorNeuron = MotorNeurons[i];
                 double activationDerivative = motorNeuron.activationFunctionDeriv(motorNeuron.Activation);
                 double gradient = -costs[i] * activationDerivative;
@@ -714,6 +737,7 @@ namespace CallaghanDev.ML
                     Learn(trainingDataCollection[i], ExpectedResults[i], LearningRate);
                     Counter++;
                 }
+                OnEpochFinished?.Invoke(e);
             }
         }
         public void Train(AccelerationType accelerationType, double[][] trainingDataCollection, double[][] ExpectedResults, double LearningRate, int epochs, bool Silent = false)
@@ -731,10 +755,10 @@ namespace CallaghanDev.ML
         public void SetSensoryNeuronsValues(double[] inputValues)
         {
             Parallel.For(0, _NumberOfInputs, i =>
-           {
-               Data[(int)i, 0].Activation = inputValues[i];
+            {
+                Data[(int)i, 0].Activation = inputValues[i];
 
-           });
+            });
         }
         private void BackPropagate(double learningRate, double[] expectedOutputValues)
         {
@@ -986,19 +1010,18 @@ namespace CallaghanDev.ML
                 Formatting = Formatting.Indented
             };
 
+            settings.Converters.Add(new MatrixArrayJsonConverter<Neurite>());
+            settings.Converters.Add(new MatrixJsonConverter<INeuron>());
+
+
             string json = File.ReadAllText(FileName);
             NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings);
-
-            NeuralNetwork neuralNetwork = new NeuralNetwork(accelerationType, neuralNetworkDto.Data.Row(0).Select(r=>(SensoryNeuron)r).ToArray(), neuralNetworkDto.NoHiddenLayers, neuralNetworkDto.HiddenLayerWidth, neuralNetworkDto.NumberOfOutputs, neuralNetworkDto.DefaultActivationType, neuralNetworkDto.costFunction, neuralNetworkDto.l2RegulationLamda, neuralNetworkDto.clippingLimit_Upper, neuralNetworkDto.clippingLimit_Lower);
-
-            Type type = neuralNetwork.GetType();
-
-            FieldInfo DataField = type.GetField("Data", BindingFlags.NonPublic | BindingFlags.Instance);
-
-            DataField.SetValue(neuralNetwork, neuralNetworkDto.Data);
+           
+            NeuralNetwork neuralNetwork = new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, accelerationType, neuralNetworkDto.Data.Column(0).Select(r => (SensoryNeuron)r).ToArray(), neuralNetworkDto.NoHiddenLayers, neuralNetworkDto.HiddenLayerWidth, neuralNetworkDto.NumberOfOutputs, neuralNetworkDto.DefaultActivationType, neuralNetworkDto.costFunction, neuralNetworkDto.HuberLossDelta, neuralNetworkDto.l2RegulationLamda, neuralNetworkDto.clippingLimit_Upper, neuralNetworkDto.clippingLimit_Lower);
 
             return neuralNetwork;
         }
+
         public static void Save(NeuralNetwork neuralNetwork, string FileName)
         {
             var settings = new JsonSerializerSettings
@@ -1006,10 +1029,13 @@ namespace CallaghanDev.ML
                 TypeNameHandling = TypeNameHandling.All,
                 Formatting = Formatting.Indented
             };
+            settings.Converters.Add(new MatrixArrayJsonConverter<Neurite>());
+            settings.Converters.Add(new MatrixJsonConverter<INeuron>());
+
 
             var neuralNetworkDto = neuralNetwork.MapToDto();
-            
-            string json = JsonConvert.SerializeObject(neuralNetwork.MapToDto(), settings);
+
+            string json = JsonConvert.SerializeObject(neuralNetworkDto, settings);
             File.WriteAllText(FileName, json);
         }
 
@@ -1064,6 +1090,11 @@ namespace CallaghanDev.ML
         }
 
         #endregion
+
+        public EpochFinished OnEpochFinished;
+
+        public delegate void EpochFinished(int Epoch);
+
 
     }
 }

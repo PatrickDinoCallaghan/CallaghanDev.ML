@@ -35,6 +35,11 @@ namespace CallaghanDev.ML.Neural_Network
         [JsonConverter(typeof(MatrixJsonConverter<INeuron>))]
         public Matrix<INeuron> Data;
 
+
+        [JsonProperty]
+        [JsonConverter(typeof(MatrixArrayJsonConverter<Neurite>))]
+        public Matrix<Neurite>[] NeuriteTensor;
+
     }
 
     

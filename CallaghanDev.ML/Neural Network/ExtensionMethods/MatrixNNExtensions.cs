@@ -18,8 +18,7 @@ namespace CallaghanDev.ML
 
             // Access private fields using reflection
             FieldInfo DataField = type.GetField("Data", BindingFlags.NonPublic | BindingFlags.Instance);
-            FieldInfo neuriteTensorTField = type.GetField("NeuriteTensorT", BindingFlags.NonPublic | BindingFlags.Instance);
-            FieldInfo numberOfInputsField = type.GetField("_NumberOfInputs", BindingFlags.NonPublic | BindingFlags.Instance);
+            FieldInfo neuriteTensorField = type.GetField("NeuriteTensor", BindingFlags.NonPublic | BindingFlags.Instance);
             FieldInfo numberOfOutputsField = type.GetField("_NumberOfOutputs", BindingFlags.NonPublic | BindingFlags.Instance);
             FieldInfo hiddenLayerWidthField = type.GetField("_HiddenLayerWidth", BindingFlags.NonPublic | BindingFlags.Instance);
             FieldInfo noHiddenLayersField = type.GetField("_NoHiddenLayers", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -44,7 +43,8 @@ namespace CallaghanDev.ML
                 clippingLimit_Upper = (float)clippingLimitUpperField.GetValue(neuralNetworkInstance),
                 clippingLimit_Lower = (float)clippingLimitLowerField.GetValue(neuralNetworkInstance),
                 HuberLossDelta = (float)huberLossDeltaField.GetValue(neuralNetworkInstance),
-                Data = (Matrix<INeuron>)DataField.GetValue(neuralNetworkInstance)
+                Data = (Matrix<INeuron>)DataField.GetValue(neuralNetworkInstance),
+                NeuriteTensor = (Matrix<Neurite>[])neuriteTensorField.GetValue(neuralNetworkInstance)
             };
         }
     }

@@ -11,13 +11,15 @@ namespace CallaghanDev.ML
     [JsonObject(MemberSerialization.OptIn)]
     public class SensoryNeuron : NeuronBase, INeuron
     {
+        [JsonProperty]
         private double _MaxValue;
+
+        [JsonProperty]
         private double _MinValue;
+
 
         private double _Value;
 
-        [JsonIgnore]
-        public new List<Neurite> Dendrites { get { throw new WrongNeuronException("Sensory Neuron contains no Dendrites as it has no source neurons"); } set { } }
 
         [JsonIgnore]
         public new double Bias { get { return 1; } set { throw new WrongNeuronException("Cannot set the Bias function of an Sensory neuron."); } }

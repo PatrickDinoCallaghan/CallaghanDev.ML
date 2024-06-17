@@ -15,10 +15,13 @@ namespace CallaghanDev.ML
         public double Weight { get; set; }
         #endregion
 
-        public Neurite(INeuron SourceNeuron, double InitialWeight)
+        public Neurite(double InitialWeight)
         {
             Weight = InitialWeight;
         }
+        public Neurite()
+        {
 
+        }
     }
 }
