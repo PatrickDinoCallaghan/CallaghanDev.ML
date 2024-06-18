@@ -27,7 +27,7 @@ namespace CallaghanDev.ML
         [JsonProperty]
         public int LayerIndex { get; set; }
 
-        [JsonProperty]
+        [JsonIgnore]
         public new double Activation
         {
             get
