@@ -123,13 +123,22 @@ $$\\frac{\\partial L}{\\partial w\_{\\text{ij}}^{l}} = \\frac{\\partial L}{\\par
         is *σ*′(*z*) = *σ*(*z*)(1−*σ*(*z*))
 
     2.  In this project we use LeakyReLU
-        $f(x) = \\left\\{ \\begin{matrix}
-        x\\ where\\ x > 0 \\\\
-        cx\\ where\\ x \< 0 \\\\
-        \\end{matrix} \\right.\\ $ $f'(x) = \\left\\{ \\begin{matrix}
-        1\\ where\\ x > 0 \\\\
-        c\\ where\\ x \< 0 \\\\
-        \\end{matrix} \\right.\\ $
+       
+$$
+f(x) = 
+\begin{cases} 
+x & \text{where } x > 0 \\
+cx & \text{where } x < 0 
+\end{cases}
+$$
+The derivative of the LeakyReLU function is:
+$$
+f'(x) = 
+\begin{cases} 
+1 & \text{where } x > 0 \\
+c & \text{where } x < 0 
+\end{cases}
+$$
 
 -   **Gradient of the Weighted Sum with Respect to the Weight:**
     $\\frac{\\partial z\_{j}^{l}}{\\partial w\_{\\text{ij}}^{l}} = a\_{i}^{(l - 1)}$
