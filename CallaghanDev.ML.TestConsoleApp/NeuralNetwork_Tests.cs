@@ -93,21 +93,21 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 5, 5, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 5, 5, 1, ActivationType.Leakyrelu, CostFunctionType.mse,1, 9999, -9999f);
          
 
             // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
             // Train the neural network
 
-            Console.WriteLine();
+           // Console.WriteLine();
 
             // Evaluate the network with sample inputs
 
-            //neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
 
              //NeuralNetwork.Save(neuralNetwork, "test");
-            neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
-            Console.WriteLine();
+           // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+            //Console.WriteLine();
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)

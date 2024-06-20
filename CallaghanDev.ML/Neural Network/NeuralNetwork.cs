@@ -98,7 +98,19 @@ namespace CallaghanDev.ML
         #region ctor
 
         AccelerationType _AccelerationType;
-
+        public NeuralNetwork(AccelerationType accelerationType, SensoryNeuron[] sensoryNeurons, int NoHiddenLayers, int HiddenLayerWidth, int NumberOfOutputs, ActivationType DefaultActivationType, CostFunctionType costFunction)
+        {
+            _clippingLimit_Upper = float.MinValue;
+            _clippingLimit_Lower = float.MaxValue;
+            _costFunction = costFunction;
+            _DefaultActivationType = DefaultActivationType;
+            _NoHiddenLayers = NoHiddenLayers;
+            _NumberOfInputs = sensoryNeurons.Count();
+            _NumberOfOutputs = NumberOfOutputs;
+            _HiddenLayerWidth = HiddenLayerWidth;
+            _AccelerationType = accelerationType;
+            Initialize(sensoryNeurons);
+        }
         public NeuralNetwork(AccelerationType accelerationType, SensoryNeuron[] sensoryNeurons, int NoHiddenLayers, int HiddenLayerWidth, int NumberOfOutputs, ActivationType DefaultActivationType, CostFunctionType costFunction, double l2RegulationLamda = 0, float clippingLimit_Upper = 1, float clippingLimit_Lower = -1)
         {
             _L2RegulationLamda = l2RegulationLamda;
@@ -133,7 +145,7 @@ namespace CallaghanDev.ML
             _AccelerationType = accelerationType;
             Initialize(sensoryNeurons);
         }
-        public NeuralNetwork()
+        private NeuralNetwork()
         {
 
         }
