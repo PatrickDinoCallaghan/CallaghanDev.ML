@@ -95,10 +95,6 @@ namespace CallaghanDev.ML
             return softmaxValues;
         }
 
-
-
-
-
         // Define the custom weighted MSE loss function 
         public static double ZeroWeightedMSE(double ActualValue, double predicted)
         {
@@ -132,11 +128,6 @@ namespace CallaghanDev.ML
             {
                 return delta * (Math.Abs(diff) - 0.5 * delta);
             }
-        }
-        public static double Gelu(double x)
-        {
-            // Use the approximate formula for GeLU
-            return 0.5 * x * (1 + Math.Tanh(Math.Sqrt(2 / Math.PI) * (x + 0.044715 * Math.Pow(x, 3))));
         }
 
         public static class FirstDerivative
@@ -191,23 +182,7 @@ namespace CallaghanDev.ML
                     return delta * Math.Sign(diff);
                 }
             }
-            public static double Gelu(double x)
-            {
-                // Constants
-                double sqrt2Pi = Math.Sqrt(2 / Math.PI);
-                double coeff = 0.044715;
 
-                // Intermediate values
-                double xCube = Math.Pow(x, 3);
-                double tanhArg = sqrt2Pi * (x + coeff * xCube);
-                double tanhValue = Math.Tanh(tanhArg);
-
-                // Derivative of GeLU
-                double sech2Value = 1 - Math.Pow(tanhValue, 2);
-                double innerDerivative = sqrt2Pi * (1 + 3 * coeff * Math.Pow(x, 2));
-
-                return 0.5 * (1 + tanhValue) + 0.5 * x * sech2Value * innerDerivative;
-            }
         }
     }
 }
