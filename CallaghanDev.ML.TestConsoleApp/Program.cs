@@ -15,11 +15,12 @@
 
 
             TestNN neuralNetwork_Tests = new TestNN();
-
-            neuralNetwork_Tests.NeuralNetworkXorTest();
-            neuralNetwork_Tests.NeuralNetworkOrTest();
-            neuralNetwork_Tests.NeuralNetworkAndTest();
-            neuralNetwork_Tests.NeuralNetworkRegressionTest();
+            //TestNN.Run();
+           // neuralNetwork_Tests.NeuralNetworkXorTest();
+           // neuralNetwork_Tests.NeuralNetworkOrTest();
+            neuralNetwork_Tests.NeuralNetworkAndGPUTest();
+            neuralNetwork_Tests.NeuralNetworkAndCPUTest();
+           // neuralNetwork_Tests.NeuralNetworkRegressionTest();
 
 
             Console.WriteLine("End");

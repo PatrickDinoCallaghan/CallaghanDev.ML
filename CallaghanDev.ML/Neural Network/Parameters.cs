@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Diagnostics;
+using System.Text;
 
 namespace CallaghanDev.ML.NN
 {
@@ -6,7 +7,9 @@ namespace CallaghanDev.ML.NN
     {
         private float _HuberLossDelta = 1;
 
-        public AccelerationType AccelerationType { get; set; }
+        private AccelerationType _AccelerationType;
+
+        public AccelerationType AccelerationType { get { return _AccelerationType; } set { _AccelerationType = value; Debug.WriteLine(value.ToString()); } }
         public ActivationType DefaultActivationType { get; set; }
         public CostFunctionType CostFunction { get; set; }
         public SensoryNeuron[] SensoryNeurons { get; set; }

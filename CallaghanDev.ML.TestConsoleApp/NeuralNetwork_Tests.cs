@@ -43,9 +43,9 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Parameters parameters = new Parameters()
             {
-                AccelerationType= AccelerationType.CPU,
+                AccelerationType= AccelerationType.GPU,
                 SensoryNeurons = InputNeurons.ToArray(),
-                NoHiddenLayers = 3,
+                NoHiddenLayers = 10,
                 HiddenLayerWidth = 784,
                 NumberOfOutputs = 10,
                 DefaultActivationType = ActivationType.Leakyrelu,
@@ -107,7 +107,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.CPU,
+                AccelerationType = AccelerationType.GPU,
                 SensoryNeurons = inputNeurons.ToArray(),
                 NoHiddenLayers = 5,
                 HiddenLayerWidth = 5,
@@ -130,7 +130,7 @@ namespace CallaghanDev.ML.TestConsoleApp
            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
 
              NeuralNetwork.Save(neuralNetwork, "test");
-             neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+             neuralNetwork = NeuralNetwork.Load("test", AccelerationType.GPU);
             //Console.WriteLine();
 
             // Evaluate the network with sample inputs
@@ -160,8 +160,9 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
         }
 
-        public void NeuralNetworkAndTest()
+        public void NeuralNetworkAndGPUTest()
         {
+            Console.WriteLine("GPU test");
             double[][] inputs = new double[][]
             {
                 new double[] { 0, 0 },
@@ -199,7 +200,59 @@ namespace CallaghanDev.ML.TestConsoleApp
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 100);
+
+            // Evaluate the network with sample inputs
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
+                int expectedLabel = (int)expectedOutputs[i][0];
+
+                Console.WriteLine($"Expected Label: {expectedLabel}, Predicted Label: {predictedLabel}");
+            }
+        }
+        public void NeuralNetworkAndCPUTest()
+        {
+            Console.WriteLine("CPU test");
+            double[][] inputs = new double[][]
+            {
+                new double[] { 0, 0 },
+                new double[] { 0, 1 },
+                new double[] { 1, 0 },
+                new double[] { 1, 1 }
+            };
+
+            double[][] expectedOutputs = new double[][]
+            {
+                new double[] { 0 },
+                new double[] { 0 },
+                new double[] { 0 },
+                new double[] { 1 }
+            };
+
+            // Initialize sensory neurons
+            List<SensoryNeuron> inputNeurons = new List<SensoryNeuron>();
+            for (int i = 0; i < 2; i++)
+            {
+                inputNeurons.Add(new SensoryNeuron(0, 1));
+            }
+
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                SensoryNeurons = inputNeurons.ToArray(),
+                NoHiddenLayers = 2,
+                HiddenLayerWidth = 2,
+                NumberOfOutputs = 1,
+                DefaultActivationType = ActivationType.Tanh,
+                CostFunction = CostFunctionType.mse
+            };
+            // Setup the neural network
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
+
+            // Train the neural network
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 100);
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)

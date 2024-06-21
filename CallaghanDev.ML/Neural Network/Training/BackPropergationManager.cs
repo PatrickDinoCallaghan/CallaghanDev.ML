@@ -149,16 +149,22 @@ namespace CallaghanDev.ML.NN.Training
         {
             long MaxVal = (long)epochs * (long)trainingDataCollection.Length;
             long Counter = 0;
+            bool First = true;
             for (int e = 0; e < epochs; e++)
             {
                 for (int i = 0; i < trainingDataCollection.Length; i++)
                 {
-                    if (!Silent)
+                    if (!Silent && First)
                     {
                         cnsl.DisplayProgressBar(Counter, MaxVal, "Progress");
+                        First = false;
                     }
                     Learn(trainingDataCollection[i], ExpectedResults[i], LearningRate);
                     Counter++;
+                    if (!Silent & !First)
+                    {
+                        cnsl.DisplayProgressBar(Counter, MaxVal, "Progress");
+                    }
                 }
                 OnEpochFinished?.Invoke(e);
             }
