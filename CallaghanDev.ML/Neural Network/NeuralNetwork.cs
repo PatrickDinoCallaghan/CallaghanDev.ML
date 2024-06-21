@@ -59,7 +59,7 @@ namespace CallaghanDev.ML
         private readonly CostFunctionManager costFunctionManager;
         private readonly DataManager dataManager;
         private readonly AccelerationManager accelerationManager;
-        private readonly ITrainingManager trainingManager;
+        private ITrainingManager trainingManager;
 
         #region ctor
 
