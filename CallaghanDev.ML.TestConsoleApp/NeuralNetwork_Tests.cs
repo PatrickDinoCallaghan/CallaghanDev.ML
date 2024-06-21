@@ -1,4 +1,5 @@
-﻿using System;
+﻿using CallaghanDev.ML.NN;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -40,8 +41,19 @@ namespace CallaghanDev.ML.TestConsoleApp
                 InputNeurons.Add(new SensoryNeuron(255, 0));
             }
 
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType= AccelerationType.CPU,
+                SensoryNeurons = InputNeurons.ToArray(),
+                NoHiddenLayers = 3,
+                HiddenLayerWidth = 784,
+                NumberOfOutputs = 10,
+                DefaultActivationType = ActivationType.Leakyrelu,
+                CostFunction = CostFunctionType.mse
+            };
+
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, InputNeurons.ToArray(), 3, 784, 10, ActivationType.Leakyrelu, CostFunctionType.mse);  // Correct input size for MNIST
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);  // Correct input size for MNIST
 
             // Assuming you want to train on a small subset for testing
             int trainSize = 1000; // Small number for demonstration; typically use more
@@ -60,12 +72,14 @@ namespace CallaghanDev.ML.TestConsoleApp
             Console.WriteLine("Predicted Label: " + Array.IndexOf(prediction, prediction.Max()));
 
 
-            NeuralNetwork.Save(neuralNetwork, DateTime.Now.ToString("ss.mm.dd.yyyy") );
+            NeuralNetwork.Save(neuralNetwork, DateTime.Now.ToString("ss.mm.dd.yyyy"));
+
             Console.ReadKey();
         }
 
         public void NeuralNetworkXorTest()
         {
+            Console.WriteLine("NeuralNetworkXorTest:");
             double[][] inputs;
             double[][] expectedOutputs;
             // Create a simple synthetic dataset
@@ -91,9 +105,19 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 inputNeurons.Add(new SensoryNeuron(0, 1));
             }
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                SensoryNeurons = inputNeurons.ToArray(),
+                NoHiddenLayers = 5,
+                HiddenLayerWidth = 5,
+                NumberOfOutputs = 1,
+                DefaultActivationType = ActivationType.Leakyrelu,
+                CostFunction = CostFunctionType.mse
+            };
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 5, 5, 1, ActivationType.Leakyrelu, CostFunctionType.mse,1, 9999, -9999f);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
          
 
             // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
@@ -103,10 +127,10 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Evaluate the network with sample inputs
 
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
+           neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
 
-             //NeuralNetwork.Save(neuralNetwork, "test");
-           // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+             NeuralNetwork.Save(neuralNetwork, "test");
+             neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
             //Console.WriteLine();
 
             // Evaluate the network with sample inputs
@@ -140,18 +164,18 @@ namespace CallaghanDev.ML.TestConsoleApp
         {
             double[][] inputs = new double[][]
             {
-        new double[] { 0, 0 },
-        new double[] { 0, 1 },
-        new double[] { 1, 0 },
-        new double[] { 1, 1 }
+                new double[] { 0, 0 },
+                new double[] { 0, 1 },
+                new double[] { 1, 0 },
+                new double[] { 1, 1 }
             };
 
             double[][] expectedOutputs = new double[][]
             {
-        new double[] { 0 },
-        new double[] { 0 },
-        new double[] { 0 },
-        new double[] { 1 }
+                new double[] { 0 },
+                new double[] { 0 },
+                new double[] { 0 },
+                new double[] { 1 }
             };
 
             // Initialize sensory neurons
@@ -161,8 +185,18 @@ namespace CallaghanDev.ML.TestConsoleApp
                 inputNeurons.Add(new SensoryNeuron(0, 1));
             }
 
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                SensoryNeurons = inputNeurons.ToArray(),
+                NoHiddenLayers = 2,
+                HiddenLayerWidth = 2,
+                NumberOfOutputs = 1,
+                DefaultActivationType = ActivationType.Tanh,
+                CostFunction = CostFunctionType.mse
+            };
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 2, 2, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
@@ -181,18 +215,18 @@ namespace CallaghanDev.ML.TestConsoleApp
         {
             double[][] inputs = new double[][]
             {
-        new double[] { 0, 0 },
-        new double[] { 0, 1 },
-        new double[] { 1, 0 },
-        new double[] { 1, 1 }
+                new double[] { 0, 0 },
+                new double[] { 0, 1 },
+                new double[] { 1, 0 },
+                new double[] { 1, 1 }
             };
 
             double[][] expectedOutputs = new double[][]
             {
-        new double[] { 0 },
-        new double[] { 1 },
-        new double[] { 1 },
-        new double[] { 1 }
+                new double[] { 0 },
+                new double[] { 1 },
+                new double[] { 1 },
+                new double[] { 1 }
             };
 
             // Initialize sensory neurons
@@ -202,8 +236,18 @@ namespace CallaghanDev.ML.TestConsoleApp
                 inputNeurons.Add(new SensoryNeuron(0, 1));
             }
 
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                SensoryNeurons = inputNeurons.ToArray(),
+                NoHiddenLayers = 2,
+                HiddenLayerWidth = 2,
+                NumberOfOutputs = 1,
+                DefaultActivationType = ActivationType.Tanh,
+                CostFunction = CostFunctionType.mse
+            };
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 2, 2, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
@@ -223,28 +267,38 @@ namespace CallaghanDev.ML.TestConsoleApp
         {
             double[][] inputs = new double[][]
             {
-        new double[] { 1 },
-        new double[] { 2 },
-        new double[] { 3 },
-        new double[] { 4 },
-        new double[] { 5 }
+                new double[] { 1 },
+                new double[] { 2 },
+                new double[] { 3 },
+                new double[] { 4 },
+                new double[] { 5 }
             };
 
             double[][] expectedOutputs = new double[][]
             {
-        new double[] { 2 },
-        new double[] { 4 },
-        new double[] { 6 },
-        new double[] { 8 },
-        new double[] { 10 }
+                new double[] { 2 },
+                new double[] { 4 },
+                new double[] { 6 },
+                new double[] { 8 },
+                new double[] { 10 }
             };
 
             // Initialize sensory neurons
             List<SensoryNeuron> inputNeurons = new List<SensoryNeuron>();
             inputNeurons.Add(new SensoryNeuron(1, 5));
 
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                SensoryNeurons = inputNeurons.ToArray(),
+                NoHiddenLayers = 3,
+                HiddenLayerWidth = 3,
+                NumberOfOutputs = 1,
+                DefaultActivationType = ActivationType.Tanh,
+                CostFunction = CostFunctionType.mse
+            };
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(AccelerationType.CPU, inputNeurons.ToArray(), 3, 3, 1, ActivationType.Tanh, CostFunctionType.mse);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
