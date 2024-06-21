@@ -1,7 +1,7 @@
 ﻿using CallaghanDev.ML.NN;
 using CallaghanDev.Utilities.MathTools;
 
-namespace CallaghanDev.ML.Neural_Network
+namespace CallaghanDev.ML.NN
 {
     public class CostFunctionManager
     {

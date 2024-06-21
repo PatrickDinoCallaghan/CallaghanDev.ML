@@ -68,7 +68,6 @@ namespace CallaghanDev.ML
             dataManager.InitializeData(parameters, parameters.SensoryNeurons);
             trainingManager = new BackPropergationManager(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate);
             this.parameters = parameters;
-
         }
         private NeuralNetwork(Matrix<INeuron> InData, Matrix<Neurite>[] InNeuriteTensor, Parameters parameters)
         {
@@ -83,12 +82,10 @@ namespace CallaghanDev.ML
             trainingManager = new BackPropergationManager(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate);
             this.parameters = parameters;
         }
-
         private NeuralNetwork()
         {
 
         }
-
         #endregion
 
         private void ForwardPropagate()

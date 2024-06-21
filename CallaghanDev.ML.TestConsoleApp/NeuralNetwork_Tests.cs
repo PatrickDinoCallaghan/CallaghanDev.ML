@@ -200,7 +200,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 100);
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
@@ -252,7 +252,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 100);
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
