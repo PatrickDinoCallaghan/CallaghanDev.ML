@@ -1,11 +1,6 @@
 ﻿using CallaghanDev.ML.NN;
 using ILGPU.Runtime;
 using ILGPU;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using ILGPU.Runtime.OpenCL;
 using ILGPU.Runtime.CPU;
 using ILGPU.Algorithms;

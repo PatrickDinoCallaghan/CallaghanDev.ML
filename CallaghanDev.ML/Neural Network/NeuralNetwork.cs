@@ -2,12 +2,9 @@
 using CallaghanDev.ML.Neural_Network.Exceptions;
 using CallaghanDev.ML.NN;
 using CallaghanDev.ML.NN.Training;
-using CallaghanDev.Utilities.ConsoleHelper;
 using CallaghanDev.Utilities.Math;
 using CallaghanDev.Utilities.MathTools;
 using Newtonsoft.Json;
-using System.Collections.Concurrent;
-using System.Diagnostics;
 
 namespace CallaghanDev.ML
 {
@@ -148,10 +145,8 @@ namespace CallaghanDev.ML
 
             return outputNeurons.Select(neuron => neuron.Activation).ToArray();
         }
-        public static Tuple<Dictionary<string, object>, NeuralNetwork> GetBestSettings(double TrainingRate, double[][] trainingInputs, double[][] trainingOutputs, double[][] validationInputs, double[][] validationOutputs, int epochs = 1000)
-        {
-            return new SettingsManager().GetBestSettings(TrainingRate, trainingInputs, trainingOutputs, validationInputs, validationOutputs, epochs);
-        }
+
+        #region IO
         public static NeuralNetwork Load(string FileName, AccelerationType accelerationType)
         {
             var settings = new JsonSerializerSettings
@@ -204,14 +199,7 @@ namespace CallaghanDev.ML
             string json = JsonConvert.SerializeObject(neuralNetworkDto, settings);
             File.WriteAllText(FileName, json);
         }
-
-        /// <summary>
-        /// When the data has been changed this method needs to be called.
-        /// </summary>
-        public void DataChanged()
-        {
-            dataManager.InitCalculationTensors();
-        }
+        #endregion
 
         #region IDisposable
 

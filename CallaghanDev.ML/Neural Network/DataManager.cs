@@ -1,16 +1,4 @@
-﻿using CallaghanDev.ML.Neural_Network;
-using CallaghanDev.Utilities.MathTools;
-using ILGPU.Runtime;
-using ILGPU;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using ILGPU.Runtime.CPU;
-using ILGPU.Runtime.OpenCL;
-using CallaghanDev.Utilities.Math;
-using Newtonsoft.Json;
+﻿using CallaghanDev.Utilities.MathTools;
 
 namespace CallaghanDev.ML.NN
 {
