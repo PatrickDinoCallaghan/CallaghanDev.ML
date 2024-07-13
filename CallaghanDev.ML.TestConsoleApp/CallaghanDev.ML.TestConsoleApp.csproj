@@ -11,4 +11,10 @@
     <ProjectReference Include="..\CallaghanDev.ML\CallaghanDev.ML.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Reference Include="CallaghanDev.Utilities">
+      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.Utilities.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
 </Project>

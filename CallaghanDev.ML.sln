@@ -5,7 +5,7 @@ VisualStudioVersion = 17.5.33414.496
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.ML", "CallaghanDev.ML\CallaghanDev.ML.csproj", "{2D5CC3BC-7AC6-4B1B-96D3-407DC64259F6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CallaghanDev.ML.TestConsoleApp", "CallaghanDev.ML.TestConsoleApp\CallaghanDev.ML.TestConsoleApp.csproj", "{B20D0E58-CD83-42B5-997D-02AE1E028984}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.ML.TestConsoleApp", "CallaghanDev.ML.TestConsoleApp\CallaghanDev.ML.TestConsoleApp.csproj", "{B20D0E58-CD83-42B5-997D-02AE1E028984}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

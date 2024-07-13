@@ -24,10 +24,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="CsvHelper" Version="31.0.4" />
     <PackageReference Include="ILGPU" Version="1.5.1" />
     <PackageReference Include="ILGPU.Algorithms" Version="1.5.1" />
-    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <PackageReference Include="MathNet.Numerics" Version="6.0.0-beta1" />
+    <PackageReference Include="MathNet.Symbolics" Version="0.25.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
@@ -35,11 +35,17 @@
     <Reference Include="CallaghanDev.Utilities">
       <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.Utilities.dll</HintPath>
       <Private>True</Private>
+      <EmbedInteropTypes>False</EmbedInteropTypes>
     </Reference>
     <Reference Include="CallaghanDev.XML">
       <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.XML.dll</HintPath>
       <Private>True</Private>
+      <EmbedInteropTypes>False</EmbedInteropTypes>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="CurveFitting\" />
   </ItemGroup>
 
 </Project>

@@ -50,7 +50,7 @@ namespace CallaghanDev.ML
     /// - **Scalability**: Designed to handle large datasets and complex neural network structures by utilizing modern hardware capabilities.
     /// </summary>
 
-    public class NeuralNetwork: IDisposable
+    public class NeuralNetwork
     {
         private Parameters parameters;
         private readonly CostFunctionManager costFunctionManager;
@@ -198,37 +198,5 @@ namespace CallaghanDev.ML
         }
         #endregion
 
-        #region IDisposable
-
-        private bool disposed = false;
-
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        protected virtual void Dispose(bool disposing)
-        {
-            if (!disposed)
-            {
-                if (disposing)
-                {
-                    if (dataManager != null)
-                    {
-                        dataManager.Dispose();
-                    }
-                }
-
-                disposed = true;
-            }
-        }
-
-        ~NeuralNetwork()
-        {
-            Dispose(false);
-        }
-
-        #endregion
     }
 }

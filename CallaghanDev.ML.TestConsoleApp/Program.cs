@@ -1,4 +1,10 @@
-﻿namespace CallaghanDev.ML.TestConsoleApp
+﻿using CallaghanDev.ML.Interpolation;
+using MathNet.Numerics;
+using MathNet.Symbolics;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace CallaghanDev.ML.TestConsoleApp
 {
     public class Program
     {
@@ -15,15 +21,15 @@
 
 
             TestNN neuralNetwork_Tests = new TestNN();
+
             //TestNN.Run();
-           // neuralNetwork_Tests.NeuralNetworkXorTest();
-           // neuralNetwork_Tests.NeuralNetworkOrTest();
-            neuralNetwork_Tests.NeuralNetworkAndGPUTest();
+            neuralNetwork_Tests.NeuralNetworkXorTest();
+            neuralNetwork_Tests.NeuralNetworkOrTest();
+            neuralNetwork_Tests.NeuralNetworkXorTest();
             neuralNetwork_Tests.NeuralNetworkAndCPUTest();
-           // neuralNetwork_Tests.NeuralNetworkRegressionTest();
+            neuralNetwork_Tests.NeuralNetworkRegressionTest();
 
 
-            Console.WriteLine("End");
             Console.ReadLine();
         }
 

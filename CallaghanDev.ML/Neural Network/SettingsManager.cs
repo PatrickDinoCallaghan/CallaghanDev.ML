@@ -162,7 +162,6 @@ namespace CallaghanDev.ML.NN
 
                                                     lock (bestNetworkLock)
                                                     {
-                                                        bestNeuralNetwork?.Dispose();
                                                         bestNeuralNetwork = nn;
                                                     }
                                                 }
@@ -212,7 +211,6 @@ namespace CallaghanDev.ML.NN
 
                                                 lock (bestNetworkLock)
                                                 {
-                                                    bestNeuralNetwork?.Dispose();
                                                     bestNeuralNetwork = nn;
                                                 }
                                             }
