@@ -371,3 +371,4 @@ FodyWeavers.xsd
 /CallaghanDev.ML.Test/LaunchBackpropagationKernelTests.cs
 /CallaghanDev.ML.Test/NeuralNetworkSyntheticTests.cs
 /CallaghanDev.ML.Test/UpdateOutputLayerGradientsTests.cs
+/CallaghanDev.ML.ThirdParty.API/CallaghanDev.ML.ThirdParty.API.csproj
