@@ -1,4 +1,5 @@
-﻿using CallaghanDev.Utilities.Math;
+﻿using CallaghanDev.Common.Math;
+using CallaghanDev.Utilities.Math;
 using CallaghanDev.Utilities.MathTools;
 using Newtonsoft.Json;
 

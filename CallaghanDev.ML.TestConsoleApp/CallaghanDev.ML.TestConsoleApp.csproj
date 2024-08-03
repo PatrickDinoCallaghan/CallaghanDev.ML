@@ -12,6 +12,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Reference Include="CallaghanDev.Common.Math">
+      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Common.Math\bin\Debug\net8.0\CallaghanDev.Common.Math.dll</HintPath>
+    </Reference>
     <Reference Include="CallaghanDev.Utilities">
       <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.Utilities.dll</HintPath>
     </Reference>

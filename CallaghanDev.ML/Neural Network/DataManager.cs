@@ -1,4 +1,5 @@
-﻿using CallaghanDev.Utilities.MathTools;
+﻿using CallaghanDev.Common.Math;
+using CallaghanDev.Utilities.MathTools;
 
 namespace CallaghanDev.ML.NN
 {

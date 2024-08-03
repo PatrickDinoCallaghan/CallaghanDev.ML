@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Neural_Network;
+﻿using CallaghanDev.Common.Math;
+using CallaghanDev.ML.Neural_Network;
 using CallaghanDev.ML.Neural_Network.Exceptions;
 using CallaghanDev.ML.NN;
 using CallaghanDev.ML.NN.Training;
@@ -176,7 +177,7 @@ namespace CallaghanDev.ML
             {
                 parameters.HuberLossDelta = neuralNetworkDto.HuberLossDelta;
             }
-            NeuralNetwork neuralNetwork = new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, parameters);
+            NeuralNetwork neuralNetwork = null;//= new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, parameters);
 
             return neuralNetwork;
         }
