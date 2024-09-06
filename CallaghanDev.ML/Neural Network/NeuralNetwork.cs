@@ -83,7 +83,9 @@ namespace CallaghanDev.ML
             trainingManager = new BackPropergationManager(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate);
             this.parameters = parameters;
         }
+        #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         private NeuralNetwork()
+        #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         {
 
         }
@@ -158,7 +160,8 @@ namespace CallaghanDev.ML
 
 
             string json = File.ReadAllText(FileName);
-            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings);
+            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings) 
+            ?? throw new InvalidOperationException("Deserialization failed, object is null.");
 
             Parameters parameters = new Parameters()
             {
@@ -177,7 +180,44 @@ namespace CallaghanDev.ML
             {
                 parameters.HuberLossDelta = neuralNetworkDto.HuberLossDelta;
             }
-            NeuralNetwork neuralNetwork = null;//= new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, parameters);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, parameters);
+
+            return neuralNetwork;
+        }
+        public static NeuralNetwork TryLoad(string FileName, AccelerationType accelerationType)
+        {
+            var settings = new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.All,
+                Formatting = Formatting.Indented
+            };
+
+            settings.Converters.Add(new MatrixArrayJsonConverter<Neurite>());
+            settings.Converters.Add(new MatrixJsonConverter<INeuron>());
+
+
+            string json = File.ReadAllText(FileName);
+            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings)
+            ?? throw new InvalidOperationException("Deserialization failed, object is null.");
+
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = accelerationType,
+                SensoryNeurons = neuralNetworkDto.Data.Column(0).Select(r => (SensoryNeuron)r).ToArray(),
+                NoHiddenLayers = neuralNetworkDto.NoHiddenLayers,
+                HiddenLayerWidth = neuralNetworkDto.HiddenLayerWidth,
+                NumberOfOutputs = neuralNetworkDto.NumberOfOutputs,
+                DefaultActivationType = neuralNetworkDto.DefaultActivationType,
+                CostFunction = neuralNetworkDto.costFunction,
+                L2RegulationLamda = neuralNetworkDto.l2RegulationLamda,
+                ClippingLimitUpper = neuralNetworkDto.clippingLimit_Upper,
+                ClippingLimitLower = neuralNetworkDto.clippingLimit_Lower
+            };
+            if (parameters.CostFunction == CostFunctionType.huberLoss)
+            {
+                parameters.HuberLossDelta = neuralNetworkDto.HuberLossDelta;
+            }
+            NeuralNetwork neuralNetwork = new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, parameters);
 
             return neuralNetwork;
         }

@@ -107,7 +107,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.GPU,
+                AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
                 NoHiddenLayers = 5,
                 HiddenLayerWidth = 5,
@@ -117,21 +117,30 @@ namespace CallaghanDev.ML.TestConsoleApp
             };
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
-         
+            NeuralNetwork neuralNetwork;
+
 
             // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
             // Train the neural network
 
-           // Console.WriteLine();
+            // Console.WriteLine();
 
             // Evaluate the network with sample inputs
+            try
+            {
 
-           neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
+                neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
+            }
+            catch (Exception)
+            {
 
-             NeuralNetwork.Save(neuralNetwork, "test");
-             neuralNetwork = NeuralNetwork.Load("test", AccelerationType.GPU);
-            //Console.WriteLine();
+                neuralNetwork = new NeuralNetwork(parameters);
+            }
+
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
+
+            NeuralNetwork.Save(neuralNetwork, "test");
+  
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)

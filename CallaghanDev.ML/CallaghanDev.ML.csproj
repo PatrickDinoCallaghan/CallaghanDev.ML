@@ -9,8 +9,11 @@
 
   <ItemGroup>
     <Compile Remove="GeneralPRNGCracking\**" />
+    <Compile Remove="OpenAI\**" />
     <EmbeddedResource Remove="GeneralPRNGCracking\**" />
+    <EmbeddedResource Remove="OpenAI\**" />
     <None Remove="GeneralPRNGCracking\**" />
+    <None Remove="OpenAI\**" />
   </ItemGroup>
 
   <ItemGroup>

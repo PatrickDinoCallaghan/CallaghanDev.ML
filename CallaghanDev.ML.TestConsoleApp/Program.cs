@@ -1,14 +1,13 @@
-﻿using CallaghanDev.ML.Interpolation;
-using MathNet.Numerics;
-using MathNet.Symbolics;
-using System.Text;
-using System.Text.RegularExpressions;
-
+﻿
 namespace CallaghanDev.ML.TestConsoleApp
 {
     public class Program
     {
-        public static void Main(string[] args)
+        public static void Main()
+        {
+            NNtest();
+        }
+        public static void NNtest()
         {
 
             // Handle Ctrl+C to close the application gracefully
@@ -35,3 +34,4 @@ namespace CallaghanDev.ML.TestConsoleApp
 
     }
 }
+

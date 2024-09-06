@@ -6,7 +6,7 @@ namespace CallaghanDev.ML.OpenAI
 {
     public class ChatGPT_API 
     {
-        private const int Max_Tokens = 4096;
+        private const int Max_Tokens = 16384;
         private string _API_URL;
         private string _API_KEY;
         private HttpClient _client;
@@ -44,7 +44,7 @@ namespace CallaghanDev.ML.OpenAI
             _client.DefaultRequestHeaders.Add("User-Agent", "ChatGPT Client");
             try
             {
-                var requestData = CreateRequestData("gpt-4-1106-preview", Max_Tokens, SystemContext, message);
+                var requestData = CreateRequestData("gpt-4o-mini", Max_Tokens, SystemContext, message);
 
 
                 var response = await _client.PostAsync("/v1/chat/completions", new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json"));
