@@ -161,7 +161,7 @@ $$w\_{\\text{ij}}^{l} \\leftarrow w\_{\\text{ij}}^{l} - \\eta\\frac{\\partial L}
 
 *b*<sub>*j*</sub><sup>*l*</sup> ← *b*<sub>*j*</sub><sup>*l*</sup> − *η**δ*<sub>*j*</sub><sup>*l*</sup>
 
-where ηη is the learning rate.
+where η is the learning rate.
 
 **4. Iterate Over Training Data:**
 
