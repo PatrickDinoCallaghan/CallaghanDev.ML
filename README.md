@@ -159,7 +159,7 @@ $\\delta\_{j}^{l} = \\ \\frac{\\partial L}{\\partial a\_{j}^{l}}\*\\sigma'(z\_{j
 
 $$w\_{\\text{ij}}^{l} \\leftarrow w\_{\\text{ij}}^{l} - \\eta\\frac{\\partial L}{\\partial w\_{\\text{ij}}^{l}}$$
 
-*b*<sub>*j*</sub><sup>*l*</sup> ← *b*<sub>*j*</sub><sup>*l*</sup> − *η**δ*<sub>*j*</sub><sup>*l*</sup>
+*b*<sub>*j*</sub><sup>*l*</sup> ← *b*<sub>*j*</sub><sup>*l*</sup> − *η***δ*<sub>*j*</sub><sup>*l*</sup>
 
 where η is the learning rate.
 
