@@ -82,7 +82,7 @@ where:
 
 -   yk​ is the actual target value.
 
--   *ŷ**k* is the predicted value.
+-   *ŷk* is the predicted value.
 
 **3. Backpropagation:**
 
@@ -90,8 +90,8 @@ Backpropagation aims to minimize the loss function by adjusting the
 weights and biases in the network. It involves the following steps:
 
 1.  **Compute the Gradient of the Loss with Respect to Each Output
-    Neuron:** The gradient of the loss 𝐿*L* with respect to the output
-    of neuron 𝑘*k* in the output layer is given by:
+    Neuron:** The gradient of the loss *L* with respect to the output
+    of neuron *k* in the output layer is given by:
 
 $$\\frac{\\partial L}{\\partial a\_{k}^{L}}$$
 
