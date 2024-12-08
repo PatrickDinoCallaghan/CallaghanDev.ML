@@ -6,10 +6,8 @@ namespace CallaghanDev.ML.NN
     public class Parameters
     {
         private float _HuberLossDelta = 1;
-
         private AccelerationType _AccelerationType;
-
-        public AccelerationType AccelerationType { get { return _AccelerationType; } set { _AccelerationType = value; Debug.WriteLine(value.ToString()); } }
+        public AccelerationType AccelerationType { get { return _AccelerationType; } set { _AccelerationType = value; } }
         public ActivationType DefaultActivationType { get; set; }
         public CostFunctionType CostFunction { get; set; }
         public SensoryNeuron[] SensoryNeurons { get; set; }
@@ -37,7 +35,6 @@ namespace CallaghanDev.ML.NN
                 }
             }
         }
-
         public override string ToString()
         {
             var sb = new StringBuilder();
