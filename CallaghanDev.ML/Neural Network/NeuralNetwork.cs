@@ -17,10 +17,6 @@ namespace CallaghanDev.ML
     ///   - Uses a `Matrix` to store neurons and their connections.
     ///   - `NeuriteTensor` and `NeuriteTensorT` matrices to represent connections between neurons in different layers.
     ///
-    /// - **Task Management**: 
-    ///   - Utilizes a `TaskManager` with multiple `TaskContainer<T>` instances for asynchronous task management.
-    ///   - Efficiently manages task execution and synchronization.
-    ///
     /// - **Initialization**: 
     ///   - Initializes sensory neurons, hidden layers, and motor (output) layers.
     ///   - Loads backpropagation and matrix-vector multiplication kernels for GPU execution.
