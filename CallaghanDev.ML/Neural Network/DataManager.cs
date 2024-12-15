@@ -116,9 +116,14 @@ namespace CallaghanDev.ML.NN
         }
         private double LeakyReLUInitializer(int incomingNeurites)
         {
-            double standardDeviation = (double)Math.Sqrt((double)(2.0f / incomingNeurites));
-            return (double)(random.NextDouble() * 2 - 1) * standardDeviation;
+            double standardDeviation = Math.Sqrt(2.0 / incomingNeurites);
+            // Generate a normally distributed random value
+            double u1 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
+            double u2 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
+            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
+            return z * standardDeviation; // Scale by standard deviation
         }
+
         public static SensoryNeuron[] GetSensoryNeurons(double[][] TrainingData)
         {
             int TrainingDataLength = TrainingData.First().Length;
