@@ -31,8 +31,7 @@ namespace CallaghanDev.ML
                 DefaultActivationType = parameters.DefaultActivationType,
                 costFunction = parameters.CostFunction,
                 l2RegulationLamda = parameters.L2RegulationLamda,
-                clippingLimit_Upper = parameters.ClippingLimitUpper,
-                clippingLimit_Lower = parameters.ClippingLimitLower,
+                GradientClippingThreshold = parameters.GradientClippingThreshold,
                 HuberLossDelta = parameters.HuberLossDelta,
                 Data = dataManager.Data,
                 NeuriteTensor = dataManager.NeuriteTensor

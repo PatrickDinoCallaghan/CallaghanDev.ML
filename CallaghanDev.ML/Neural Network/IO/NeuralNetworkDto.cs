@@ -21,9 +21,7 @@ namespace CallaghanDev.ML.Neural_Network
         [JsonProperty]
         public double l2RegulationLamda = 0;
         [JsonProperty]
-        public float clippingLimit_Upper = 1;
-        [JsonProperty]
-        public float clippingLimit_Lower = -1;
+        public float GradientClippingThreshold =5;
         [JsonProperty]
         public float HuberLossDelta;
 

@@ -11,7 +11,7 @@ namespace CallaghanDev.ML.Neural_Network
     {
         public Accelerator accelerator;
 
-        private Action<Index1D, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, double, double, double> double_GPUBackpropResult;
+        private Action<Index1D, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, double, double> double_GPUBackpropResult;
 
         private Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>> double_MatrixVectorKernel;
 
@@ -47,7 +47,6 @@ namespace CallaghanDev.ML.Neural_Network
                 ArrayView1D<double, Stride1D.Dense>,
                 ArrayView2D<double, Stride2D.DenseX>,
                 double,
-            double,
             double>(BackpropagationKernel);
 
 
@@ -74,7 +73,7 @@ namespace CallaghanDev.ML.Neural_Network
             resultView[index] = sum;
         }
 
-       static void BackpropagationKernel(
+        static void BackpropagationKernel(
             Index1D neuronIndex,
             ArrayView2D<double, Stride2D.DenseX> weightsMatrix,
             ArrayView1D<double, Stride1D.Dense> deltasView,
@@ -84,8 +83,7 @@ namespace CallaghanDev.ML.Neural_Network
             ArrayView1D<double, Stride1D.Dense> updatedDeltasView,
             ArrayView2D<double, Stride2D.DenseX> updatedWeightsView,
             double learningRate,
-            double clippingLowerLimit,
-            double clippingUpperLimit)
+            double GradientClippingThreshold)
         {
             long precedingActivationsNo = activationsView.Extent.X;
             long nextNeurons = deltasView.Extent.X;
@@ -97,8 +95,24 @@ namespace CallaghanDev.ML.Neural_Network
                 sumOfWeightedDeltas += weightsMatrix[i, neuronIndex] * deltasView[i];
             }
 
-            // Apply gradient clipping
-            sumOfWeightedDeltas = XMath.Max(clippingLowerLimit, XMath.Min(sumOfWeightedDeltas, clippingUpperLimit));
+            // Calculate the L2 norm of the gradients
+            double normSquared = 0.0;
+            for (int i = 0; i < nextNeurons; i++)
+            {
+                double gradient = weightsMatrix[i, neuronIndex] * deltasView[i];
+                normSquared += gradient * gradient;
+            }
+            double norm = XMath.Sqrt(normSquared);
+
+            // Apply norm-based gradient clipping
+            double scale = 1.0;
+            if (norm > GradientClippingThreshold)
+            {
+                scale = GradientClippingThreshold / norm;
+            }
+
+            // Scale the sum of weighted deltas
+            sumOfWeightedDeltas *= scale;
 
             // Calculate the delta using the activation derivative
             double delta = sumOfWeightedDeltas * activationDerivativeView[neuronIndex];
@@ -112,7 +126,6 @@ namespace CallaghanDev.ML.Neural_Network
 
             biasesView[neuronIndex] -= learningRate * delta;
         }
-
         public double[] CalculateDotProduct(double[,] matrix, double[] vector)
         {
             var vectorLength = vector.Length;
@@ -148,8 +161,7 @@ namespace CallaghanDev.ML.Neural_Network
             double[] activationDerivatives,
             double[] biases,
             double learningRate,
-            double clippingLowerLimit,
-            double clippingUpperLimit)
+            double GradientClippingThreshold)
         {
             double[,] updatedWeights = new double[NumNeurons_PreviousLayer, numNeurons_CurrentLayer];
             double[] updatedBiases = new double[numNeurons_CurrentLayer];
@@ -182,8 +194,7 @@ namespace CallaghanDev.ML.Neural_Network
                 updatedDeltasBuffer.View,
                 updatedWeightsView.View,
                 learningRate,
-                clippingLowerLimit,
-                clippingUpperLimit);
+                GradientClippingThreshold);
 
             // Synchronize the GPU to ensure the kernel execution is complete
             accelerator.Synchronize();

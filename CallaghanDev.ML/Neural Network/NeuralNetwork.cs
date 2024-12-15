@@ -169,8 +169,7 @@ namespace CallaghanDev.ML
                 DefaultActivationType = neuralNetworkDto.DefaultActivationType,
                 CostFunction = neuralNetworkDto.costFunction,
                 L2RegulationLamda = neuralNetworkDto.l2RegulationLamda,
-                ClippingLimitUpper = neuralNetworkDto.clippingLimit_Upper,
-                ClippingLimitLower = neuralNetworkDto.clippingLimit_Lower
+                GradientClippingThreshold = neuralNetworkDto.GradientClippingThreshold
             };
             if (parameters.CostFunction == CostFunctionType.huberLoss)
             {
@@ -206,8 +205,7 @@ namespace CallaghanDev.ML
                 DefaultActivationType = neuralNetworkDto.DefaultActivationType,
                 CostFunction = neuralNetworkDto.costFunction,
                 L2RegulationLamda = neuralNetworkDto.l2RegulationLamda,
-                ClippingLimitUpper = neuralNetworkDto.clippingLimit_Upper,
-                ClippingLimitLower = neuralNetworkDto.clippingLimit_Lower
+                GradientClippingThreshold = neuralNetworkDto.GradientClippingThreshold,
             };
             if (parameters.CostFunction == CostFunctionType.huberLoss)
             {

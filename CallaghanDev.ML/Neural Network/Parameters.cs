@@ -15,8 +15,7 @@ namespace CallaghanDev.ML.NN
         public int HiddenLayerWidth { get; set; }
         public int NumberOfOutputs { get; set; }
         public double L2RegulationLamda { get; set; } = 0;
-        public float ClippingLimitUpper { get; set; } = float.MaxValue;
-        public float ClippingLimitLower { get; set; } = float.MinValue;
+        public float GradientClippingThreshold { get; set; } = 5;
         public float HuberLossDelta 
         { 
             get
@@ -47,8 +46,7 @@ namespace CallaghanDev.ML.NN
             sb.AppendLine($"  DefaultActivationType: {DefaultActivationType}");
             sb.AppendLine($"  CostFunction: {CostFunction}");
             sb.AppendLine($"  L2RegulationLamda: {L2RegulationLamda}");
-            sb.AppendLine($"  ClippingLimitUpper: {ClippingLimitUpper}");
-            sb.AppendLine($"  ClippingLimitLower: {ClippingLimitLower}");
+            sb.AppendLine($"  GradientClippingThreshold: {GradientClippingThreshold}");
             if (CostFunction == CostFunctionType.huberLoss)
             {
                 sb.AppendLine($"  HuberLossDelta: {HuberLossDelta}");

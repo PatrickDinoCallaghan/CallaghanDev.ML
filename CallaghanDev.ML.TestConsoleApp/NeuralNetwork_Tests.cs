@@ -109,7 +109,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 5,
+                NoHiddenLayers = 4,
                 HiddenLayerWidth = 5,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
