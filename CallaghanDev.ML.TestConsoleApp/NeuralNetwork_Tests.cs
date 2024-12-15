@@ -109,7 +109,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 4,
+                NoHiddenLayers = 5,
                 HiddenLayerWidth = 5,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
@@ -275,6 +275,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
         public void NeuralNetworkOrTest()
         {
+            Console.WriteLine("NeuralNetworkOrTest");
             double[][] inputs = new double[][]
             {
                 new double[] { 0, 0 },
@@ -327,6 +328,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
         public void NeuralNetworkRegressionTest()
         {
+            Console.WriteLine("NeuralNetworkRegressionTest");
             double[][] inputs = new double[][]
             {
                 new double[] { 1 },
