@@ -10,8 +10,6 @@ namespace CallaghanDev.ML
         {
             Type type = neuralNetworkInstance.GetType();
 
-
-
             // Access private fields using reflection
             //FieldInfo DataField = type.GetField("Data", BindingFlags.NonPublic | BindingFlags.Instance);
             FieldInfo dataManagerField = type.GetField("dataManager", BindingFlags.NonPublic | BindingFlags.Instance);

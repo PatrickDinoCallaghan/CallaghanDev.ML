@@ -148,7 +148,8 @@ namespace CallaghanDev.ML
             var settings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.All,
-                Formatting = Formatting.Indented
+                Formatting = Formatting.Indented,
+                FloatParseHandling = FloatParseHandling.Double
             };
 
             settings.Converters.Add(new MatrixArrayJsonConverter<Neurite>());
@@ -185,7 +186,8 @@ namespace CallaghanDev.ML
             var settings = new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.All,
-                Formatting = Formatting.Indented
+                Formatting = Formatting.Indented,
+                FloatFormatHandling = FloatFormatHandling.String
             };
             settings.Converters.Add(new MatrixArrayJsonConverter<Neurite>());
             settings.Converters.Add(new MatrixJsonConverter<INeuron>());
