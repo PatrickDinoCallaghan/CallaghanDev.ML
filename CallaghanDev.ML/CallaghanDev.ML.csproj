@@ -8,25 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="GeneralPRNGCracking\**" />
-    <Compile Remove="OpenAI\**" />
-    <EmbeddedResource Remove="GeneralPRNGCracking\**" />
-    <EmbeddedResource Remove="OpenAI\**" />
-    <None Remove="GeneralPRNGCracking\**" />
-    <None Remove="OpenAI\**" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Remove="Neural Network\NeuralNetwork-Desktop-PC.cs" />
-    <Compile Remove="NeuralNetwork-LAPTOP-PC.cs" />
-    <Compile Remove="Program-Desktop-PC.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Remove="mnist_train.csv" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="ILGPU" Version="1.5.1" />
     <PackageReference Include="ILGPU.Algorithms" Version="1.5.1" />
     <PackageReference Include="MathNet.Numerics" Version="6.0.0-beta1" />
