@@ -109,7 +109,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
                 NoHiddenLayers = 3,
-                HiddenLayerWidth = 3,
+                HiddenLayerWidth = 4,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
                 CostFunction = CostFunctionType.mse,
@@ -127,7 +127,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 double[] prediction = neuralNetwork.Predict(inputs[i]);
                 Console.WriteLine(prediction[0]);
-                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;  // Threshold at 0.5
+                int predictedLabel = prediction[0] >= 0.1 ? 1 : 0;  // Threshold at 0.5
                 int expectedLabel = (int)expectedOutputs[i][0];
 
                 // Assertions

@@ -27,8 +27,6 @@ namespace CallaghanDev.ML.NN
 
             random = new Random();
 
-
-
             if (!LoadingFromFile)
             {
                 NeuriteTensor = new Matrix<Neurite>[parameters.NoHiddenLayers + 1];

@@ -8,7 +8,6 @@ namespace CallaghanDev.ML.NN.Training
 {
     public class BackPropergationManager : TrainingManagerBase, ITrainingManager
     {
-        private List<BatchNormalization> batchNormalizationLayers;
 
         public BackPropergationManager(
             CostFunctionManager costFunctionManager,
@@ -16,16 +15,7 @@ namespace CallaghanDev.ML.NN.Training
             AccelerationManager accelerationManager,
             Parameters parameters,
             Action ForwardPropagate)
-            : base(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate)
-        {
-            // Initialize BatchNormalization instances for each layer
-            batchNormalizationLayers = new List<BatchNormalization>();
-            for (int i = 0; i < parameters.NoHiddenLayers; i++)
-            {
-                int numFeatures = dataManager.Neurons[i].Length; // Number of neurons in the current layer
-                batchNormalizationLayers.Add(new BatchNormalization(numFeatures));
-            }
-        }
+            : base(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate) { }
 
         private void UpdateOutputLayerGradients(double[] costs, double learningRate, double lambda = 0)
         {
@@ -157,19 +147,6 @@ namespace CallaghanDev.ML.NN.Training
         private void Learn(double[] trainingData, double[] ExpectedResult, double LearningRate)
         {
             SetSensoryNeuronsValues(trainingData);
-
-            // Apply batch normalization before propagating activations
-            for (int layerIndex = 0; layerIndex < batchNormalizationLayers.Count; layerIndex++)
-            {
-                double[] activations = _dataManager.Neurons[layerIndex].Select(n => n.Activation).ToArray();
-                double[] normalizedActivations = batchNormalizationLayers[layerIndex].Forward(activations, isTraining: true);
-
-                // Update neuron activations
-                for (int i = 0; i < normalizedActivations.Length; i++)
-                {
-                    _dataManager.Neurons[layerIndex][i].Activation = normalizedActivations[i];
-                }
-            }
 
             _ForwardPropagate();
             BackPropagate(LearningRate, ExpectedResult);
@@ -416,7 +393,7 @@ namespace CallaghanDev.ML.NN.Training
         }
 
 
-    }*/
+    }
     public class BatchNormalization
     {
         private double[] gamma;  // Scale parameter
@@ -487,18 +464,23 @@ namespace CallaghanDev.ML.NN.Training
 
             return normalized;
         }
-
-        public void Backward(double[] inputs, double[] gradients)
+        public double[] Backward(double[] inputs, double[] gradients)
         {
             int batchSize = inputs.Length;
 
-            // Compute gradients for gamma and beta
+            // Calculate batch mean and variance
+            double batchMean = inputs.Average();
+            double batchVariance = inputs.Select(x => Math.Pow(x - batchMean, 2)).Average();
+
+            // Normalize inputs
+            double[] normalized = inputs.Select(x => (x - batchMean) / Math.Sqrt(batchVariance + epsilon)).ToArray();
+
+            // Gradients for gamma and beta
             double[] dGamma = new double[gamma.Length];
             double[] dBeta = new double[beta.Length];
-
             for (int i = 0; i < inputs.Length; i++)
             {
-                dGamma[i] += gradients[i] * (inputs[i] - runningMean[i]) / Math.Sqrt(runningVariance[i] + epsilon);
+                dGamma[i] += gradients[i] * normalized[i];
                 dBeta[i] += gradients[i];
             }
 
@@ -508,7 +490,18 @@ namespace CallaghanDev.ML.NN.Training
                 gamma[i] -= dGamma[i];
                 beta[i] -= dBeta[i];
             }
-        }
-    }
 
+            // Gradient w.r.t. inputs
+            double[] dx = new double[inputs.Length];
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                dx[i] = (1.0 / batchSize) * gamma[i] / Math.Sqrt(batchVariance + epsilon) *
+                        (batchSize * gradients[i] - dBeta[i] - normalized[i] * dGamma[i]);
+            }
+
+            return dx;
+        }
+
+    }
+    */
 }
