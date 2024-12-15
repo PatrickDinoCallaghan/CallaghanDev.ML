@@ -179,42 +179,7 @@ namespace CallaghanDev.ML
 
             return neuralNetwork;
         }
-        public static NeuralNetwork TryLoad(string FileName, AccelerationType accelerationType)
-        {
-            var settings = new JsonSerializerSettings
-            {
-                TypeNameHandling = TypeNameHandling.All,
-                Formatting = Formatting.Indented
-            };
 
-            settings.Converters.Add(new MatrixArrayJsonConverter<Neurite>());
-            settings.Converters.Add(new MatrixJsonConverter<INeuron>());
-
-
-            string json = File.ReadAllText(FileName);
-            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings)
-            ?? throw new InvalidOperationException("Deserialization failed, object is null.");
-
-            Parameters parameters = new Parameters()
-            {
-                AccelerationType = accelerationType,
-                SensoryNeurons = neuralNetworkDto.Data.Column(0).Select(r => (SensoryNeuron)r).ToArray(),
-                NoHiddenLayers = neuralNetworkDto.NoHiddenLayers,
-                HiddenLayerWidth = neuralNetworkDto.HiddenLayerWidth,
-                NumberOfOutputs = neuralNetworkDto.NumberOfOutputs,
-                DefaultActivationType = neuralNetworkDto.DefaultActivationType,
-                CostFunction = neuralNetworkDto.costFunction,
-                L2RegulationLamda = neuralNetworkDto.l2RegulationLamda,
-                GradientClippingThreshold = neuralNetworkDto.GradientClippingThreshold,
-            };
-            if (parameters.CostFunction == CostFunctionType.huberLoss)
-            {
-                parameters.HuberLossDelta = neuralNetworkDto.HuberLossDelta;
-            }
-            NeuralNetwork neuralNetwork = new NeuralNetwork(neuralNetworkDto.Data, neuralNetworkDto.NeuriteTensor, parameters);
-
-            return neuralNetwork;
-        }
         public static void Save(NeuralNetwork neuralNetwork, string FileName)
         {
             var settings = new JsonSerializerSettings
