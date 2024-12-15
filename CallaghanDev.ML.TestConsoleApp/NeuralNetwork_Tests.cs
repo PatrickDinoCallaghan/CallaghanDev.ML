@@ -76,8 +76,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Console.ReadKey();
         }
-
-        public void NeuralNetworkXorTest()
+       public void NeuralNetworkXorTest()
         {
             Console.WriteLine("NeuralNetworkXorTest:");
             double[][] inputs;
@@ -109,58 +108,27 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 5,
-                HiddenLayerWidth = 5,
+                NoHiddenLayers = 3,
+                HiddenLayerWidth = 3,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
-                CostFunction = CostFunctionType.mse
+                CostFunction = CostFunctionType.mse,
+                GradientClippingThreshold = (float)1
             };
 
             // Setup the neural network
-            NeuralNetwork neuralNetwork;
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
 
-            // neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
-            // Train the neural network
+            neuralNetwork.Train(inputs, expectedOutputs, 0.1f, 1000);  // Train with 1000 epochs
 
-            // Console.WriteLine();
-
-            // Evaluate the network with sample inputs
-            try
-            {
-
-                neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
-            }
-            catch (Exception)
-            {
-
-                neuralNetwork = new NeuralNetwork(parameters);
-            }
-
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);  // Train with 1000 epochs
-
-            NeuralNetwork.Save(neuralNetwork, "test");
   
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
                 double[] prediction = neuralNetwork.Predict(inputs[i]);
-                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;  // Threshold at 0.5
-                int expectedLabel = (int)expectedOutputs[i][0];
-
-                // Assertions
-                Console.WriteLine($"Expected Label:{expectedLabel}, PredictedLabel:{predictedLabel}");
-            }
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 100);  // Train with 1000 epochs
-
-            neuralNetwork = NeuralNetwork.Load("test", AccelerationType.CPU);
-            Console.WriteLine();
-
-            // Evaluate the network with sample inputs
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                Console.WriteLine(prediction[0]);
                 int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;  // Threshold at 0.5
                 int expectedLabel = (int)expectedOutputs[i][0];
 
@@ -169,6 +137,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
         }
 
+ 
         public void NeuralNetworkAndGPUTest()
         {
             Console.WriteLine("GPU test");
@@ -203,7 +172,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 HiddenLayerWidth = 2,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
-                CostFunction = CostFunctionType.mse
+                CostFunction = CostFunctionType.mse,
+                GradientClippingThreshold = 1
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -255,7 +225,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 HiddenLayerWidth = 2,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
-                CostFunction = CostFunctionType.mse
+                CostFunction = CostFunctionType.mse,
+                GradientClippingThreshold = 1
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -307,7 +278,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 HiddenLayerWidth = 2,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
-                CostFunction = CostFunctionType.mse
+                CostFunction = CostFunctionType.mse,
+                GradientClippingThreshold = 1
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -359,7 +331,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 HiddenLayerWidth = 3,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
-                CostFunction = CostFunctionType.mse
+                CostFunction = CostFunctionType.mse,
+                GradientClippingThreshold = (float)0.8
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
