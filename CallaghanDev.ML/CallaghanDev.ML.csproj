@@ -35,23 +35,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="CallaghanDev.Common.Math">
-      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Common.Math\bin\Debug\net8.0\CallaghanDev.Common.Math.dll</HintPath>
-    </Reference>
-    <Reference Include="CallaghanDev.Utilities">
-      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.Utilities.dll</HintPath>
-      <Private>True</Private>
-      <EmbedInteropTypes>False</EmbedInteropTypes>
-    </Reference>
-    <Reference Include="CallaghanDev.XML">
-      <HintPath>..\..\CallaghanDev.Common\CallaghanDev.Utilities\bin\Debug\net8.0\CallaghanDev.XML.dll</HintPath>
-      <Private>True</Private>
-      <EmbedInteropTypes>False</EmbedInteropTypes>
-    </Reference>
+    <Folder Include="CurveFitting\" />
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="CurveFitting\" />
+    <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.Common.Math\CallaghanDev.Common.Math.csproj" />
+    <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.Utilities\CallaghanDev.Utilities.csproj" />
+    <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.XML\CallaghanDev.XML.csproj" />
   </ItemGroup>
 
 </Project>
