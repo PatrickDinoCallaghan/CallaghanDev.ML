@@ -25,6 +25,7 @@ namespace CallaghanDev.ML.NN
         {
             InitSensoryNeurons(sensoryNeurons);
 
+            //random = new Random(42);
             random = new Random();
 
             if (!LoadingFromFile)
@@ -34,6 +35,8 @@ namespace CallaghanDev.ML.NN
                 InitMotorLayers(parameters);
             }
             InitCalculationTensors();
+
+            
         }
 
         private void InitSensoryNeurons(SensoryNeuron[] sensoryNeurons)
@@ -72,6 +75,7 @@ namespace CallaghanDev.ML.NN
 
             }
         }
+
         private void InitMotorLayers(Parameters parameters)
         {
             int PreviousColIndex = Data.ColumnCount() - 1;
@@ -119,9 +123,24 @@ namespace CallaghanDev.ML.NN
             double u1 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double u2 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
-            return z * standardDeviation; // Scale by standard deviation
+            //return z * standardDeviation; // Scale by standard deviation
+            //Clip the generated values to a reasonable range to avoid extreme weights:
+            return Math.Max(-1 * standardDeviation, Math.Min(1 * standardDeviation, z * standardDeviation));
         }
 
+        private double GetRandomdouble(Random random, double min, double max)
+        {
+            if (min >= max)
+            {
+                throw new ArgumentException("The minimum value must be less than the maximum value.");
+            }
+
+            // Generate a random double between 0.0 (inclusive) and 1.0 (exclusive)
+            double randomValue = random.NextDouble();
+
+            // Scale and shift the value to the specified range
+            return min + (randomValue * (max - min));
+        }
         public static SensoryNeuron[] GetSensoryNeurons(double[][] TrainingData)
         {
             int TrainingDataLength = TrainingData.First().Length;

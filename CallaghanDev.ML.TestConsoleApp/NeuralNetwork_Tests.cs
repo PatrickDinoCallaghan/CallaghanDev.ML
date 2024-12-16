@@ -113,7 +113,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
                 CostFunction = CostFunctionType.mse,
-                GradientClippingThreshold = (float)1
+                GradientClippingThreshold = (float)1,
+                L2RegulationLamda = 0.01
             };
 
             // Setup the neural network
@@ -130,7 +131,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 int predictedLabel = prediction[0] >= 0.1 ? 1 : 0;  // Threshold at 0.5
                 int expectedLabel = (int)expectedOutputs[i][0];
 
-                // Assertions
                 Console.WriteLine($"Expected Label:{expectedLabel}, PredictedLabel:{predictedLabel}");
             }
         }
