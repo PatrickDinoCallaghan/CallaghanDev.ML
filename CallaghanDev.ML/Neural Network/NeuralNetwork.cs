@@ -49,11 +49,11 @@ namespace CallaghanDev.ML
 
     public class NeuralNetwork
     {
-        private Parameters parameters;
+        private readonly Parameters parameters;
         private readonly CostFunctionManager costFunctionManager;
         private readonly DataManager dataManager;
         private readonly AccelerationManager accelerationManager;
-        private ITrainingManager trainingManager;
+        private readonly ITrainingManager trainingManager;
 
         #region ctor
 
@@ -63,7 +63,7 @@ namespace CallaghanDev.ML
             costFunctionManager = new CostFunctionManager(dataManager.Data, parameters);
             accelerationManager = new AccelerationManager(parameters);
             dataManager.InitializeData(parameters, parameters.SensoryNeurons);
-            trainingManager = new BackPropergationManager(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate);
+            trainingManager = new PropagationManager(costFunctionManager, dataManager, accelerationManager, parameters);
             this.parameters = parameters;
         }
         private NeuralNetwork(Matrix<INeuron> InData, Matrix<Neurite>[] InNeuriteTensor, Parameters parameters)
@@ -76,7 +76,7 @@ namespace CallaghanDev.ML
             costFunctionManager = new CostFunctionManager(dataManager.Data, parameters);
             accelerationManager = new AccelerationManager(parameters);
             dataManager.InitializeData(parameters, parameters.SensoryNeurons, true);
-            trainingManager = new BackPropergationManager(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate);
+            trainingManager = new PropagationManager(costFunctionManager, dataManager, accelerationManager, parameters);
             this.parameters = parameters;
         }
         #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
@@ -87,41 +87,6 @@ namespace CallaghanDev.ML
         }
         #endregion
 
-        private void ForwardPropagate()
-        {
-            int columnCount = dataManager.Data.ColumnCount();
-            for (int j = 1; j < columnCount; j++)
-            {
-                int previousLayerNeuronCount = dataManager.Neurons[j - 1].Length;
-                int currentLayerNeuronCount = dataManager.Neurons[j].Length;
-
-                // Initialize arrays
-                double[] dotProduct = new double[currentLayerNeuronCount];
-
-                Task<double[]> sourceNeuronsActivationsTask = Task.Run(() => dataManager.Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray());
-
-                Task<double[,]> neuritesWeightsTask = Task.Run(() => dataManager.NeuriteTensor[j - 1].SelectTranspose(r => r.Weight).ToArray());
-
-                // Wait for all tasks to complete
-                Task.WaitAll(sourceNeuronsActivationsTask, neuritesWeightsTask);
-
-                dotProduct = accelerationManager.CalculateDotProduct(neuritesWeightsTask.Result, sourceNeuronsActivationsTask.Result);
-
-                Parallel.For(0, dotProduct.Length, c =>
-                {
-                    dataManager.Neurons[j][c].Activation = dataManager.Neurons[j][c].activationFunction(dotProduct[c] + dataManager.Neurons[j][c].Bias);
-
-                    if (double.IsNaN(dataManager.Neurons[j][c].Activation))
-                    {
-                        throw new InfinityException($"NaN detected in forward propagation at layer {j}, neuron {c}, type:{dataManager.Neurons[j][c].GetType().Name}");
-                    }
-                    if (double.IsInfinity(dataManager.Neurons[j][c].Activation))
-                    {
-                        throw new NaNException($"Infinity detected in forward propagation at layer {j}, neuron {c}, type:{dataManager.Neurons[j][c].GetType().Name}");
-                    }
-                });
-            }
-        }
         public void Train(double[][] trainingDataCollection, double[][] ExpectedResults, double LearningRate, int epochs, bool Silent = false)
         {
             trainingManager.Train(trainingDataCollection, ExpectedResults, LearningRate, epochs, Silent);
@@ -133,7 +98,7 @@ namespace CallaghanDev.ML
         public double[] Predict(double[] inputValues)
         {
             trainingManager.SetSensoryNeuronsValues(inputValues);
-            ForwardPropagate();
+            trainingManager.ComputeOutputs(); // Forward propagation for gradient descent  learning 
 
             INeuron[] outputNeurons = dataManager.Data.Column(dataManager.Data.ColumnCount() - 1).ToArray();
 

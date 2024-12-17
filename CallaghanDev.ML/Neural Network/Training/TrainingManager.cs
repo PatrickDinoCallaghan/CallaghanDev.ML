@@ -8,15 +8,13 @@ namespace CallaghanDev.ML.NN.Training
         protected DataManager _dataManager { get; set; }
         protected AccelerationManager _accelerationManager { get; set; }
         protected Parameters _parameters { get; set; }
-        protected Action _ForwardPropagate { get; set; }
 
-        protected TrainingManagerBase(CostFunctionManager costFunctionManager, DataManager dataManager, AccelerationManager accelerationManager, Parameters parameters, Action forwardPropagate)
+        protected TrainingManagerBase(CostFunctionManager costFunctionManager, DataManager dataManager, AccelerationManager accelerationManager, Parameters parameters)
         {
             _costFunctionManager = costFunctionManager;
             _dataManager = dataManager;
             _accelerationManager = accelerationManager;
             _parameters = parameters;
-            _ForwardPropagate = forwardPropagate;
         }
         public abstract void Train(double[][] trainingDataCollection, double[][] ExpectedResults, double LearningRate, int epochs, bool Silent = false);
         public abstract void Train(AccelerationType accelerationType, double[][] trainingDataCollection, double[][] ExpectedResults, double LearningRate, int epochs, bool Silent = false);

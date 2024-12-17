@@ -6,16 +6,15 @@ using System.Diagnostics.Metrics;
 
 namespace CallaghanDev.ML.NN.Training
 {
-    public class BackPropergationManager : TrainingManagerBase, ITrainingManager
+    public class PropagationManager : TrainingManagerBase, ITrainingManager
     {
 
-        public BackPropergationManager(
+        public PropagationManager(
             CostFunctionManager costFunctionManager,
             DataManager dataManager,
             AccelerationManager accelerationManager,
-            Parameters parameters,
-            Action ForwardPropagate)
-            : base(costFunctionManager, dataManager, accelerationManager, parameters, ForwardPropagate) { }
+            Parameters parameters)
+            : base(costFunctionManager, dataManager, accelerationManager, parameters) { }
 
         private void UpdateOutputLayerGradients(double[] costs, double learningRate, double lambda = 0)
         {
@@ -144,14 +143,49 @@ namespace CallaghanDev.ML.NN.Training
             Train(trainingDataCollection, ExpectedResults, LearningRate, epochs, Silent);
         }
 
+        public void ForwardPropagate()
+        {
+            int columnCount = _dataManager.Data.ColumnCount();
+            for (int j = 1; j < columnCount; j++)
+            {
+                int previousLayerNeuronCount = _dataManager.Neurons[j - 1].Length;
+                int currentLayerNeuronCount = _dataManager.Neurons[j].Length;
+
+                // Initialize arrays
+                double[] dotProduct = new double[currentLayerNeuronCount];
+
+                Task<double[]> sourceNeuronsActivationsTask = Task.Run(() => _dataManager.Neurons[j - 1].Where(r => r != null).Select(r => r.Activation).ToArray());
+
+                Task<double[,]> neuritesWeightsTask = Task.Run(() => _dataManager.NeuriteTensor[j - 1].SelectTranspose(r => r.Weight).ToArray());
+
+                // Wait for all tasks to complete
+                Task.WaitAll(sourceNeuronsActivationsTask, neuritesWeightsTask);
+
+                dotProduct = _accelerationManager.CalculateDotProduct(neuritesWeightsTask.Result, sourceNeuronsActivationsTask.Result);
+
+                Parallel.For(0, dotProduct.Length, c =>
+                {
+                    _dataManager.Neurons[j][c].Activation = _dataManager.Neurons[j][c].activationFunction(dotProduct[c] + _dataManager.Neurons[j][c].Bias);
+
+                    if (double.IsNaN(_dataManager.Neurons[j][c].Activation))
+                    {
+                        throw new InfinityException($"NaN detected in forward propagation at layer {j}, neuron {c}, type:{_dataManager.Neurons[j][c].GetType().Name}");
+                    }
+                    if (double.IsInfinity(_dataManager.Neurons[j][c].Activation))
+                    {
+                        throw new NaNException($"Infinity detected in forward propagation at layer {j}, neuron {c}, type:{_dataManager.Neurons[j][c].GetType().Name}");
+                    }
+                });
+            }
+        }
         private void Learn(double[] trainingData, double[] ExpectedResult, double LearningRate)
         {
             SetSensoryNeuronsValues(trainingData);
 
-            _ForwardPropagate.Invoke();
+            ForwardPropagate();
             BackPropagate(LearningRate, ExpectedResult);
         }
-        private void BackPropagate(double learningRate, double[] expectedOutputValues)
+        public void BackPropagate(double learningRate, double[] expectedOutputValues)
         {
             double[] costs = _costFunctionManager.CalculateCost(expectedOutputValues);
 
@@ -190,7 +224,7 @@ namespace CallaghanDev.ML.NN.Training
             return Weights;
         }
 
-        double[] ClipGradients(double[] gradients, double threshold)
+        private double[] ClipGradients(double[] gradients, double threshold)
         {
             double norm = Math.Sqrt(gradients.Sum(g => g * g));
 
@@ -204,6 +238,10 @@ namespace CallaghanDev.ML.NN.Training
             }
             return gradients;
         }
+
+        public void ComputeOutputs() => ForwardPropagate();
+
+        public void UpdateParameters(double learningRate, double[] expectedOutputValues) => BackPropagate(learningRate, expectedOutputValues);
     }
 
 }
