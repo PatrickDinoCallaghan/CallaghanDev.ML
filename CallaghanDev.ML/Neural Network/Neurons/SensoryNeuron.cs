@@ -38,11 +38,10 @@ namespace CallaghanDev.ML
 
         public SensoryNeuron(double MinValue, double MaxValue) : base(ActivationType.None)
         {
-            if (_MaxValue <= _MinValue)
+            if (MaxValue <= MinValue)
             {
-                throw new Exception();
+                throw new ArgumentOutOfRangeException();
             }
-            Debug.WriteLine($"MaxValue:{MaxValue} MinValue:{MinValue}");
             _MaxValue = MaxValue;
             _MinValue = MinValue;
 

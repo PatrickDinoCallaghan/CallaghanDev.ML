@@ -143,7 +143,7 @@ namespace CallaghanDev.ML.NN.Training
             Train(trainingDataCollection, ExpectedResults, LearningRate, epochs, Silent);
         }
 
-        public void ForwardPropagate()
+        private void ForwardPropagate()
         {
             int columnCount = _dataManager.Data.ColumnCount();
             for (int j = 1; j < columnCount; j++)
@@ -185,7 +185,7 @@ namespace CallaghanDev.ML.NN.Training
             ForwardPropagate();
             BackPropagate(LearningRate, ExpectedResult);
         }
-        public void BackPropagate(double learningRate, double[] expectedOutputValues)
+        private void BackPropagate(double learningRate, double[] expectedOutputValues)
         {
             double[] costs = _costFunctionManager.CalculateCost(expectedOutputValues);
 

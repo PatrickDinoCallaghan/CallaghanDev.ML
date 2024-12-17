@@ -108,12 +108,12 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 3,
+                NoHiddenLayers = 2,
                 HiddenLayerWidth = 4,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
                 CostFunction = CostFunctionType.mse,
-                GradientClippingThreshold = 0.4f,
+                GradientClippingThreshold = 1f,
                 L2RegulationLamda = 0.01
             };
 
@@ -272,7 +272,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 2,
+                NoHiddenLayers = 1,
                 HiddenLayerWidth = 2,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,

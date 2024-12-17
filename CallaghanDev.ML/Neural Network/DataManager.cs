@@ -1,10 +1,13 @@
 ﻿using CallaghanDev.Common.Math;
 using CallaghanDev.Utilities.MathTools;
+using DocumentFormat.OpenXml.Wordprocessing;
 
 namespace CallaghanDev.ML.NN
 {
     public interface IDataManager
     {
+        //TODO: You have too many collections representing the same data
+        // Remove Neurons[][] and find a good way to extract this infor from Data directly
         public Matrix<INeuron> Data { get; set; }
     }
     public class DataManager : IDisposable
@@ -30,7 +33,6 @@ namespace CallaghanDev.ML.NN
         {
             InitSensoryNeurons(sensoryNeurons);
 
-            //random = new Random(42);
             random = new Random();
 
             if (!LoadingFromFile)
@@ -56,7 +58,9 @@ namespace CallaghanDev.ML.NN
             {
                 NeuriteTensor[j] = new Matrix<Neurite>();
 
-                int NumberOfNeronsInpreviousLayer = (int)Data.Column(j).Count();
+                int NumberOfNeuronsInpreviousLayer = (int)Data.Column(j).Count();
+                int NumberOfNeuronsInNextLayer = j == parameters.NoHiddenLayers - 1 ? parameters.NumberOfOutputs : parameters.HiddenLayerWidth;
+
                 for (int h = 0; h < parameters.HiddenLayerWidth; h++)
                 {
                     // if the next layer is the motor layer and it has fewer neurons this should be fewer 
@@ -64,11 +68,11 @@ namespace CallaghanDev.ML.NN
                     neuron.LayerIndex = j + 1;
                     Data[h, j + 1] = neuron;
 
-                    for (int i = 0; i < NumberOfNeronsInpreviousLayer; i++)
+                    for (int i = 0; i < NumberOfNeuronsInpreviousLayer; i++)
                     {
                         //double weight = GetRandomdouble(random,-1, 1);
-                        double weight = LeakyReLUInitializer(NumberOfNeronsInpreviousLayer);
-
+                        //double weight = LeakyReLUInitializer(NumberOfNeronsInpreviousLayer);
+                        double weight = Initializer(parameters.DefaultActivationType, NumberOfNeuronsInpreviousLayer, NumberOfNeuronsInNextLayer);
                         Neurite neurite = new Neurite(weight);
 
                         NeuriteTensor[j][h, i] = neurite;
@@ -119,6 +123,32 @@ namespace CallaghanDev.ML.NN
                 Neurons[layerIndex] = Neurons_WithNulls[layerIndex].Where(r => r != null).ToArray();
             }
         }
+
+
+
+
+        private double Initializer(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        {
+            switch (activationType)
+            {
+                case ActivationType.Tanh:
+                    return XavierGlorotInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Sigmoid:
+                    return XavierGlorotInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Leakyrelu:
+                    return LeakyReLUInitializer(incomingNeurites);
+                case ActivationType.Relu:
+                    return LeakyReLUInitializer(incomingNeurites);
+                
+            }
+
+            throw new NotImplementedException();
+        }
+        /// <summary>
+        /// He Initialization : ReLU / LeakyReLU Linear
+        /// </summary>
+        /// <param name="incomingNeurites"></param>
+        /// <returns></returns>
         private double LeakyReLUInitializer(int incomingNeurites)
         {
             double standardDeviation = Math.Sqrt(2.0 / incomingNeurites);
@@ -130,7 +160,28 @@ namespace CallaghanDev.ML.NN
             // Clip the generated values to a reasonable range to avoid extreme weights:
             return Math.Max(-1 * standardDeviation, Math.Min(1 * standardDeviation, z * standardDeviation));
         }
+        /// <summary>
+        /// Generates a weight using Xavier/Glorot Initialization. : Sigmoid/Tanh:
+        /// </summary>
+        /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
+        /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
+        /// <returns>A weight value initialized using Xavier/Glorot method.</returns>
+        public double XavierGlorotInitializer(int incomingNeurites, int outgoingNeurites)
+        {
+            if (incomingNeurites <= 0 || outgoingNeurites <= 0)
+                throw new ArgumentException("Neurites count must be positive.");
 
+            // Compute the standard deviation for Xavier Initialization
+            double standardDeviation = Math.Sqrt(2.0 / (incomingNeurites + outgoingNeurites));
+
+            // Box-Muller transform to generate normally distributed random value
+            double u1 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
+            double u2 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
+            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2); // Normally distributed random value
+
+            // Scale the value by the standard deviation
+            return z * standardDeviation;
+        }
         private double GetRandomdouble(Random random, double min, double max)
         {
             if (min >= max)
