@@ -113,7 +113,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
                 CostFunction = CostFunctionType.mse,
-                GradientClippingThreshold = (float)1,
+                GradientClippingThreshold = 0.4f,
                 L2RegulationLamda = 0.01
             };
 

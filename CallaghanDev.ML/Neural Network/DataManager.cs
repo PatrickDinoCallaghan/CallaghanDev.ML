@@ -53,7 +53,7 @@ namespace CallaghanDev.ML.NN
             {
                 NeuriteTensor[j] = new Matrix<Neurite>();
 
-                int NumberOfNeronsInpreviousLayer = (int)Data.Column(j).Length;
+                int NumberOfNeronsInpreviousLayer = (int)Data.Column(j).Count();
                 for (int h = 0; h < parameters.HiddenLayerWidth; h++)
                 {
                     // if the next layer is the motor layer and it has fewer neurons this should be fewer 
@@ -80,7 +80,7 @@ namespace CallaghanDev.ML.NN
         {
             int PreviousColIndex = Data.ColumnCount() - 1;
 
-            int NumberOfNeronsInpreviousLayer = Data.Column(PreviousColIndex).Length;
+            int NumberOfNeronsInpreviousLayer = Data.Column(PreviousColIndex).Count();
             if (NumberOfNeronsInpreviousLayer != parameters.HiddenLayerWidth)
             {
                 throw new Exception();

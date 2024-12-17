@@ -135,7 +135,7 @@ namespace CallaghanDev.ML
             trainingManager.SetSensoryNeuronsValues(inputValues);
             ForwardPropagate();
 
-            INeuron[] outputNeurons = dataManager.Data.Column(dataManager.Data.ColumnCount() - 1);
+            INeuron[] outputNeurons = dataManager.Data.Column(dataManager.Data.ColumnCount() - 1).ToArray();
 
             var prediction = outputNeurons.Select(neuron => neuron.Activation).ToArray();
 

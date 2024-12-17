@@ -19,9 +19,15 @@ namespace CallaghanDev.ML.TestConsoleApp
             };
 
 
-            TestNN neuralNetwork_Tests = new TestNN();
+            TestNN neuralNetwork_Tests  = new TestNN();
 
             //TestNN.Run();
+            for (int i = 0; i < 100; i++)
+            {
+
+                TestNN neuralNetwork_Tests2 = new TestNN();
+                neuralNetwork_Tests2.NeuralNetworkXorTest();
+            }
             neuralNetwork_Tests.NeuralNetworkXorTest();
             neuralNetwork_Tests.NeuralNetworkXorTest();
             neuralNetwork_Tests.NeuralNetworkOrTest();

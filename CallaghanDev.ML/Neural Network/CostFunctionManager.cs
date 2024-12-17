@@ -56,7 +56,7 @@ namespace CallaghanDev.ML.NN
         public double[] CalculateCost(double[] expectedOutputValues)
         {
             int columnIndex = _Data.ColumnCount() - 1;
-            INeuron[] MotorNeurons = _Data.Column(columnIndex);
+            INeuron[] MotorNeurons = _Data.Column(columnIndex).ToArray();
             double[] costDifferences = new double[_parameters.NumberOfOutputs];
 
             Parallel.For(0, _parameters.NumberOfOutputs, i =>
