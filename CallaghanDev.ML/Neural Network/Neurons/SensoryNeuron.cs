@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using System.Diagnostics;
 
 namespace CallaghanDev.ML
 {
@@ -35,13 +36,13 @@ namespace CallaghanDev.ML
             }
         }
 
-        public SensoryNeuron(double MaxValue, double MinValue) : base(ActivationType.None)
+        public SensoryNeuron(double MinValue, double MaxValue) : base(ActivationType.None)
         {
-            if (_MaxValue < _MinValue)
+            if (_MaxValue <= _MinValue)
             {
                 throw new Exception();
             }
-
+            Debug.WriteLine($"MaxValue:{MaxValue} MinValue:{MinValue}");
             _MaxValue = MaxValue;
             _MinValue = MinValue;
 

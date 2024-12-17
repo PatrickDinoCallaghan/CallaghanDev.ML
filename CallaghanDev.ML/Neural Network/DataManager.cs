@@ -3,16 +3,21 @@ using CallaghanDev.Utilities.MathTools;
 
 namespace CallaghanDev.ML.NN
 {
+    public interface IDataManager
+    {
+        public Matrix<INeuron> Data { get; set; }
+    }
     public class DataManager : IDisposable
     {
         public Matrix<INeuron> Data = new Matrix<INeuron>();
+
+        public INeuron[][] Neurons;
 
         // This structure arranges each element in the array of matrices to represent a matrix associated with a specific layer. Starting at the first hidden layer from the input layer
         // Each row corresponds to a neuron's dendrites in the hidden layer, indicating these neurons originate from the current layer, and connect to each neuron in the next layer.
         // Transposing this matrix switches the focus from source neurons in the current layer to target neurons in the subsequent layer, and their connections to each neuron in the subsequent layer.
         public Matrix<Neurite>[] NeuriteTensor;
 
-        public INeuron[][] Neurons;
 
         private Parameters _parameters;
         private Random random;
@@ -35,8 +40,6 @@ namespace CallaghanDev.ML.NN
                 InitMotorLayers(parameters);
             }
             InitCalculationTensors();
-
-            
         }
 
         private void InitSensoryNeurons(SensoryNeuron[] sensoryNeurons)
@@ -123,8 +126,8 @@ namespace CallaghanDev.ML.NN
             double u1 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double u2 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
-            //return z * standardDeviation; // Scale by standard deviation
-            //Clip the generated values to a reasonable range to avoid extreme weights:
+            // return z * standardDeviation; // Scale by standard deviation
+            // Clip the generated values to a reasonable range to avoid extreme weights:
             return Math.Max(-1 * standardDeviation, Math.Min(1 * standardDeviation, z * standardDeviation));
         }
 
@@ -163,8 +166,7 @@ namespace CallaghanDev.ML.NN
                 {
                     if (datapoint[i] < MinMaxArray[i].Item1)
                     {
-                        Tuple<double, double> NewTuple = new Tuple<double, double>(datapoint[i], Math.Floor(MinMaxArray[i].Item2));
-
+                        Tuple<double, double> NewTuple = new Tuple<double, double>(Math.Floor(datapoint[i]), (MinMaxArray[i].Item2));
                         MinMaxArray[i] = NewTuple;
                     }
                     if (datapoint[i] > MinMaxArray[i].Item2)
@@ -177,9 +179,9 @@ namespace CallaghanDev.ML.NN
 
             SensoryNeuron[] inputNeurons = new SensoryNeuron[TrainingDataLength];
 
-            for (int i = 0; i < TrainingDataLength; i++)  // XOR problem has 2 inputs
+            for (int i = 0; i < TrainingDataLength; i++) 
             {
-                inputNeurons[i] = (new SensoryNeuron(MinMaxArray[i].Item2, MinMaxArray[i].Item1));
+                inputNeurons[i] = (new SensoryNeuron(MinMaxArray[i].Item1, MinMaxArray[i].Item2));
             }
 
             return inputNeurons;
