@@ -20,13 +20,20 @@ namespace CallaghanDev.ML.TestConsoleApp
 
 
             TestNN neuralNetwork_Tests  = new TestNN();
-
+            //neuralNetwork_Tests.NeuralNetworkXorTest();
+            neuralNetwork_Tests.NeuralNetworkTwoSpiralsTest();
             //TestNN.Run();
             for (int i = 0; i < 100; i++)
             {
-
                 TestNN neuralNetwork_Tests2 = new TestNN();
                 neuralNetwork_Tests2.NeuralNetworkXorTest();
+                try
+                {
+                }
+                catch (TrainingFailureException ex)
+                {
+                    Console.WriteLine(ex.Failure.ToString());
+                }
             }
             neuralNetwork_Tests.NeuralNetworkXorTest();
             neuralNetwork_Tests.NeuralNetworkXorTest();

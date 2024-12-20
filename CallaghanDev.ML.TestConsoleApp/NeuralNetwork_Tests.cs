@@ -135,7 +135,90 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
         }
 
- 
+        public void NeuralNetworkTwoSpiralsTest()
+        {
+            Console.WriteLine("NeuralNetworkTwoSpiralsTest:");
+
+            // Generate two interleaving spirals dataset
+            int pointsPerSpiral = 500;
+            double[][] inputs = new double[pointsPerSpiral * 2][];
+            double[][] expectedOutputs = new double[pointsPerSpiral * 2][];
+
+            // Parameters to generate the spiral
+            // t ranges from 0 to a certain value (e.g., 5 rotations * 2π = ~31.4)
+            double maxTheta = 5 * Math.PI;
+            double step = maxTheta / (pointsPerSpiral - 1);
+
+            int index = 0;
+            for (int i = 0; i < pointsPerSpiral; i++)
+            {
+                double t = i * step;
+                // First spiral (Class 0)
+                double x1 = t * Math.Cos(t);
+                double y1 = t * Math.Sin(t);
+                inputs[index] = new double[] { x1, y1 };
+                expectedOutputs[index] = new double[] { 0 };
+                index++;
+
+                // Second spiral (Class 1), offset by π in angle
+                double x2 = t * Math.Cos(t + Math.PI);
+                double y2 = t * Math.Sin(t + Math.PI);
+                inputs[index] = new double[] { x2, y2 };
+                expectedOutputs[index] = new double[] { 1 };
+                index++;
+            }
+
+            // Normalize or scale inputs if needed (optional)
+            // For example, you could divide by maxTheta to scale down values.
+
+            // Initialize sensory neurons based on input range
+            // Assuming spiral coordinates may range roughly in [-maxTheta, maxTheta]
+            double inputMin = -maxTheta;
+            double inputMax = maxTheta;
+            List<SensoryNeuron> inputNeurons = new List<SensoryNeuron>();
+            for (int i = 0; i < 2; i++)  // Spiral problem has 2 inputs (x, y)
+            {
+                inputNeurons.Add(new SensoryNeuron(inputMin, inputMax));
+            }
+
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                SensoryNeurons = inputNeurons.ToArray(),
+                NoHiddenLayers = 2,
+                HiddenLayerWidth = 16,
+                NumberOfOutputs = 1,
+                DefaultActivationType = ActivationType.Leakyrelu,
+                CostFunction = CostFunctionType.mse,
+                GradientClippingThreshold = 1f,
+                L2RegulationLamda = 0.01
+            };
+
+            // Setup the neural network
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
+
+            // Train the network
+            // Adjust learning rate, epochs as needed. Two-spirals is a tough problem.
+            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 5000);
+
+            // Evaluate on some sample points from the dataset
+            // We'll just take a few random points to check how the network responds
+            Random rnd = new Random(42);
+            for (int i = 0; i < 10; i++)
+            {
+                int sampleIndex = rnd.Next(inputs.Length);
+                double[] sampleInput = inputs[sampleIndex];
+                double[] prediction = neuralNetwork.Predict(sampleInput);
+
+                // Classify based on a threshold
+                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
+                int expectedLabel = (int)expectedOutputs[sampleIndex][0];
+
+                Console.WriteLine($"Input: ({sampleInput[0]:F2}, {sampleInput[1]:F2}) " +
+                                  $"Expected: {expectedLabel}, Predicted: {predictedLabel}, Raw Output: {prediction[0]:F4}");
+            }
+        }
+
         public void NeuralNetworkAndGPUTest()
         {
             Console.WriteLine("GPU test");

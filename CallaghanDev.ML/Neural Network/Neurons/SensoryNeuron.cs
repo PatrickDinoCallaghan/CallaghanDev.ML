@@ -35,12 +35,17 @@ namespace CallaghanDev.ML
                 _Value = value;
             }
         }
+        [JsonConstructor]
+        public SensoryNeuron( ) : base(ActivationType.None)
+        {
+
+        }
 
         public SensoryNeuron(double MinValue, double MaxValue) : base(ActivationType.None)
         {
             if (MaxValue <= MinValue)
             {
-                throw new ArgumentOutOfRangeException();
+               throw new ArgumentOutOfRangeException();
             }
             _MaxValue = MaxValue;
             _MinValue = MinValue;

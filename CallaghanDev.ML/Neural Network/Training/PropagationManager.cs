@@ -34,7 +34,6 @@ namespace CallaghanDev.ML.NN.Training
                 double activationDerivative = motorNeuron.activationFunctionDeriv(motorNeuron.Activation);
                 gradients[i] = -costs[i] * activationDerivative;
             });
-
             gradients = ClipGradients(gradients, _parameters.GradientClippingThreshold);
 
             Parallel.For(0, motorNeuronCount, i =>
@@ -62,6 +61,14 @@ namespace CallaghanDev.ML.NN.Training
 
                 motorNeuron.Bias -= learningRate * gradients[i];
             });
+
+
+            double maxGradient = Math.Abs(gradients.Max());
+            if (maxGradient > Math.Pow(10, 6))
+            {
+                throw new TrainingFailureException(FailureType.ExplodingGradient);
+            }
+
         }
 
         private void UpdateHiddenLayerGradients(double learningRate)
@@ -176,8 +183,12 @@ namespace CallaghanDev.ML.NN.Training
                         throw new NaNException($"Infinity detected in forward propagation at layer {j}, neuron {c}, type:{_dataManager.Neurons[j][c].GetType().Name}");
                     }
                 });
+
+
+
             }
         }
+
         private void Learn(double[] trainingData, double[] ExpectedResult, double LearningRate)
         {
             SetSensoryNeuronsValues(trainingData);

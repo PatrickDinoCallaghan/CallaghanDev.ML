@@ -1,5 +1,6 @@
 ﻿using CallaghanDev.Common.Math;
 using CallaghanDev.Utilities.MathTools;
+using DocumentFormat.OpenXml.Spreadsheet;
 using DocumentFormat.OpenXml.Wordprocessing;
 
 namespace CallaghanDev.ML.NN
@@ -31,6 +32,7 @@ namespace CallaghanDev.ML.NN
 
         public void InitializeData(Parameters parameters, SensoryNeuron[] sensoryNeurons, bool LoadingFromFile = false)
         {
+            _parameters = parameters;
             InitSensoryNeurons(sensoryNeurons);
 
             random = new Random();
@@ -58,8 +60,9 @@ namespace CallaghanDev.ML.NN
             {
                 NeuriteTensor[j] = new Matrix<Neurite>();
 
-                int NumberOfNeuronsInpreviousLayer = (int)Data.Column(j).Count();
+                int NumberOfNeuronsInPreviousLayer = (int)Data.Column(j).Count();
                 int NumberOfNeuronsInNextLayer = j == parameters.NoHiddenLayers - 1 ? parameters.NumberOfOutputs : parameters.HiddenLayerWidth;
+                List<double> LayerWeights = new List<double>();
 
                 for (int h = 0; h < parameters.HiddenLayerWidth; h++)
                 {
@@ -68,18 +71,15 @@ namespace CallaghanDev.ML.NN
                     neuron.LayerIndex = j + 1;
                     Data[h, j + 1] = neuron;
 
-                    for (int i = 0; i < NumberOfNeuronsInpreviousLayer; i++)
+                    for (int i = 0; i < NumberOfNeuronsInPreviousLayer; i++)
                     {
-                        //double weight = GetRandomdouble(random,-1, 1);
-                        //double weight = LeakyReLUInitializer(NumberOfNeronsInpreviousLayer);
-                        double weight = Initializer(parameters.DefaultActivationType, NumberOfNeuronsInpreviousLayer, NumberOfNeuronsInNextLayer);
+                        double weight = Initializer(parameters.DefaultActivationType, NumberOfNeuronsInPreviousLayer, NumberOfNeuronsInNextLayer);
+                        LayerWeights.Add(weight);
                         Neurite neurite = new Neurite(weight);
 
                         NeuriteTensor[j][h, i] = neurite;
-
                     }
                 }
-
             }
         }
 
@@ -87,29 +87,28 @@ namespace CallaghanDev.ML.NN
         {
             int PreviousColIndex = Data.ColumnCount() - 1;
 
-            int NumberOfNeronsInpreviousLayer = Data.Column(PreviousColIndex).Count();
-            if (NumberOfNeronsInpreviousLayer != parameters.HiddenLayerWidth)
-            {
-                throw new Exception();
-            }
+            int NumberOfNeuronsInpreviousLayer = Data.Column(PreviousColIndex).Count();
+        
+
             NeuriteTensor[parameters.NoHiddenLayers] = new Matrix<Neurite>();
+            List<double> LayerWeights = new List<double>();
 
             for (int m = 0; m < parameters.NumberOfOutputs; m++)
             {
                 MotorNeuron neuron = new MotorNeuron(parameters.DefaultActivationType);
                 neuron.LayerIndex = PreviousColIndex + 1;
                 Data[m, PreviousColIndex + 1] = neuron;
-                for (int i = 0; i < NumberOfNeronsInpreviousLayer; i++)
+                for (int i = 0; i < NumberOfNeuronsInpreviousLayer; i++)
                 {
-                    //double weight = GetRandomdouble(random, -1,1);
-                    double weight = LeakyReLUInitializer(NumberOfNeronsInpreviousLayer);
+                    double weight = Initializer(parameters.DefaultActivationType, NumberOfNeuronsInpreviousLayer, 0);
+                    LayerWeights.Add(weight);
                     Neurite neurite = new Neurite(weight);
 
                     NeuriteTensor[parameters.NoHiddenLayers][m, i] = neurite;
-
                 }
             }
         }
+
         public void InitCalculationTensors()
         {
 
@@ -123,10 +122,6 @@ namespace CallaghanDev.ML.NN
                 Neurons[layerIndex] = Neurons_WithNulls[layerIndex].Where(r => r != null).ToArray();
             }
         }
-
-
-
-
         private double Initializer(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
         {
             switch (activationType)
@@ -139,10 +134,9 @@ namespace CallaghanDev.ML.NN
                     return LeakyReLUInitializer(incomingNeurites);
                 case ActivationType.Relu:
                     return LeakyReLUInitializer(incomingNeurites);
-                
+                default:
+                    return GetRandomDouble(random, -1, 1);
             }
-
-            throw new NotImplementedException();
         }
         /// <summary>
         /// He Initialization : ReLU / LeakyReLU Linear
@@ -156,9 +150,9 @@ namespace CallaghanDev.ML.NN
             double u1 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double u2 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
-            // return z * standardDeviation; // Scale by standard deviation
-            // Clip the generated values to a reasonable range to avoid extreme weights:
-            return Math.Max(-1 * standardDeviation, Math.Min(1 * standardDeviation, z * standardDeviation));
+            return z * standardDeviation; // Scale by standard deviation
+
+
         }
         /// <summary>
         /// Generates a weight using Xavier/Glorot Initialization. : Sigmoid/Tanh:
@@ -182,7 +176,7 @@ namespace CallaghanDev.ML.NN
             // Scale the value by the standard deviation
             return z * standardDeviation;
         }
-        private double GetRandomdouble(Random random, double min, double max)
+        private double GetRandomDouble(Random random, double min, double max)
         {
             if (min >= max)
             {
