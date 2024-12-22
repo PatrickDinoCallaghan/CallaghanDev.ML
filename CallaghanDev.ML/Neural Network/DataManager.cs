@@ -1,7 +1,4 @@
 ﻿using CallaghanDev.Common.Math;
-using CallaghanDev.Utilities.MathTools;
-using DocumentFormat.OpenXml.Spreadsheet;
-using DocumentFormat.OpenXml.Wordprocessing;
 
 namespace CallaghanDev.ML.NN
 {
@@ -73,7 +70,7 @@ namespace CallaghanDev.ML.NN
 
                     for (int i = 0; i < NumberOfNeuronsInPreviousLayer; i++)
                     {
-                        double weight = Initializer(parameters.DefaultActivationType, NumberOfNeuronsInPreviousLayer, NumberOfNeuronsInNextLayer);
+                        double weight = Initializer(parameters.ActivationDistribution, parameters.DefaultActivationType, NumberOfNeuronsInPreviousLayer, NumberOfNeuronsInNextLayer);
                         LayerWeights.Add(weight);
                         Neurite neurite = new Neurite(weight);
 
@@ -100,7 +97,7 @@ namespace CallaghanDev.ML.NN
                 Data[m, PreviousColIndex + 1] = neuron;
                 for (int i = 0; i < NumberOfNeuronsInpreviousLayer; i++)
                 {
-                    double weight = Initializer(parameters.DefaultActivationType, NumberOfNeuronsInpreviousLayer, 0);
+                    double weight = Initializer(parameters.ActivationDistribution, parameters.DefaultActivationType, NumberOfNeuronsInpreviousLayer, 0);
                     LayerWeights.Add(weight);
                     Neurite neurite = new Neurite(weight);
 
@@ -122,18 +119,49 @@ namespace CallaghanDev.ML.NN
                 Neurons[layerIndex] = Neurons_WithNulls[layerIndex].Where(r => r != null).ToArray();
             }
         }
-        private double Initializer(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+
+
+        private double Initializer(ActivationDistribution activationDistribution, ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        {
+            switch (activationDistribution)
+            {
+                case ActivationDistribution.Normal:
+                    return InitializerNormal(activationType, incomingNeurites, outgoingNeurites);
+                case ActivationDistribution.Uniform:
+                    return InitializerUniform(activationType, incomingNeurites, outgoingNeurites);
+                default:
+                    throw new NotImplementedException("Activation distribution not Implemented!");
+            }
+
+        }
+        private double InitializerNormal(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
         {
             switch (activationType)
             {
                 case ActivationType.Tanh:
-                    return XavierGlorotInitializer(incomingNeurites, outgoingNeurites);
+                    return XavierGlorotNormalInitializer(incomingNeurites, outgoingNeurites);
                 case ActivationType.Sigmoid:
-                    return XavierGlorotInitializer(incomingNeurites, outgoingNeurites);
+                    return XavierGlorotNormalInitializer(incomingNeurites, outgoingNeurites);
                 case ActivationType.Leakyrelu:
-                    return LeakyReLUInitializer(incomingNeurites);
+                    return HeNormalInitializer(incomingNeurites);
                 case ActivationType.Relu:
-                    return LeakyReLUInitializer(incomingNeurites);
+                    return HeNormalInitializer(incomingNeurites);
+                default:
+                    return GetRandomDouble(random, -1, 1);
+            }
+        }
+        private double InitializerUniform(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        {
+            switch (activationType)
+            {
+                case ActivationType.Tanh:
+                    return XavierGlorotUniformInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Sigmoid:
+                    return XavierGlorotUniformInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Leakyrelu:
+                    return HeUniformInitializer(incomingNeurites);
+                case ActivationType.Relu:
+                    return HeUniformInitializer(incomingNeurites);
                 default:
                     return GetRandomDouble(random, -1, 1);
             }
@@ -143,7 +171,7 @@ namespace CallaghanDev.ML.NN
         /// </summary>
         /// <param name="incomingNeurites"></param>
         /// <returns></returns>
-        private double LeakyReLUInitializer(int incomingNeurites)
+        private double HeNormalInitializer(int incomingNeurites)
         {
             double standardDeviation = Math.Sqrt(2.0 / incomingNeurites);
             // Generate a normally distributed random value
@@ -151,8 +179,6 @@ namespace CallaghanDev.ML.NN
             double u2 = 1.0 - random.NextDouble(); // Uniform (0,1] random double
             double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
             return z * standardDeviation; // Scale by standard deviation
-
-
         }
         /// <summary>
         /// Generates a weight using Xavier/Glorot Initialization. : Sigmoid/Tanh:
@@ -160,9 +186,9 @@ namespace CallaghanDev.ML.NN
         /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
         /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
         /// <returns>A weight value initialized using Xavier/Glorot method.</returns>
-        public double XavierGlorotInitializer(int incomingNeurites, int outgoingNeurites)
+        public double XavierGlorotNormalInitializer(int incomingNeurites, int outgoingNeurites)
         {
-            if (incomingNeurites <= 0 || outgoingNeurites <= 0)
+            if (incomingNeurites <= 0)
                 throw new ArgumentException("Neurites count must be positive.");
 
             // Compute the standard deviation for Xavier Initialization
@@ -176,6 +202,43 @@ namespace CallaghanDev.ML.NN
             // Scale the value by the standard deviation
             return z * standardDeviation;
         }
+        /// <summary>
+        /// He Initialization using uniform distribution for ReLU / LeakyReLU activations.
+        /// The weights are sampled from a uniform distribution in the range [-limit, limit].
+        /// </summary>
+        /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
+        /// <returns>A weight value initialized using He Uniform method.</returns>
+        private double HeUniformInitializer(int incomingNeurites)
+        {
+            if (incomingNeurites <= 0)
+                throw new ArgumentException("Neurites count must be positive.", nameof(incomingNeurites));
+
+            // Compute the limit for the uniform distribution
+            double limit = Math.Sqrt(6.0 / incomingNeurites);
+
+            // Generate a uniformly distributed random value in the range [-limit, limit]
+            return random.NextDouble() * (2 * limit) - limit;
+        }
+
+        /// <summary>
+        /// Xavier/Glorot Initialization using uniform distribution for Sigmoid/Tanh activations.
+        /// The weights are sampled from a uniform distribution in the range [-limit, limit].
+        /// </summary>
+        /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
+        /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
+        /// <returns>A weight value initialized using Xavier/Glorot Uniform method.</returns>
+        public double XavierGlorotUniformInitializer(int incomingNeurites, int outgoingNeurites)
+        {
+            if (incomingNeurites <= 0 )
+                throw new ArgumentException("Neurites count must be positive.");
+
+            // Compute the limit for the uniform distribution
+            double limit = Math.Sqrt(6.0 / (incomingNeurites + outgoingNeurites));
+
+            // Generate a uniformly distributed random value in the range [-limit, limit]
+            return random.NextDouble() * (2 * limit) - limit;
+        }
+
         private double GetRandomDouble(Random random, double min, double max)
         {
             if (min >= max)

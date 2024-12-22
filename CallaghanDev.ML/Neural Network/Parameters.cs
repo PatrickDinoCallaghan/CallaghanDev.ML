@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Text;
+﻿using System.Text;
 
 namespace CallaghanDev.ML.NN
 {
@@ -10,6 +9,7 @@ namespace CallaghanDev.ML.NN
         public AccelerationType AccelerationType { get { return _AccelerationType; } set { _AccelerationType = value; } }
         public ActivationType DefaultActivationType { get; set; }
         public CostFunctionType CostFunction { get; set; }
+        public ActivationDistribution ActivationDistribution { get; set; }
         public SensoryNeuron[] SensoryNeurons { get; set; }
         public int NoHiddenLayers { get; set; }
         public int HiddenLayerWidth { get; set; }

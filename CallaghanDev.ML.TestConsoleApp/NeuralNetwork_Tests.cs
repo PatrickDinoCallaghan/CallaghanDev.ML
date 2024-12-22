@@ -1,9 +1,4 @@
 ﻿using CallaghanDev.ML.NN;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
@@ -108,7 +103,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 2,
+                NoHiddenLayers = 1,
                 HiddenLayerWidth = 4,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Leakyrelu,
@@ -249,8 +244,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 2,
-                HiddenLayerWidth = 2,
+                NoHiddenLayers = 1,
+                HiddenLayerWidth = 4,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
                 CostFunction = CostFunctionType.mse,
@@ -302,8 +297,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 2,
-                HiddenLayerWidth = 2,
+                NoHiddenLayers = 1,
+                HiddenLayerWidth = 4,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
                 CostFunction = CostFunctionType.mse,
@@ -356,11 +351,12 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.CPU,
                 SensoryNeurons = inputNeurons.ToArray(),
                 NoHiddenLayers = 1,
-                HiddenLayerWidth = 2,
+                HiddenLayerWidth = 4,
                 NumberOfOutputs = 1,
                 DefaultActivationType = ActivationType.Tanh,
                 CostFunction = CostFunctionType.mse,
-                GradientClippingThreshold = 1
+                GradientClippingThreshold = 1,
+                ActivationDistribution = ActivationDistribution.Uniform,
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -376,58 +372,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 int expectedLabel = (int)expectedOutputs[i][0];
 
                 Console.WriteLine($"Expected Label: {expectedLabel}, Predicted Label: {predictedLabel}");
-            }
-        }
-
-        public void NeuralNetworkRegressionTest()
-        {
-            Console.WriteLine("NeuralNetworkRegressionTest");
-            double[][] inputs = new double[][]
-            {
-                new double[] { 1 },
-                new double[] { 2 },
-                new double[] { 3 },
-                new double[] { 4 },
-                new double[] { 5 }
-            };
-
-            double[][] expectedOutputs = new double[][]
-            {
-                new double[] { 2 },
-                new double[] { 4 },
-                new double[] { 6 },
-                new double[] { 8 },
-                new double[] { 10 }
-            };
-
-            // Initialize sensory neurons
-            List<SensoryNeuron> inputNeurons = new List<SensoryNeuron>();
-            inputNeurons.Add(new SensoryNeuron(1, 5));
-
-            Parameters parameters = new Parameters()
-            {
-                AccelerationType = AccelerationType.CPU,
-                SensoryNeurons = inputNeurons.ToArray(),
-                NoHiddenLayers = 3,
-                HiddenLayerWidth = 3,
-                NumberOfOutputs = 1,
-                DefaultActivationType = ActivationType.Tanh,
-                CostFunction = CostFunctionType.mse,
-                GradientClippingThreshold = (float)0.8
-            };
-            // Setup the neural network
-            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
-
-            // Train the neural network
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
-
-            // Evaluate the network with sample inputs
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                double[] prediction = neuralNetwork.Predict(inputs[i]);
-                double expectedValue = expectedOutputs[i][0];
-
-                Console.WriteLine($"Expected Value: {expectedValue}, Predicted Value: {prediction[0]}");
             }
         }
 
