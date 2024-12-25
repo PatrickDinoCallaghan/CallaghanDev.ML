@@ -11,6 +11,22 @@ namespace CallaghanDev.ML
     public enum FailureType
     {
         /// <summary>
+        /// Activation Explosion
+        ///     - What Happens: Activation values become extremely large in one or more neurons, 
+        ///       overshadowing other signals and causing potential numeric overflow.
+        ///     - Cause: Poor weight initialization, large inputs, overly high learning rates, or 
+        ///       lack of normalization can lead to excessively high activations.
+        ///     - Impact: The network may produce NaN or Infinity values in subsequent layers, 
+        ///       destabilizing or halting training.
+        ///     - Solution:
+        ///         * Use batch normalization or layer normalization to keep activations in a stable range
+        ///         * Adjust or lower the learning rate
+        ///         * Employ better weight initialization (e.g., He or Xavier)
+        ///         * Perform gradient or activation clipping to limit extreme values
+        /// </summary>
+        ActivationExplosion,
+        /// <summary>
+        /// <summary>
         ///Vanishing Gradients,
         ///        - What Happens: Gradients become very small (close to zero) during backpropagation, especially in deep networks.
         ///        - Cause: Activation functions like Sigmoid or Tanh squash values to a small range. In deep layers, gradients vanish when multiplied during backpropagation.
