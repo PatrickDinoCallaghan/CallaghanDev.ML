@@ -25,7 +25,7 @@ namespace CallaghanDev.ML
         ///         * Perform gradient or activation clipping to limit extreme values
         /// </summary>
         ActivationExplosion,
-        /// <summary>
+
         /// <summary>
         ///Vanishing Gradients,
         ///        - What Happens: Gradients become very small (close to zero) during backpropagation, especially in deep networks.
