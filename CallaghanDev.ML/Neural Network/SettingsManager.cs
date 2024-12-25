@@ -1,5 +1,4 @@
-﻿using CallaghanDev.ML.Neural_Network.Exceptions;
-using CallaghanDev.Utilities.ConsoleHelper;
+﻿using CallaghanDev.Utilities.ConsoleHelper;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 

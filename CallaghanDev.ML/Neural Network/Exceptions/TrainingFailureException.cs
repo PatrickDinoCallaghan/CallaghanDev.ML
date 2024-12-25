@@ -34,6 +34,8 @@
         {
             switch (failure)
             {
+                case FailureType.ActivationExplosion:
+                    return "Activation Explosion: Activations have become very large.";
                 case FailureType.VanishingGradient:
                     return "Vanishing Gradients: Gradients become very small, stopping learning in early layers. Use ReLU, Leaky ReLU, or gradient clipping.";
                 case FailureType.ExplodingGradient:

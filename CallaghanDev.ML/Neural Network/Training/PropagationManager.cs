@@ -1,9 +1,6 @@
-﻿using CallaghanDev.ML.Neural_Network;
-using CallaghanDev.ML.Neural_Network.Exceptions;
+﻿using CallaghanDev.ML.Exceptions;
+using CallaghanDev.ML.Neural_Network;
 using CallaghanDev.Utilities.ConsoleHelper;
-using MathNet.Numerics.Statistics;
-using System.Diagnostics.Metrics;
-
 namespace CallaghanDev.ML.NN.Training
 {
     public class PropagationManager : TrainingManagerBase, ITrainingManager

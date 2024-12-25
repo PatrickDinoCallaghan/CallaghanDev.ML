@@ -1,4 +1,4 @@
-﻿namespace CallaghanDev.ML.Neural_Network.Exceptions
+﻿namespace CallaghanDev.ML.Exceptions
 {
     public class NaNException : Exception
     {

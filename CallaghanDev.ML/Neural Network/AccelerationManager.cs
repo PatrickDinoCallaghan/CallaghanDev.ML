@@ -7,9 +7,13 @@ using ILGPU.Algorithms;
 
 namespace CallaghanDev.ML.Neural_Network
 {
+    public interface IAccelerationManager
+    {
+
+    }
     public class AccelerationManager
     {
-        public Accelerator accelerator;
+        private Accelerator accelerator;
 
         private Action<Index1D, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, double, double> double_GPUBackpropResult;
 
