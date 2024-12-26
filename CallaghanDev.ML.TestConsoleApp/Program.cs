@@ -21,8 +21,8 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             TestNN neuralNetwork_Tests  = new TestNN();
 
-            neuralNetwork_Tests.NeuralNetworkOrTest();
             neuralNetwork_Tests.NeuralNetworkXorTest();
+            neuralNetwork_Tests.NeuralNetworkOrTest();
             neuralNetwork_Tests.NeuralNetworkAndCPUTest();
 
             neuralNetwork_Tests.NeuralNetworkAndGPUTest();

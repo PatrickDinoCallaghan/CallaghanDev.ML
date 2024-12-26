@@ -50,7 +50,7 @@ public class NeuralNetwork
         private readonly Parameters parameters;
         private readonly CostFunctionManager costFunctionManager;
         private readonly DataManager dataManager;
-        private readonly AccelerationManager accelerationManager;
+        private readonly IAccelerationManager accelerationManager;
         private readonly ITrainingManager trainingManager;
 
         #region ctor

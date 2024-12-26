@@ -10,7 +10,7 @@ namespace CallaghanDev.ML.NN.Training
         public PropagationManager(
             CostFunctionManager costFunctionManager,
             DataManager dataManager,
-            AccelerationManager accelerationManager,
+            IAccelerationManager accelerationManager,
             Parameters parameters)
             : base(costFunctionManager, dataManager, accelerationManager, parameters) { }
 
@@ -240,7 +240,7 @@ namespace CallaghanDev.ML.NN.Training
                 throw new TrainingFailureException(FailureType.ExplodingGradient);
             }
 
-            if (combinedNorm < _parameters.GradientVanishingThreshold && combinedNorm != 0)
+            if (combinedNorm < _parameters.GradientVanishingThreshold && !expectedOutputValues.Any(r=>r==0))
             {
                 throw new TrainingFailureException(FailureType.VanishingGradient);
             }

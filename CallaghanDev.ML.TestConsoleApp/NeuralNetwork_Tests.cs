@@ -116,7 +116,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
 
-            neuralNetwork.Train(inputs, expectedOutputs, 0.1f, 1000);  // Train with 1000 epochs
+            neuralNetwork.Train(inputs, expectedOutputs, 0.5f, 1000);  // Train with 1000 epochs
 
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)

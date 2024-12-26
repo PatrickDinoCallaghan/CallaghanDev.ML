@@ -6,10 +6,10 @@ namespace CallaghanDev.ML.NN.Training
     {
         protected CostFunctionManager _costFunctionManager { get; set; }
         protected DataManager _dataManager { get; set; }
-        protected AccelerationManager _accelerationManager { get; set; }
+        protected IAccelerationManager _accelerationManager { get; set; }
         protected Parameters _parameters { get; set; }
 
-        protected TrainingManagerBase(CostFunctionManager costFunctionManager, DataManager dataManager, AccelerationManager accelerationManager, Parameters parameters)
+        protected TrainingManagerBase(CostFunctionManager costFunctionManager, DataManager dataManager, IAccelerationManager accelerationManager, Parameters parameters)
         {
             _costFunctionManager = costFunctionManager;
             _dataManager = dataManager;

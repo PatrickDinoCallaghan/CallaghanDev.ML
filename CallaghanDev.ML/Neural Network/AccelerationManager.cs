@@ -9,9 +9,9 @@ namespace CallaghanDev.ML.Neural_Network
 {
     public interface IAccelerationManager
     {
-
+        public double[] CalculateDotProduct(double[,] matrix, double[] vector);
     }
-    public class AccelerationManager
+    public class AccelerationManager : IAccelerationManager
     {
         private Accelerator accelerator;
 
