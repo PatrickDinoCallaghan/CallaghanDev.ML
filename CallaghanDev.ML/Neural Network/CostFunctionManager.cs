@@ -21,7 +21,7 @@ namespace CallaghanDev.ML.NN
             Init(parameters.CostFunction);
         }
 
-        public void Init(CostFunctionType costFunctionType)
+        private void Init(CostFunctionType costFunctionType)
         {
             switch (costFunctionType)
             {

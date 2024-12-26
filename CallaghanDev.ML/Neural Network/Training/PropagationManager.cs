@@ -44,16 +44,14 @@ namespace CallaghanDev.ML.NN.Training
             int LastColumn = _dataManager.Data.ColumnCount() - 1;
             INeuron[] MotorNeurons = _dataManager.Data.Column(LastColumn).ToArray();
             int motorNeuronCount = MotorNeurons.Length;
-            double[,] dendritesWeights = GetWeightsMatrix(LastColumn - 1);
 
-            int dendriteCount = dendritesWeights.GetUpperBound(1) + 1;
+            int dendriteCount = _dataManager.NeuriteTensor[LastColumn - 1].ColumnCount();
 
             Parallel.For(0, motorNeuronCount, i =>
             {
                 INeuron motorNeuron = MotorNeurons[i];
 
                 motorNeuron.Delta = gradients[i];
-                int dendriteCount = dendritesWeights.GetUpperBound(1) + 1;
 
                 for (int j = 0; j < dendriteCount; j++)
                 {
@@ -90,7 +88,6 @@ namespace CallaghanDev.ML.NN.Training
                     throw new IndexOutOfRangeException("Mismatch in neuron array sizes.");
                 }
 
-                double[,] weightsMatrix = GetWeightsMatrix(layerIndex);
                 int numCurrentNeurons = hiddenNeurons.Length;
 
                 // Precompute required values
@@ -105,7 +102,7 @@ namespace CallaghanDev.ML.NN.Training
                     double sumOfWeightedDeltas = 0.0;
                     for (int i = 0; i < nextLayerNeurons.Length; i++)
                     {
-                        sumOfWeightedDeltas += weightsMatrix[i, neuronIndex] * OutputDeltasArray[i];
+                        sumOfWeightedDeltas += _dataManager.NeuriteTensor[layerIndex][i, neuronIndex].Weight * OutputDeltasArray[i];
                     }
 
                     // Calculate the delta for the current neuron
@@ -266,53 +263,6 @@ namespace CallaghanDev.ML.NN.Training
             }
 
             return scale;
-        }
-
-        private double[,] GetWeightsMatrix(int layerIndex)
-        {
-
-            double[,] Weights = new double[_dataManager.NeuriteTensor[layerIndex].RowCount(), _dataManager.NeuriteTensor[layerIndex].ColumnCount()];// NeuriteTensor[layerIndex].Select(r => r.Weight).ToArray();
-
-            int rowCount = _dataManager.NeuriteTensor[layerIndex].RowCount();
-            int colCount = _dataManager.NeuriteTensor[layerIndex].ColumnCount();
-
-
-            if (rowCount > colCount)
-            {
-                Parallel.For(0, rowCount, i =>
-                {
-                    for (int j = 0; j < colCount; j++)
-                    {
-                        Weights[i, j] = _dataManager.NeuriteTensor[layerIndex][i, j].Weight;
-                    }
-                });
-            }
-            else
-            {
-                Parallel.For(0, colCount, j =>
-                {
-                    for (int i = 0; i < rowCount; i++)
-                    {
-                        Weights[i, j] = _dataManager.NeuriteTensor[layerIndex][i, j].Weight;
-                    }
-                });
-            }
-            return Weights;
-        }
-
-        private double[] ClipGradients(double[] gradients, double threshold)
-        {
-            double norm = Math.Sqrt(gradients.Sum(g => g * g));
-
-
-            if (norm > threshold)
-            {
-                for (int i = 0; i < gradients.Length; i++)
-                {
-                    gradients[i] *= threshold / norm;
-                }
-            }
-            return gradients;
         }
 
         public void ComputeOutputs() => ForwardPropagate();
