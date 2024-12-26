@@ -1,6 +1,7 @@
 ﻿using CallaghanDev.ML.Exceptions;
 using CallaghanDev.ML.Neural_Network;
 using CallaghanDev.Utilities.ConsoleHelper;
+using DocumentFormat.OpenXml.Wordprocessing;
 namespace CallaghanDev.ML.NN.Training
 {
     public class PropagationManager : TrainingManagerBase, ITrainingManager
@@ -13,15 +14,12 @@ namespace CallaghanDev.ML.NN.Training
             Parameters parameters)
             : base(costFunctionManager, dataManager, accelerationManager, parameters) { }
 
-        private void UpdateOutputLayerGradients(double[] costs, double learningRate, double lambda = 0)
+
+        private double[] GetOutputLayerGradients(double[] costs, double learningRate)
         {
             int LastColumn = _dataManager.Data.ColumnCount() - 1;
             INeuron[] MotorNeurons = _dataManager.Data.Column(LastColumn).ToArray();
             int motorNeuronCount = MotorNeurons.Length;
-
-            double[,] dendritesWeights = GetWeightsMatrix(LastColumn - 1);
-
-            int dendriteCount = dendritesWeights.GetUpperBound(1) + 1;
 
             double[] gradients = new double[motorNeuronCount];
 
@@ -31,7 +29,24 @@ namespace CallaghanDev.ML.NN.Training
                 double activationDerivative = motorNeuron.activationFunctionDeriv(motorNeuron.Activation);
                 gradients[i] = -costs[i] * activationDerivative;
             });
-            gradients = ClipGradients(gradients, _parameters.GradientClippingThreshold);
+
+            double maxGradient = Math.Abs(gradients.Max());
+
+            if (maxGradient > _parameters.GradientExplosionThreshold)
+            {
+                throw new TrainingFailureException(FailureType.ExplodingGradient);
+            }
+            return gradients;
+        }
+        private void UpdateOutputLayerGradients(double[] gradients, double learningRate, double lambda = 0)
+        {
+
+            int LastColumn = _dataManager.Data.ColumnCount() - 1;
+            INeuron[] MotorNeurons = _dataManager.Data.Column(LastColumn).ToArray();
+            int motorNeuronCount = MotorNeurons.Length;
+            double[,] dendritesWeights = GetWeightsMatrix(LastColumn - 1);
+
+            int dendriteCount = dendritesWeights.GetUpperBound(1) + 1;
 
             Parallel.For(0, motorNeuronCount, i =>
             {
@@ -58,20 +73,12 @@ namespace CallaghanDev.ML.NN.Training
 
                 motorNeuron.Bias -= learningRate * gradients[i];
             });
-
-
-            double maxGradient = Math.Abs(gradients.Max());
-            if (maxGradient > Math.Pow(10, 6))
-            {
-                throw new TrainingFailureException(FailureType.ExplodingGradient);
-            }
-
         }
 
-        private void UpdateHiddenLayerGradients(double learningRate)
+        private double[][] GetHiddenLayerGradients(double learningRate, double[] OutputdeltasArray)
         {
             int colCount = _parameters.NoHiddenLayers;
-
+            List<double[]> doubles =new List<double[]>();
             for (int layerIndex = colCount; layerIndex > 0; layerIndex--)
             {
                 INeuron[] precedingLayerNeurons = _dataManager.Neurons[layerIndex - 1];
@@ -85,40 +92,62 @@ namespace CallaghanDev.ML.NN.Training
 
                 double[,] weightsMatrix = GetWeightsMatrix(layerIndex);
                 int numCurrentNeurons = hiddenNeurons.Length;
+
+                // Precompute required values
+                double[] activationDerivatives = hiddenNeurons.Select(neuron => neuron.activationFunctionDeriv(neuron.Activation)).ToArray();
+
+                // Arrays to store updated values
+                double[] updatedDeltas = new double[numCurrentNeurons];
+
+                for (int neuronIndex = 0; neuronIndex < numCurrentNeurons; neuronIndex++)
+                {
+                    // Calculate sum of weighted deltas for this neuron
+                    double sumOfWeightedDeltas = 0.0;
+                    for (int i = 0; i < nextLayerNeurons.Length; i++)
+                    {
+                        sumOfWeightedDeltas += weightsMatrix[i, neuronIndex] * OutputdeltasArray[i];
+                    }
+
+                    // Calculate the delta for the current neuron
+                    updatedDeltas[neuronIndex] = sumOfWeightedDeltas * activationDerivatives[neuronIndex];
+                }
+
+                doubles.Add(updatedDeltas);
+            }
+            return doubles.ToArray();
+        }
+
+        private void UpdateHiddenLayerGradients(double learningRate, double[][] deltas)
+        {
+            int colCount = _parameters.NoHiddenLayers;
+
+            for (int layerIndex = colCount; layerIndex > 0; layerIndex--)
+            {
+                INeuron[] precedingLayerNeurons = _dataManager.Neurons[layerIndex - 1];
+                INeuron[] hiddenNeurons = _dataManager.Neurons[layerIndex];
+
+                if (hiddenNeurons.Length == 0 || precedingLayerNeurons.Length == 0)
+                {
+                    throw new IndexOutOfRangeException("Mismatch in neuron array sizes.");
+                }
+
+                int numCurrentNeurons = hiddenNeurons.Length;
                 int numPrecedingNeurons = precedingLayerNeurons.Length;
 
-                Task<double[]> taskDeltasArray = Task.Run(() => nextLayerNeurons.Select(neuron => neuron.Delta).ToArray());
-                Task<double[]> taskPrecedingLayerNeuronsActivations = Task.Run(() => precedingLayerNeurons.Select(r => r.Activation).ToArray());
-                Task<double[]> taskHiddenNeuronsActivationFunctionDeriv = Task.Run(() => hiddenNeurons.Select(r => r.activationFunctionDeriv(r.Activation)).ToArray());
-                Task<double[]> taskHiddenNeuronsBiases = Task.Run(() => hiddenNeurons.Select(r => r.Bias).ToArray());
+                double[] precedingLayerActivations = precedingLayerNeurons.Select(neuron => neuron.Activation).ToArray();
+                double[] biases = hiddenNeurons.Select(neuron => neuron.Bias).ToArray();
 
-                Task.WaitAll(taskDeltasArray, taskPrecedingLayerNeuronsActivations, taskHiddenNeuronsActivationFunctionDeriv, taskHiddenNeuronsBiases);
-
-                double[] deltasArray = taskDeltasArray.Result;
-                double[] precedingLayerNeuronsActivations = taskPrecedingLayerNeuronsActivations.Result;
-                double[] hiddenNeurons_activationFunctionDeriv = taskHiddenNeuronsActivationFunctionDeriv.Result;
-                double[] hiddenNeurons_Biases = taskHiddenNeuronsBiases.Result;
-
-                var GPUBackpropResult = _accelerationManager.CalculateBackpropagationValues(
-                    numCurrentNeurons,
-                    numPrecedingNeurons,
-                    weightsMatrix,
-                    deltasArray,
-                    precedingLayerNeuronsActivations,
-                    hiddenNeurons_activationFunctionDeriv,
-                    hiddenNeurons_Biases,
-                    learningRate,
-                    _parameters.GradientClippingThreshold);
-
-                Parallel.For(0, numCurrentNeurons, i =>
+                // Apply the updated values back to the neurons
+                for (int i = 0; i < numCurrentNeurons; i++)
                 {
-                    hiddenNeurons[i].Delta = GPUBackpropResult.updatedDeltas[i];
+                    hiddenNeurons[i].Delta = deltas[layerIndex - 1][i];
                     for (int k = 0; k < numPrecedingNeurons; k++)
                     {
-                        _dataManager.NeuriteTensor[layerIndex - 1][i, k].Weight -= GPUBackpropResult.updatedWeights[k, i];
+                        _dataManager.NeuriteTensor[layerIndex - 1][i, k].Weight -= learningRate * deltas[layerIndex - 1][i] * precedingLayerActivations[k];
                     }
-                    hiddenNeurons[i].Bias = GPUBackpropResult.updatedBiases[i];
-                });
+                    hiddenNeurons[i].Bias = biases[i] - learningRate * deltas[layerIndex - 1][i];
+                }
+
             }
         }
 
@@ -180,9 +209,6 @@ namespace CallaghanDev.ML.NN.Training
                         throw new NaNException($"Infinity detected in forward propagation at layer {j}, neuron {c}, type:{_dataManager.Neurons[j][c].GetType().Name}");
                     }
                 });
-
-
-
             }
         }
 
@@ -197,9 +223,51 @@ namespace CallaghanDev.ML.NN.Training
         {
             double[] costs = _costFunctionManager.CalculateCost(expectedOutputValues);
 
-            UpdateOutputLayerGradients(costs, learningRate, _parameters.L2RegulationLamda);
-            UpdateHiddenLayerGradients(learningRate);
+            double[] OutputGradients = GetOutputLayerGradients(costs, learningRate);
+            double[][] HiddenGradients = GetHiddenLayerGradients(learningRate, OutputGradients);
+
+            double Scale = GetGlobalGradientClippingScale(OutputGradients, HiddenGradients);
+
+            OutputGradients = OutputGradients.Select(g => g *= Scale).ToArray();
+            HiddenGradients = HiddenGradients.Select(ar => ar.Select(g=>g*=Scale).ToArray()).ToArray();
+
+            double combinedNorm = Math.Sqrt(
+            OutputGradients.Select(g => g * g).Sum() +
+            HiddenGradients.SelectMany(g => g).Select(g => g * g).Sum());
+
+            if (combinedNorm > _parameters.GradientExplosionThreshold )
+            {
+                throw new TrainingFailureException(FailureType.ExplodingGradient);
+            }
+
+            if (combinedNorm < _parameters.GradientVanishingThreshold && combinedNorm != 0)
+            {
+                throw new TrainingFailureException(FailureType.VanishingGradient);
+            }
+
+            UpdateOutputLayerGradients(OutputGradients, learningRate, _parameters.L2RegulationLamda);
+            UpdateHiddenLayerGradients(learningRate, HiddenGradients);
         }
+
+        private double GetGlobalGradientClippingScale(double[] OutputGradients, double[][] HiddenGradients)
+        {
+            double globalNormSquared = OutputGradients.Select(g => g * g).Sum();
+            foreach (var layerGradients in HiddenGradients)
+            {
+                globalNormSquared += layerGradients.Select(g => g * g).Sum();
+            }
+            double globalNorm = Math.Sqrt(globalNormSquared);
+
+            // Determine scaling factor
+            double scale = 1.0;
+            if (globalNorm > _parameters.GradientClippingThreshold)
+            {
+                scale = _parameters.GradientClippingThreshold / globalNorm;
+            }
+
+            return scale;
+        }
+
         private double[,] GetWeightsMatrix(int layerIndex)
         {
 

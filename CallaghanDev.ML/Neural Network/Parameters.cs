@@ -15,7 +15,7 @@ namespace CallaghanDev.ML.NN
         public int HiddenLayerWidth { get; set; }
         public int NumberOfOutputs { get; set; }
         public double L2RegulationLamda { get; set; } = 0;
-        public float GradientClippingThreshold { get; set; } = 5;
+        public float GradientClippingThreshold { get; set; } = 1;
         public float HuberLossDelta 
         { 
             get
@@ -34,6 +34,9 @@ namespace CallaghanDev.ML.NN
                 }
             }
         }
+
+        public double GradientExplosionThreshold { get; set; } = 1e3;
+        public double GradientVanishingThreshold { get; set; } = 1e-5;
         public override string ToString()
         {
             var sb = new StringBuilder();
