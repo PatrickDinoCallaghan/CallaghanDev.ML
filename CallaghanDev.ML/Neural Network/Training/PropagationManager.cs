@@ -75,7 +75,7 @@ namespace CallaghanDev.ML.NN.Training
             });
         }
 
-        private double[][] GetHiddenLayerGradients(double learningRate, double[] OutputdeltasArray)
+        private double[][] GetHiddenLayerGradients(double learningRate, double[] OutputDeltasArray)
         {
             int colCount = _parameters.NoHiddenLayers;
             List<double[]> doubles =new List<double[]>();
@@ -105,13 +105,13 @@ namespace CallaghanDev.ML.NN.Training
                     double sumOfWeightedDeltas = 0.0;
                     for (int i = 0; i < nextLayerNeurons.Length; i++)
                     {
-                        sumOfWeightedDeltas += weightsMatrix[i, neuronIndex] * OutputdeltasArray[i];
+                        sumOfWeightedDeltas += weightsMatrix[i, neuronIndex] * OutputDeltasArray[i];
                     }
 
                     // Calculate the delta for the current neuron
                     updatedDeltas[neuronIndex] = sumOfWeightedDeltas * activationDerivatives[neuronIndex];
                 }
-
+                OutputDeltasArray = updatedDeltas;
                 doubles.Add(updatedDeltas);
             }
             return doubles.ToArray();
