@@ -7,45 +7,44 @@ using Newtonsoft.Json;
 
 namespace CallaghanDev.ML
 {
-
-/// <summary>
-/// Represents a neural network designed for parallel processing and GPU acceleration using ILGPU.
-/// 
-/// Techniques and Features:
-/// - **Data Structure**: 
-///   - Uses a `Matrix` to store neurons and their connections.
-///   - `NeuriteTensor` and `NeuriteTensorT` matrices to represent connections between neurons in different layers.
-///
-/// - **Initialization**: 
-///   - Initializes sensory neurons, hidden layers, and motor (output) layers.
-///   - Loads backpropagation and matrix-vector multiplication kernels for GPU execution.
-///   - Initializes calculation tensors and task containers for neural network operations.
-///
-/// - **GPU Acceleration**:
-///   - Uses ILGPU for parallel processing of matrix-vector operations and backpropagation.
-///   - Allocates and manages GPU buffers for efficient data transfer and computation.
-///   - Custom kernels for backpropagation and matrix-vector multiplication.
-///
-/// - **Training and Prediction**:
-///   - Forward propagation method to calculate neuron activations.
-///   - Backpropagation methods for updating weights and biases based on gradients.
-///   - Training method to learn from input data over multiple epochs.
-///   - Predict method for inference on new input data.
-///
-/// - **Cost Function**:
-///   - Supports Mean Squared Error (MSE) cost function.
-///   - Calculates gradients for backpropagation using the derivative of the cost function.
-///
-/// - **Utility Methods**:
-///   - Methods for saving and loading the neural network state to and from files.
-///   - Methods to handle changes in data and reinitialize necessary components.
-///
-/// Aims:
-/// - **Efficiency**: Leveraging parallel processing and GPU acceleration to enhance the performance of neural network training and inference.
-/// - **Modularity**: Structured in a way that allows for easy extension and modification of the neural network architecture.
-/// - **Scalability**: Designed to handle large datasets and complex neural network structures by utilizing modern hardware capabilities.
-/// </summary>
-public class NeuralNetwork
+    /// <summary>
+    /// Represents a neural network designed for parallel processing and GPU acceleration using ILGPU.
+    /// 
+    /// Techniques and Features:
+    /// - **Data Structure**: 
+    ///   - Uses a `Matrix` to store neurons and their connections.
+    ///   - `NeuriteTensor` and `NeuriteTensorT` matrices to represent connections between neurons in different layers.
+    ///
+    /// - **Initialization**: 
+    ///   - Initializes sensory neurons, hidden layers, and motor (output) layers.
+    ///   - Loads backpropagation and matrix-vector multiplication kernels for GPU execution.
+    ///   - Initializes calculation tensors and task containers for neural network operations.
+    ///
+    /// - **GPU Acceleration**:
+    ///   - Uses ILGPU for parallel processing of matrix-vector operations and backpropagation.
+    ///   - Allocates and manages GPU buffers for efficient data transfer and computation.
+    ///   - Custom kernels for backpropagation and matrix-vector multiplication.
+    ///
+    /// - **Training and Prediction**:
+    ///   - Forward propagation method to calculate neuron activations.
+    ///   - Backpropagation methods for updating weights and biases based on gradients.
+    ///   - Training method to learn from input data over multiple epochs.
+    ///   - Predict method for inference on new input data.
+    ///
+    /// - **Cost Function**:
+    ///   - Supports Mean Squared Error (MSE) cost function.
+    ///   - Calculates gradients for backpropagation using the derivative of the cost function.
+    ///
+    /// - **Utility Methods**:
+    ///   - Methods for saving and loading the neural network state to and from files.
+    ///   - Methods to handle changes in data and reinitialize necessary components.
+    ///
+    /// Aims:
+    /// - **Efficiency**: Leveraging parallel processing and GPU acceleration to enhance the performance of neural network training and inference.
+    /// - **Modularity**: Structured in a way that allows for easy extension and modification of the neural network architecture.
+    /// - **Scalability**: Designed to handle large datasets and complex neural network structures by utilizing modern hardware capabilities.
+    /// </summary>
+    public class NeuralNetwork
     {
         private readonly Parameters parameters;
         private readonly CostFunctionManager costFunctionManager;
@@ -77,9 +76,9 @@ public class NeuralNetwork
             trainingManager = new PropagationManager(costFunctionManager, dataManager, accelerationManager, parameters);
             this.parameters = parameters;
         }
-        #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+#pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         private NeuralNetwork()
-        #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+#pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         {
 
         }
@@ -120,7 +119,7 @@ public class NeuralNetwork
 
 
             string json = File.ReadAllText(FileName);
-            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings) 
+            NeuralNetworkDto neuralNetworkDto = JsonConvert.DeserializeObject<NeuralNetworkDto>(json, settings)
             ?? throw new InvalidOperationException("Deserialization failed, object is null.");
 
             Parameters parameters = new Parameters()
