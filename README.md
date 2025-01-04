@@ -1,27 +1,7 @@
 **Neural Network in C# using back propagation**
 
 The Neural Network project attempts to create a flexible and efficient
-framework for building and training neural networks. It leverages
-advanced techniques like parallel processing and GPU acceleration to
-enhance performance. The class is designed to be extensible, allowing
-for easy modifications and additions to the network architecture, making
-it suitable for various machine learning applications.
-
-I used a custom matrix class to store neurons (called INeuron), and another structure
-called NeuriteTensor to manage connections between these neurons across
-different layers. You can easily set the number of inputs, outputs,
-hidden layers, and their width, it even includes gradient clipping
-to keep training stable.
-
-For performance, it uses a custom TaskManager with TaskContainer objects to
-handle various tasks asynchronously, which makes everything run smoother
-and faster. During initialization, it sets up all the neurons and
-layers, and loads GPU kernels for efficient calculations. When training,
-it uses forward propagation to compute activations and backpropagation
-to update weights and biases. It supports Mean Squared Error (MSE) for
-loss calculation, and trains over multiple epochs to minimize this loss.
-Plus, it’s designed to be extensible, so you can easily add or modify
-network components, layers, and functions.
+framework for building and training neural networks.
 
 **Backpropagation**
 
