@@ -6,6 +6,9 @@ namespace CallaghanDev.ML
     public class MotorNeuron : NeuronBase, INeuron
     {
         [JsonProperty]
+        public string Name { get; set; }
+
+        [JsonProperty]
         public int LayerIndex { get; set; }
 
         public MotorNeuron(ActivationType activationType) : base(activationType)
