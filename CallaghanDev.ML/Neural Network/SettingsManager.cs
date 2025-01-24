@@ -1,8 +1,4 @@
-﻿using CallaghanDev.Utilities.ConsoleHelper;
-using System.Collections.Concurrent;
-using System.Diagnostics;
-
-namespace CallaghanDev.ML.NN
+﻿namespace CallaghanDev.ML.NN
 {
     public class SettingsManager
     {

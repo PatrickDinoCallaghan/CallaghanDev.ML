@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.Common.Math\CallaghanDev.Common.Math.csproj" />
     <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.Utilities\CallaghanDev.Utilities.csproj" />
     <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.XML\CallaghanDev.XML.csproj" />
+    <ProjectReference Include="..\..\CallaghanDev.Common\Terminal.Gui\Terminal.Gui\Terminal.Gui.csproj" />
   </ItemGroup>
 
 </Project>

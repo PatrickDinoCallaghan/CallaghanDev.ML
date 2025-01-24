@@ -1,7 +1,6 @@
 ﻿using CallaghanDev.ML.Exceptions;
 using CallaghanDev.ML.Neural_Network;
-using CallaghanDev.Utilities.ConsoleHelper;
-using DocumentFormat.OpenXml.Wordprocessing;
+
 namespace CallaghanDev.ML.NN.Training
 {
     public class PropagationManager : TrainingManagerBase, ITrainingManager
@@ -161,7 +160,7 @@ namespace CallaghanDev.ML.NN.Training
                     Counter++;
                     if (!Silent)
                     {
-                        cnsl.DisplayProgressBar(Counter, MaxVal, "Progress");
+                        Terminal.Gui.Helpers.ProgressBarHelper.DisplayProgressBar(Counter, MaxVal, "Progress");
                     }
                 }
                 OnEpochFinished?.Invoke(epoch);
