@@ -3,10 +3,10 @@ using CallaghanDev.ML.Neural_Network;
 
 namespace CallaghanDev.ML.NN.Training
 {
-    public class PropagationManager : TrainingManagerBase, ITrainingManager
+    public class FFTrainingManager : TrainingManagerBase, ITrainingManager
     {
 
-        public PropagationManager(
+        public FFTrainingManager(
             CostFunctionManager costFunctionManager,
             DataManager dataManager,
             IAccelerationManager accelerationManager,

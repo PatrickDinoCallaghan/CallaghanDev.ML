@@ -60,7 +60,7 @@ namespace CallaghanDev.ML
             costFunctionManager = new CostFunctionManager(dataManager.Data, parameters);
             accelerationManager = new AccelerationManager(parameters);
             dataManager.InitializeData(parameters, parameters.SensoryNeurons);
-            trainingManager = new PropagationManager(costFunctionManager, dataManager, accelerationManager, parameters);
+            trainingManager = new FFTrainingManager(costFunctionManager, dataManager, accelerationManager, parameters);
             this.parameters = parameters;
         }
         private NeuralNetwork(Matrix<INeuron> InData, Matrix<Neurite>[] InNeuriteTensor, Parameters parameters)
@@ -73,10 +73,10 @@ namespace CallaghanDev.ML
             costFunctionManager = new CostFunctionManager(dataManager.Data, parameters);
             accelerationManager = new AccelerationManager(parameters);
             dataManager.InitializeData(parameters, parameters.SensoryNeurons, true);
-            trainingManager = new PropagationManager(costFunctionManager, dataManager, accelerationManager, parameters);
+            trainingManager = new FFTrainingManager(costFunctionManager, dataManager, accelerationManager, parameters);
             this.parameters = parameters;
         }
-#pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
+        #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         private NeuralNetwork()
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider declaring as nullable.
         {
@@ -161,6 +161,5 @@ namespace CallaghanDev.ML
             File.WriteAllText(FileName, json);
         }
         #endregion
-
     }
 }

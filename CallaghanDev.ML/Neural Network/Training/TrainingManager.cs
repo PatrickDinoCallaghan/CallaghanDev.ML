@@ -32,6 +32,4 @@ namespace CallaghanDev.ML.NN.Training
 
         public delegate void EpochFinished(int Epoch);
     }
-
-
 }
