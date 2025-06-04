@@ -47,7 +47,7 @@ namespace CallaghanDev.ML.OpenAI
         [ModelName("gpt-4.5-preview-2025-02-27"), Pricing("$75.00", "$37.50", "$150.00"), MaxTokens(128000)]
         GPT_4_5_Preview,
 
-        [ModelName("gpt-4o-2024-08-06"), Pricing("$2.50", "$1.25", "$10.00"), MaxTokens(128000)]
+        [ModelName("gpt-4o-2024-08-06"), Pricing("$2.50", "$1.25", "$10.00"), MaxTokens(16384)]
         GPT_4o,
 
         [ModelName("gpt-4o-audio-preview-2024-12-17"), Pricing("$2.50", "-", "$10.00"), MaxTokens(128000)]
@@ -56,7 +56,7 @@ namespace CallaghanDev.ML.OpenAI
         [ModelName("gpt-4o-realtime-preview-2024-12-17"), Pricing("$5.00", "$2.50", "$20.00"), MaxTokens(128000)]
         GPT_4o_Realtime_Preview,
 
-        [ModelName("gpt-4o-mini-2024-07-18"), Pricing("$0.15", "$0.075", "$0.60"), MaxTokens(32000)]
+        [ModelName("gpt-4o-mini-2024-07-18"), Pricing("$0.15", "$0.075", "$0.60"), MaxTokens(128000)]
         GPT_4o_Mini,
 
         [ModelName("gpt-4o-mini-audio-preview-2024-12-17"), Pricing("$0.15", "-", "$0.60"), MaxTokens(32000)]

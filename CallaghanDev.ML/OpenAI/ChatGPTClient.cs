@@ -48,13 +48,20 @@ namespace CallaghanDev.ML.OpenAI
 
             var response = await _client.PostAsync("/v1/chat/completions", requestContent);
 
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                throw new Exception($"API Error {response.StatusCode}: {errorBody}");
+            }
+            else
+            {
 
-            var responseBody = await response.Content.ReadAsStringAsync();
-            var openAIResponse = JsonConvert.DeserializeObject<OpenAIChatResponse>(responseBody);
+                var responseBody = await response.Content.ReadAsStringAsync();
+                var openAIResponse = JsonConvert.DeserializeObject<OpenAIChatResponse>(responseBody);
 
-            // You can modify to return the full object if needed
-            return openAIResponse?.choices?[0]?.message?.content ?? "(no reply)";
+                // You can modify to return the full object if needed
+                return openAIResponse?.choices?[0]?.message?.content ?? "(no reply)";
+            }
         }
 
         /// <summary>
