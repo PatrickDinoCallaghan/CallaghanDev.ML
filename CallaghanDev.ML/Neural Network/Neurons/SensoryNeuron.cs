@@ -32,7 +32,17 @@ namespace CallaghanDev.ML
 
             set
             {
-                _Value = value;
+                _Value = value; 
+
+                if (_Value > _MaxValue)
+                {
+                    _MaxValue = _Value;
+                }
+                else if (_Value < _MinValue)
+                {
+                    _MinValue = _Value;
+                }
+
             }
         }
         [JsonConstructor]
@@ -45,7 +55,9 @@ namespace CallaghanDev.ML
         {
             if (MaxValue <= MinValue)
             {
-               throw new ArgumentOutOfRangeException();
+                //throw new ArgumentOutOfRangeException();
+                MinValue = -1;
+                MaxValue = 1;
             }
             _MaxValue = MaxValue;
             _MinValue = MinValue;

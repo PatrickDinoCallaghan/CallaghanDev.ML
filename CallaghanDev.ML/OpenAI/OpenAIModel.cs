@@ -98,5 +98,4 @@ namespace CallaghanDev.ML.OpenAI
         [ModelName("gpt-image-1"), Pricing("$5.00", "$1.25", "-"), MaxTokens(32000)]
         GPT_Image_1,
     }
-
 }

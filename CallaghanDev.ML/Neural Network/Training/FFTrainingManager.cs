@@ -211,7 +211,6 @@ namespace CallaghanDev.ML.NN.Training
         private void Learn(double[] trainingData, double[] ExpectedResult, double LearningRate)
         {
             SetSensoryNeuronsValues(trainingData);
-
             ForwardPropagate();
             BackPropagate(LearningRate, ExpectedResult);
         }
