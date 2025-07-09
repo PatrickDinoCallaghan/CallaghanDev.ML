@@ -101,7 +101,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.CPU,
+                AccelerationType = AccelerationType.GPU,
                 SensoryNeurons = inputNeurons.ToArray(),
                 NoHiddenLayers = 1,
                 HiddenLayerWidth = 4,

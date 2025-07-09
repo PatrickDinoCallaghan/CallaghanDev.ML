@@ -15,18 +15,24 @@ namespace CallaghanDev.ML.Neural_Network
     {
         private Accelerator accelerator;
 
-        private Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>> double_MatrixVectorKernel;
+        private readonly Action<Index1D,
+                            ArrayView1D<double, Stride1D.Dense>,
+                            ArrayView2D<double, Stride2D.DenseX>,
+                            ArrayView1D<double, Stride1D.Dense>> kernel;
+
+        private readonly Dictionary<(int rows, int cols), (MemoryBuffer1D<double, Stride1D.Dense> vec, MemoryBuffer2D<double, Stride2D.DenseX> mat, MemoryBuffer1D<double, Stride1D.Dense> res)> bufferCache = new();
+
+
 
         public AccelerationManager(Parameters parameters) 
         {
-
             InitializeAccelerator(parameters);
-            LoadBackpropergationKernel();
+            kernel = accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>>(VectorMatrixMultiplyAcceleratedKernel);
         }
         private void InitializeAccelerator(Parameters parameters)
         {
-
             Context context = Context.Create(builder => builder.AllAccelerators());
+
             if (parameters.AccelerationType == AccelerationType.CPU)
             {
                 accelerator = context.CreateCPUAccelerator(0);
@@ -35,15 +41,6 @@ namespace CallaghanDev.ML.Neural_Network
             {
                 accelerator = context.CreateCLAccelerator(0);
             }
-        }
-        private void LoadBackpropergationKernel()
-        {
-            double_MatrixVectorKernel = accelerator.LoadAutoGroupedStreamKernel<
-                     Index1D,
-                     ArrayView1D<double, Stride1D.Dense>,
-                     ArrayView2D<double, Stride2D.DenseX>,
-                     ArrayView1D<double, Stride1D.Dense>>(
-                     VectorMatrixMultiplyAcceleratedKernel);
         }
 
 
@@ -64,28 +61,32 @@ namespace CallaghanDev.ML.Neural_Network
       
         public double[] CalculateDotProduct(double[,] matrix, double[] vector)
         {
-            var vectorLength = vector.Length;
-            var matrixRows = matrix.GetLength(0);
-            var matrixCols = matrix.GetLength(1);
+            int rows = matrix.GetLength(0),
+                cols = matrix.GetLength(1);
 
-            if (vectorLength != matrixRows)
-                throw new ArgumentException($"Vector length {vectorLength} does not match matrix rows {matrixRows}");
+            // get or create the buffers for this shape
+            if (!bufferCache.TryGetValue((rows, cols), out var bufs))
+            {
+                // var infers the correct MemoryBuffer<…,Stride> types
+                var vec = accelerator.Allocate1D<double>(rows);
+                var mat = accelerator.Allocate2DDenseX<double>(new Index2D(rows, cols));
+                var res = accelerator.Allocate1D<double>(cols);
 
+                bufs = (vec, mat, res);
+                bufferCache[(rows, cols)] = bufs;
+            }
 
+            // now just copy data and launch
+            bufs.vec.CopyFromCPU(vector);
+            bufs.mat.CopyFromCPU(matrix);
 
-            using var resultBuffer = accelerator.Allocate1D<double>(matrixCols);
-            using var vectorBuffer = accelerator.Allocate1D<double>(vectorLength);
-            using var matrixBuffer = accelerator.Allocate2DDenseX<double>(new Index2D(matrixRows, matrixCols));
+            kernel(bufs.res.Extent.ToIntIndex(),
+                   bufs.vec.View,
+                   bufs.mat.View,
+                   bufs.res.View);
 
-            vectorBuffer.CopyFromCPU(vector);
-            matrixBuffer.CopyFromCPU(matrix);
-
-            double_MatrixVectorKernel(resultBuffer.Extent.ToIntIndex(), vectorBuffer.View, matrixBuffer.View, resultBuffer.View);
-
-            double[] result = new double[matrixCols];
-
-            resultBuffer.CopyToCPU(result);
-
+            double[] result = new double[cols];
+            bufs.res.CopyToCPU(result);
             return result;
         }
 

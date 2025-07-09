@@ -6,12 +6,7 @@ namespace CallaghanDev.ML.NN.Training
     public class FFTrainingManager : TrainingManagerBase, ITrainingManager
     {
 
-        public FFTrainingManager(
-            CostFunctionManager costFunctionManager,
-            DataManager dataManager,
-            IAccelerationManager accelerationManager,
-            Parameters parameters)
-            : base(costFunctionManager, dataManager, accelerationManager, parameters) { }
+        public FFTrainingManager(CostFunctionManager costFunctionManager, DataManager dataManager,  IAccelerationManager accelerationManager, Parameters parameters): base(costFunctionManager, dataManager, accelerationManager, parameters) { }
 
 
         private double[] GetOutputLayerGradients(double[] costs, double learningRate)
