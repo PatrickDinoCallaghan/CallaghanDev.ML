@@ -15,6 +15,7 @@ namespace CallaghanDev.ML
 
         public double[,] Weights { get; set; }
 
+
         public Layer(int inputSize, int size, ActivationType actType)
         {
             InputSize = inputSize;

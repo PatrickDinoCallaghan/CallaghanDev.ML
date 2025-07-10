@@ -13,7 +13,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         (double[] activation, double[] derivative) ActivateLayer(double[] dot, double[] bias, ActivationType activationType);
         double[] CalculateOutputGradients(double[] cost, double[] derivative);
         double[] CalculateHiddenGradients(double[,] weights, double[] nextDeltas, double[] derivative);
-        double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate);
+        double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate, double lambda);
         double[] UpdateBias(double[] bias, double[] deltas, double learningRate);
     }
 }

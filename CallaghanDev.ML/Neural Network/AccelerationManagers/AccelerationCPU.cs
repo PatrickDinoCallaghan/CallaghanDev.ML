@@ -91,7 +91,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return delta;
         }
 
-        public double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate)
+        public double[,] UpdateWeights(double[,] weights,double[] deltas, double[] prevActivations, double learningRate, double lambda )
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
@@ -101,7 +101,12 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 for (int j = 0; j < cols; j++)
                 {
-                    updated[i, j] = weights[i, j] - learningRate * deltas[i] * prevActivations[j];
+                    double gradStep = deltas[i] * prevActivations[j];
+
+                    double regTerm = lambda * weights[i, j];
+
+                    updated[i, j] = weights[i, j]
+                                  - learningRate * (gradStep + regTerm);
                 }
             }
             return updated;

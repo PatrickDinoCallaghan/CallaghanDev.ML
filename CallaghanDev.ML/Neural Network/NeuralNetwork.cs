@@ -41,8 +41,11 @@ namespace CallaghanDev.ML
             }
         }
 
-        public void Train(double[][] inputs, double[][] expected, double LearningRate, int epochs, bool silent = false)
+        public void Train(double[][] inputs, double[][] expected, double learningRate, int epochs, bool silent = false)
         {
+            // Build a *fixed* min/max from the entire training set:
+            CalibrateInputs(inputs);
+
             long total = (long)inputs.Length * epochs;
             long count = 0;
 
@@ -50,14 +53,52 @@ namespace CallaghanDev.ML
             {
                 for (int i = 0; i < inputs.Length; i++)
                 {
-                    Learn(inputs[i], expected[i], LearningRate);
+                    var xScaled = ScaleInput(inputs[i]);        // apply the same mapping every pass
+                    Learn(xScaled, expected[i], learningRate);
                     count++;
                     if (!silent)
-                    {
                         Terminal.Gui.Helpers.ProgressBarHelper.DisplayProgressBar(count, total, "Progress");
-                    }
                 }
             }
+        }
+        private double[] ScaleInput(double[] raw)
+        {
+            int n = raw.Length;
+            var scaled = new double[n];
+            var min = data.parameters.inputActivationMin;
+            var max = data.parameters.inputActivationMax;
+
+            for (int i = 0; i < n; i++)
+            {
+                double range = max[i] - min[i];
+                scaled[i] = (range <= 0)
+                    ? 0
+                    : (raw[i] - min[i]) / range;
+            }
+            return scaled;
+        }
+        private void CalibrateInputs(double[][] inputs)
+        {
+            int inputSize = inputs[0].Length;
+            var min = new double[inputSize];
+            var max = new double[inputSize];
+            for (int i = 0; i < inputSize; i++)
+            {
+                min[i] = double.PositiveInfinity;
+                max[i] = double.NegativeInfinity;
+            }
+
+            foreach (var row in inputs)
+            {
+                for (int i = 0; i < inputSize; i++)
+                {
+                    min[i] = Math.Min(min[i], row[i]);
+                    max[i] = Math.Max(max[i], row[i]);
+                }
+            }
+
+            data.parameters.inputActivationMin = min;
+            data.parameters.inputActivationMax = max;
         }
 
         private void Learn(double[] x, double[] y, double LearningRate)
@@ -94,169 +135,106 @@ namespace CallaghanDev.ML
                 cur.Derivatives = der;
             }
         }
-        private void BackPropagate(double[] costDerivs, double LearningRate)
+        private void BackPropagate(double[] costDerivs, double learningRate)
         {
             int L = data.layers.Length - 1;
 
-            var outLayer = data.layers[L];
-            var outDeltas = accelerationManager.CalculateOutputGradients(
-                costDerivs,
-                outLayer.Derivatives
-            );
+            var deltasByLayer = ComputeDeltas(costDerivs, L);
+            var globalNorm = ComputeGlobalNorm(deltasByLayer);
+            var scale = ComputeClipScale(globalNorm, data.parameters.GradientClippingThreshold);
+            if (scale != 1.0) ScaleAllDeltas(deltasByLayer, scale);
 
+            ApplyUpdates(deltasByLayer, learningRate);
+        }
 
-            double normSq = 0.0;
+        #region Global Gradient Scale Clipping 
 
-            Parallel.For(0, outDeltas.Length, i =>
+        private List<double[]> ComputeDeltas(double[] costDerivs, int outputLayerIdx)
+        {
+            var deltas = new List<double[]>();
+
+            // output layer
+            var outLayer = data.layers[outputLayerIdx];
+            var outDeltas = accelerationManager.CalculateOutputGradients(costDerivs, outLayer.Derivatives);
+            deltas.Add(outDeltas);
+
+            // hidden layers, in reverse
+            double[] next = outDeltas;
+            for (int i = outputLayerIdx - 1; i > 0; i--)
             {
-                double v = outDeltas[i];
-                InterlockedAdd(ref normSq, v * v);
-            });
-
-            int hiddenCount = L - 1;
-            var hiddenDeltas = new double[hiddenCount][];
-            double[] nextDeltas = outDeltas;
-
-            for (int idx = 0; idx < hiddenCount; idx++)
-            {
-                int layerIdx = L - 1 - idx;
-                var layer = data.layers[layerIdx];
-                var weightsAbove = data.layers[layerIdx + 1].Weights;
-
+                var layerAbove = data.layers[i + 1];
+                var layer = data.layers[i];
                 var hidDeltas = accelerationManager.CalculateHiddenGradients(
-                    weightsAbove,
-                    nextDeltas,
-                    layer.Derivatives
-                );
-                hiddenDeltas[idx] = hidDeltas;
-                nextDeltas = hidDeltas;
-
-                Parallel.For(0, hidDeltas.Length, j =>
-                {
-                    double v = hidDeltas[j];
-                    InterlockedAdd(ref normSq, v * v);
-                });
+                                       layerAbove.Weights,
+                                       next,
+                                       layer.Derivatives);
+                deltas.Add(hidDeltas);
+                next = hidDeltas;
             }
 
-            double globalNorm = Math.Sqrt(normSq);
-            double clipTh = data.parameters.GradientClippingThreshold;
-            double scale = (globalNorm > clipTh)
-                              ? clipTh / globalNorm
-                              : 1.0;
+            // now deltas[0] == output, deltas[1] == last hidden, …
+            return deltas;
+        }
 
-            Parallel.For(0, outDeltas.Length, i =>
+        private double ComputeGlobalNorm(List<double[]> deltas)
+        {
+            double sumSq = deltas
+                .SelectMany(arr => arr)
+                .Sum(v => v * v);
+            return Math.Sqrt(sumSq);
+        }
+
+        private double ComputeClipScale(double globalNorm, double clipThreshold)
+            => (globalNorm > clipThreshold)
+                 ? clipThreshold / globalNorm
+                 : 1.0;
+
+        private void ScaleAllDeltas(List<double[]> deltas, double scale)
+        {
+            foreach (var arr in deltas)
+                for (int i = 0; i < arr.Length; i++)
+                    arr[i] *= scale;
+        }
+        private void ApplyUpdates(List<double[]> deltasByLayer, double learningRate)
+        {
+            int L = data.layers.Length - 1;
+            double λ = data.parameters.L2RegulationLamda;
+
+            // output layer
             {
-                outDeltas[i] *= scale;
-            });
+                var layer = data.layers[L];
+                var outDeltas = deltasByLayer[0];
+                layer.Weights = accelerationManager.UpdateWeights(
+                    layer.Weights,
+                    outDeltas,
+                    data.layers[L - 1].Activations,
+                    learningRate,
+                    λ                 // << passes λ into every update
+                );
+                layer.Biases = accelerationManager.UpdateBias(layer.Biases, outDeltas, learningRate);
+            }
 
-            Parallel.For(0, hiddenCount, idx =>
+            // hidden layers
+            for (int idx = 1; idx < deltasByLayer.Count; idx++)
             {
-                var deltas = hiddenDeltas[idx];
-                for (int j = 0; j < deltas.Length; j++)
-                    deltas[j] *= scale;
-            });
-
-            // Output layer:
-            outLayer.Weights = accelerationManager.UpdateWeights(
-                outLayer.Weights,
-                outDeltas,
-                data.layers[L - 1].Activations,
-                LearningRate
-            );
-            outLayer.Biases = accelerationManager.UpdateBias(
-                outLayer.Biases,
-                outDeltas,
-                LearningRate
-            );
-
-            for (int idx = 0; idx < hiddenCount; idx++)
-            {
-                int layerIdx = L - 1 - idx;
+                int layerIdx = L - idx;
                 var layer = data.layers[layerIdx];
-                var deltas = hiddenDeltas[idx];
+                var deltas = deltasByLayer[idx];
+                var prevActs = data.layers[layerIdx - 1].Activations;
 
                 layer.Weights = accelerationManager.UpdateWeights(
                     layer.Weights,
                     deltas,
-                    data.layers[layerIdx - 1].Activations,
-                    LearningRate
+                    prevActs,
+                    learningRate,
+                    λ                 // << same λ again
                 );
-                layer.Biases = accelerationManager.UpdateBias(
-                    layer.Biases,
-                    deltas,
-                    LearningRate
-                );
+                layer.Biases = accelerationManager.UpdateBias(layer.Biases, deltas, learningRate);
             }
         }
 
-        // Thread‑safe adder for a shared double
-        private static void InterlockedAdd(ref double target, double value)
-        {
-            double initial, computed;
-            do
-            {
-                initial = target;
-                computed = initial + value;
-            }
-            while (Interlocked.CompareExchange(
-                       ref target, computed, initial) != initial);
-        }
+        #endregion
 
-        /*
-        private void BackPropagate(double[] costDerivs, double LearningRate)
-        {
-            int L = data.layers.Length - 1;
-
-            // output layer
-            var outLayer = data.layers[L];
-            var outDeltas = accelerationManager.CalculateOutputGradients(costDerivs, outLayer.Derivatives);
-
-            outLayer.Weights = accelerationManager.UpdateWeights(
-                outLayer.Weights,
-                outDeltas,
-                data.layers[L - 1].Activations,
-                LearningRate
-            );
-            outLayer.Biases = accelerationManager.UpdateBias(outLayer.Biases, outDeltas, LearningRate);
-
-            // hidden layers
-            var nextDeltas = outDeltas;
-            for (int l = L - 1; l >= 1; l--)
-            {
-                var layer = data.layers[l];
-                var weights = data.layers[l + 1].Weights;
-
-                var hidDeltas = accelerationManager.CalculateHiddenGradients(
-                    weights,
-                    nextDeltas,
-                    layer.Derivatives
-                );
-
-                layer.Weights = accelerationManager.UpdateWeights(layer.Weights, hidDeltas, data.layers[l - 1].Activations, LearningRate);
-
-                layer.Biases = accelerationManager.UpdateBias(layer.Biases, hidDeltas, LearningRate);
-
-                nextDeltas = hidDeltas;
-            }
-        }
-        private double GetGlobalGradientClippingScale(double[] OutputGradients, double[][] HiddenGradients)
-        {
-            double globalNormSquared = OutputGradients.Select(g => g * g).Sum();
-            foreach (var layerGradients in HiddenGradients)
-            {
-                globalNormSquared += layerGradients.Select(g => g * g).Sum();
-            }
-            double globalNorm = Math.Sqrt(globalNormSquared);
-
-            // Determine scaling factor
-            double scale = 1.0;
-            if (globalNorm > data.parameters.GradientClippingThreshold)
-            {
-                scale = data.parameters.GradientClippingThreshold / globalNorm;
-            }
-
-            return scale;
-        }*/
         public void SetSensoryNeuronsValues(double[] inputValues)
         {
             var inputLayer = data.layers[0].Activations;
@@ -264,12 +242,14 @@ namespace CallaghanDev.ML
                 inputLayer[i] = inputValues[i]
             );
         }
-        public double[] Predict(double[] inputValues)
+        public double[] Predict(double[] rawInput)
         {
-            SetSensoryNeuronsValues(inputValues);
+            var xScaled = ScaleInput(rawInput);
+            SetInputLayer(xScaled);
             ForwardPropagate();
             return data.layers[^1].Activations.ToArray();
         }
+
         public void ComputeOutputs() => ForwardPropagate();
 
 

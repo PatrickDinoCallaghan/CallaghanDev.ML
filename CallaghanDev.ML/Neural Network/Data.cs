@@ -231,6 +231,12 @@ namespace CallaghanDev.ML
             writer.Write(parameters.LayerActivations.Count);
             foreach (var a in parameters.LayerActivations)
                 writer.Write((int)a);
+
+            if (parameters.inputActivationMin == null || parameters.inputActivationMax == null)
+                throw new InvalidOperationException("inputActivationMin/Max must be non-null before saving.");
+
+            WriteDoubleArray(writer, parameters.inputActivationMin);
+            WriteDoubleArray(writer, parameters.inputActivationMax);
         }
 
         public static Data Load(string filePath)
@@ -263,7 +269,6 @@ namespace CallaghanDev.ML
             }
             result.layers = layers;
 
-            // --- Parameters primitives in same order ---
             var p = new Parameters
             {
                 AccelerationType = (AccelerationType)reader.ReadInt32(),
@@ -276,7 +281,6 @@ namespace CallaghanDev.ML
                 GradientVanishingThreshold = reader.ReadDouble()
             };
 
-            // --- Then read the lists, in the same order we wrote them ---
             int lwCount = reader.ReadInt32();
             p.LayerWidths = new List<int>(lwCount);
             for (int i = 0; i < lwCount; i++)
@@ -286,6 +290,16 @@ namespace CallaghanDev.ML
             p.LayerActivations = new List<ActivationType>(laCount);
             for (int i = 0; i < laCount; i++)
                 p.LayerActivations.Add((ActivationType)reader.ReadInt32());
+
+            int minCount = reader.ReadInt32();
+            p.inputActivationMin = new double[minCount];
+            for (int i = 0; i < minCount; i++)
+                p.inputActivationMin[i] = reader.ReadDouble();
+
+            int maxCount = reader.ReadInt32();
+            p.inputActivationMax = new double[maxCount];
+            for (int i = 0; i < maxCount; i++)
+                p.inputActivationMax[i] = reader.ReadDouble();
 
             result.parameters = p;
             return result;
@@ -304,8 +318,9 @@ namespace CallaghanDev.ML
                 throw new InvalidDataException($"Array length mismatch: expected {arr.Length}, got {len}");
             }
             for (int i = 0; i < len; i++)
-
+            {
                 arr[i] = reader.ReadDouble();
+            }
         }
 
         #endregion

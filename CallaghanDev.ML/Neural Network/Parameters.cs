@@ -39,6 +39,9 @@ namespace CallaghanDev.ML
         public List<int> LayerWidths { get; set; } = new List<int>();
         public List<ActivationType> LayerActivations { get; set; } = new List<ActivationType>();
 
+        internal double[] inputActivationMin { get; set; }
+        internal double[] inputActivationMax { get; set; }
+
         public override string ToString()
         {
             var sb = new StringBuilder();

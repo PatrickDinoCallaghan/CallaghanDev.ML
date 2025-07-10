@@ -13,7 +13,14 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Action<Index1D, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>> _dotKernel;
         private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>> _outGradKernel;
         private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>> _hidGradKernel;
-        private readonly Action<Index2D, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, double> _updWKernel;
+        private readonly Action<
+    Index2D,
+    ArrayView2D<double, Stride2D.DenseX>,
+    ArrayView1D<double, Stride1D.Dense>,
+    ArrayView1D<double, Stride1D.Dense>,
+    double,
+    double
+> _updWKernel;
         private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, double> _updBKernel;
         private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>> _dotTransposedKernel;
         private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ActivationType> _actKernel;
@@ -94,6 +101,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 ArrayView2D<double, Stride2D.DenseX>,
                 ArrayView1D<double, Stride1D.Dense>,
                 ArrayView1D<double, Stride1D.Dense>,
+                double,
                 double>(UpdateWeightsKernel);
 
             _updBKernel = _accelerator.LoadAutoGroupedStreamKernel<
@@ -224,7 +232,13 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate)
+        public double[,] UpdateWeights(
+            double[,] weights,
+            double[] deltas,
+            double[] prevActivations,
+            double learningRate,
+            double lambda           // ← new L2 weight‐decay term
+        )
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
@@ -240,13 +254,21 @@ namespace CallaghanDev.ML.AccelerationManagers
             bufs.w.CopyFromCPU(weights);
             bufs.d.CopyFromCPU(deltas);
             bufs.pa.CopyFromCPU(prevActivations);
-            _updWKernel(new Index2D(rows, cols), bufs.w.View, bufs.d.View, bufs.pa.View, learningRate);
+
+            // 2) Pass lambda into the kernel
+            _updWKernel(
+                new Index2D(rows, cols),
+                bufs.w.View,
+                bufs.d.View,
+                bufs.pa.View,
+                learningRate,
+                lambda
+            );
 
             var result = new double[rows, cols];
             bufs.w.CopyToCPU(result);
             return result;
         }
-
         public double[] UpdateBias(double[] bias, double[] deltas, double learningRate)
         {
             int n = bias.Length;
@@ -337,12 +359,21 @@ namespace CallaghanDev.ML.AccelerationManagers
             delta[i] = pre[i] * der[i];
         }
 
-        private static void UpdateWeightsKernel(Index2D idx, ArrayView2D<double, Stride2D.DenseX> W, ArrayView1D<double, Stride1D.Dense> delta, ArrayView1D<double, Stride1D.Dense> prevAct, double learningRate)
+        private static void UpdateWeightsKernel(
+            Index2D idx,
+            ArrayView2D<double, Stride2D.DenseX> W,
+            ArrayView1D<double, Stride1D.Dense> delta,
+            ArrayView1D<double, Stride1D.Dense> prevAct,
+            double learningRate,
+            double lambda            // ← accept it here
+        )
         {
             int r = idx.X, c = idx.Y;
-            W[r, c] -= learningRate * delta[r] * prevAct[c];
+            // compute gradient + L2 penalty term
+            double grad = delta[r] * prevAct[c];
+            double decay = lambda * W[r, c];
+            W[r, c] -= learningRate * (grad + decay);
         }
-
         private static void UpdateBiasKernel(Index1D i, ArrayView1D<double, Stride1D.Dense> bais, ArrayView1D<double, Stride1D.Dense> delta, double learningRate)
         {
             bais[i] -= learningRate * delta[i];

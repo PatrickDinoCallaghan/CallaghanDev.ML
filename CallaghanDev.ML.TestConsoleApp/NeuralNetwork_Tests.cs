@@ -33,8 +33,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.CPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
-                LayerWidths = new List<int> { 2, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
+                LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
+                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
             };
 
             // Setup the neural network
@@ -43,6 +43,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             neuralNetwork.Train(inputs, expectedOutputs, 0.5f, 1000);  // Train with 1000 epochs
 
+            Console.WriteLine($"\n");
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
@@ -81,8 +82,9 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.GPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Uniform,
-                LayerWidths = new List<int> { 2, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
+                LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
+                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.None },
+
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -90,6 +92,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
+            Console.WriteLine($"\n");
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
@@ -126,8 +129,9 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.CPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Uniform,
-                LayerWidths = new List<int> { 2, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh },
+                LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
+                LayerActivations = new List<ActivationType> { ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh },
+
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -135,6 +139,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
+            Console.WriteLine($"\n");
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
@@ -170,8 +175,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.CPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Uniform,
-                LayerWidths = new List<int> { 2, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh },
+                LayerWidths = new List<int> { 2, 4,4, 1 },
+                LayerActivations = new List<ActivationType> { ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh },
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
@@ -179,6 +184,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Train the neural network
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
+            Console.WriteLine($"\n");
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
