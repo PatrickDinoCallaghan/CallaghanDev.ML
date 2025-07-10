@@ -1,0 +1,314 @@
+﻿using CallaghanDev.ML.Enums;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace CallaghanDev.ML
+{
+    public class Data
+    {
+        public Layer[] layers { get; set; }
+        public Parameters parameters { get; set; }
+
+        private Random _random;
+
+        public Data() { }
+        public Data(Parameters InParameters)
+        {
+            this.parameters = InParameters;
+            InitializeData();
+        }
+
+        /// <summary>
+        /// Initializes Layers[] according to parameters and the number of sensing inputs.
+        /// If loadingFromFile is true, skips randomizing weights & biases.
+        /// </summary>
+        public void InitializeData()
+        {
+            _random = new Random();
+
+            var sizes = parameters.LayerWidths;
+
+            layers = new Layer[sizes.Count];
+
+            for (int i = 0; i < sizes.Count; i++)
+            {
+                int layerSize = sizes[i];
+                int fanIn = (i == 0) ? 0 : sizes[i - 1];
+                int fanOut = (i < sizes.Count - 1) ? sizes[i + 1] : 0;
+
+                var layer = new Layer(fanIn, layerSize, parameters.LayerActivations[i]);
+
+                if (i > 0)
+                {
+                    for (int neuron = 0; neuron < layerSize; neuron++)
+                    {
+                        layer.Biases[neuron] = 0.0;
+
+                        for (int prev = 0; prev < fanIn; prev++)
+                        {
+                            layer.Weights[neuron, prev] = Initializer(parameters.ActivationDistribution, parameters.LayerActivations[i], fanIn, fanOut);
+                        }
+                    }
+                }
+
+                layers[i] = layer;
+            }
+        }
+
+        private double Initializer(ActivationDistribution activationDistribution, ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        {
+            switch (activationDistribution)
+            {
+                case ActivationDistribution.Normal:
+                    return InitializerNormal(activationType, incomingNeurites, outgoingNeurites);
+                case ActivationDistribution.Uniform:
+                    return InitializerUniform(activationType, incomingNeurites, outgoingNeurites);
+                default:
+                    throw new NotImplementedException("Activation distribution not Implemented!");
+            }
+
+        }
+        private double InitializerNormal(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        {
+            switch (activationType)
+            {
+                case ActivationType.Tanh:
+                    return XavierGlorotNormalInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Sigmoid:
+                    return XavierGlorotNormalInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Leakyrelu:
+                    return HeNormalInitializer(incomingNeurites);
+                case ActivationType.Relu:
+                    return HeNormalInitializer(incomingNeurites);
+                default:
+                    return GetRandomDouble(_random, -1, 1);
+            }
+        }
+        private double InitializerUniform(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        {
+            switch (activationType)
+            {
+                case ActivationType.Tanh:
+                    return XavierGlorotUniformInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Sigmoid:
+                    return XavierGlorotUniformInitializer(incomingNeurites, outgoingNeurites);
+                case ActivationType.Leakyrelu:
+                    return HeUniformInitializer(incomingNeurites);
+                case ActivationType.Relu:
+                    return HeUniformInitializer(incomingNeurites);
+                default:
+                    return GetRandomDouble(_random, -1, 1);
+            }
+        }
+        /// <summary>
+        /// He Initialization : ReLU / LeakyReLU Linear
+        /// </summary>
+        /// <param name="incomingNeurites"></param>
+        /// <returns></returns>
+        private double HeNormalInitializer(int incomingNeurites)
+        {
+            double standardDeviation = Math.Sqrt(2.0 / incomingNeurites);
+            // Generate a normally distributed _random value
+            double u1 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
+            double u2 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
+            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
+            return z * standardDeviation; // Scale by standard deviation
+        }
+        /// <summary>
+        /// Generates a weight using Xavier/Glorot Initialization. : Sigmoid/Tanh:
+        /// </summary>
+        /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
+        /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
+        /// <returns>A weight value initialized using Xavier/Glorot method.</returns>
+        public double XavierGlorotNormalInitializer(int incomingNeurites, int outgoingNeurites)
+        {
+            if (incomingNeurites <= 0)
+                throw new ArgumentException("Neurites count must be positive.");
+
+            // Compute the standard deviation for Xavier Initialization
+            double standardDeviation = Math.Sqrt(2.0 / (incomingNeurites + outgoingNeurites));
+
+            // Box-Muller transform to generate normally distributed _random value
+            double u1 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
+            double u2 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
+            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2); // Normally distributed _random value
+
+            // Scale the value by the standard deviation
+            return z * standardDeviation;
+        }
+        /// <summary>
+        /// He Initialization using uniform distribution for ReLU / LeakyReLU activations.
+        /// The weights are sampled from a uniform distribution in the range [-limit, limit].
+        /// </summary>
+        /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
+        /// <returns>A weight value initialized using He Uniform method.</returns>
+        private double HeUniformInitializer(int incomingNeurites)
+        {
+            if (incomingNeurites <= 0)
+                throw new ArgumentException("Neurites count must be positive.", nameof(incomingNeurites));
+
+            // Compute the limit for the uniform distribution
+            double limit = Math.Sqrt(6.0 / incomingNeurites);
+
+            // Generate a uniformly distributed _random value in the range [-limit, limit]
+            return _random.NextDouble() * (2 * limit) - limit;
+        }
+
+        /// <summary>
+        /// Xavier/Glorot Initialization using uniform distribution for Sigmoid/Tanh activations.
+        /// The weights are sampled from a uniform distribution in the range [-limit, limit].
+        /// </summary>
+        /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
+        /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
+        /// <returns>A weight value initialized using Xavier/Glorot Uniform method.</returns>
+        public double XavierGlorotUniformInitializer(int incomingNeurites, int outgoingNeurites)
+        {
+            if (incomingNeurites <= 0)
+                throw new ArgumentException("Neurites count must be positive.");
+
+            // Compute the limit for the uniform distribution
+            double limit = Math.Sqrt(6.0 / (incomingNeurites + outgoingNeurites));
+
+            // Generate a uniformly distributed _random value in the range [-limit, limit]
+            return _random.NextDouble() * (2 * limit) - limit;
+        }
+        private double GetRandomDouble(Random random, double min, double max)
+        {
+            if (min >= max)
+            {
+                throw new ArgumentException("The minimum value must be less than the maximum value.");
+            }
+
+            // Generate a _random double between 0.0 (inclusive) and 1.0 (exclusive)
+            double randomValue = random.NextDouble();
+
+            // Scale and shift the value to the specified range
+            return min + (randomValue * (max - min));
+        }
+
+        #region IO
+
+        public void Save(string filePath)
+        {
+            using var fs = File.Open(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var writer = new BinaryWriter(fs);
+
+            // --- Layers (unchanged) ---
+            writer.Write(layers.Length);
+            foreach (var layer in layers)
+            {
+                writer.Write(layer.InputSize);
+                writer.Write(layer.Size);
+                writer.Write((int)layer.ActivationType);
+                WriteDoubleArray(writer, layer.Activations);
+                WriteDoubleArray(writer, layer.Biases);
+                WriteDoubleArray(writer, layer.Derivatives);
+                WriteDoubleArray(writer, layer.Deltas);
+                for (int i = 0; i < layer.Size; i++)
+                    for (int j = 0; j < layer.InputSize; j++)
+                        writer.Write(layer.Weights[i, j]);
+            }
+
+            // --- Parameters primitives first ---
+            writer.Write((int)parameters.AccelerationType);
+            writer.Write((int)parameters.CostFunction);
+            writer.Write((int)parameters.ActivationDistribution);
+            writer.Write(parameters.L2RegulationLamda);
+            writer.Write(parameters.GradientClippingThreshold);
+            writer.Write(parameters.HuberLossDelta);
+            writer.Write(parameters.GradientExplosionThreshold);
+            writer.Write(parameters.GradientVanishingThreshold);
+
+            // --- Then lists in that same order ---
+            writer.Write(parameters.LayerWidths.Count);
+            foreach (var w in parameters.LayerWidths)
+                writer.Write(w);
+
+            writer.Write(parameters.LayerActivations.Count);
+            foreach (var a in parameters.LayerActivations)
+                writer.Write((int)a);
+        }
+
+        public static Data Load(string filePath)
+        {
+            using var fs = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var reader = new BinaryReader(fs);
+
+            var result = new Data();
+
+            // --- Layers (unchanged) ---
+            int layerCount = reader.ReadInt32();
+            var layers = new Layer[layerCount];
+            for (int idx = 0; idx < layerCount; idx++)
+            {
+                int inSize = reader.ReadInt32();
+                int size = reader.ReadInt32();
+                var actType = (ActivationType)reader.ReadInt32();
+                var layer = new Layer(inSize, size, actType);
+
+                ReadDoubleArray(reader, layer.Activations);
+                ReadDoubleArray(reader, layer.Biases);
+                ReadDoubleArray(reader, layer.Derivatives);
+                ReadDoubleArray(reader, layer.Deltas);
+
+                for (int i = 0; i < size; i++)
+                    for (int j = 0; j < inSize; j++)
+                        layer.Weights[i, j] = reader.ReadDouble();
+
+                layers[idx] = layer;
+            }
+            result.layers = layers;
+
+            // --- Parameters primitives in same order ---
+            var p = new Parameters
+            {
+                AccelerationType = (AccelerationType)reader.ReadInt32(),
+                CostFunction = (CostFunctionType)reader.ReadInt32(),
+                ActivationDistribution = (ActivationDistribution)reader.ReadInt32(),
+                L2RegulationLamda = reader.ReadDouble(),
+                GradientClippingThreshold = reader.ReadSingle(),
+                HuberLossDelta = reader.ReadSingle(),
+                GradientExplosionThreshold = reader.ReadDouble(),
+                GradientVanishingThreshold = reader.ReadDouble()
+            };
+
+            // --- Then read the lists, in the same order we wrote them ---
+            int lwCount = reader.ReadInt32();
+            p.LayerWidths = new List<int>(lwCount);
+            for (int i = 0; i < lwCount; i++)
+                p.LayerWidths.Add(reader.ReadInt32());
+
+            int laCount = reader.ReadInt32();
+            p.LayerActivations = new List<ActivationType>(laCount);
+            for (int i = 0; i < laCount; i++)
+                p.LayerActivations.Add((ActivationType)reader.ReadInt32());
+
+            result.parameters = p;
+            return result;
+        }
+
+        private static void WriteDoubleArray(BinaryWriter writer, double[] arr)
+        {
+            writer.Write(arr.Length);
+            foreach (var v in arr) writer.Write(v);
+        }
+        private static void ReadDoubleArray(BinaryReader reader, double[] arr)
+        {
+            int len = reader.ReadInt32();
+            if (len != arr.Length)
+            {
+                throw new InvalidDataException($"Array length mismatch: expected {arr.Length}, got {len}");
+            }
+            for (int i = 0; i < len; i++)
+
+                arr[i] = reader.ReadDouble();
+        }
+
+        #endregion
+    }
+}
+

@@ -1,23 +1,24 @@
-﻿using System.Text;
+﻿using CallaghanDev.ML.Enums;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
-namespace CallaghanDev.ML.NN
+namespace CallaghanDev.ML
 {
     public class Parameters
     {
         private float _HuberLossDelta = 1;
-        private AccelerationType _AccelerationType;
-        public AccelerationType AccelerationType { get { return _AccelerationType; } set { _AccelerationType = value; } }
-        public ActivationType DefaultActivationType { get; set; }
+
+        public AccelerationType AccelerationType { get; set; }
         public CostFunctionType CostFunction { get; set; }
         public ActivationDistribution ActivationDistribution { get; set; }
-        public SensoryNeuron[] SensoryNeurons { get; set; }
-        public int NoHiddenLayers { get; set; }
-        public int HiddenLayerWidth { get; set; }
-        public int NumberOfOutputs { get; set; }
+
         public double L2RegulationLamda { get; set; } = 0;
         public float GradientClippingThreshold { get; set; } = 1;
-        public float HuberLossDelta 
-        { 
+        public float HuberLossDelta
+        {
             get
             {
                 return _HuberLossDelta;
@@ -37,16 +38,16 @@ namespace CallaghanDev.ML.NN
 
         public double GradientExplosionThreshold { get; set; } = 1e3;
         public double GradientVanishingThreshold { get; set; } = 1e-5;
+
+        public List<int> LayerWidths { get; set; } = new List<int>();
+        public List<ActivationType> LayerActivations { get; set; } = new List<ActivationType>();
+
         public override string ToString()
         {
             var sb = new StringBuilder();
-            sb.AppendLine("NNParameters:");
+            sb.AppendLine("Parameters:");
             sb.AppendLine($"  AccelerationType: {AccelerationType}");
-            sb.AppendLine($"  SensoryNeurons: {SensoryNeurons.Length} neurons");
-            sb.AppendLine($"  NoHiddenLayers: {NoHiddenLayers}");
-            sb.AppendLine($"  HiddenLayerWidth: {HiddenLayerWidth}");
-            sb.AppendLine($"  NumberOfOutputs: {NumberOfOutputs}");
-            sb.AppendLine($"  DefaultActivationType: {DefaultActivationType}");
+            sb.AppendLine($"  ActivationType: {AccelerationType}");
             sb.AppendLine($"  CostFunction: {CostFunction}");
             sb.AppendLine($"  L2RegulationLamda: {L2RegulationLamda}");
             sb.AppendLine($"  GradientClippingThreshold: {GradientClippingThreshold}");
@@ -57,4 +58,5 @@ namespace CallaghanDev.ML.NN
             return sb.ToString();
         }
     }
+
 }

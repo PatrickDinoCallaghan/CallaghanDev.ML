@@ -4,9 +4,13 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace CallaghanDev.ML.Neural_Network.Training
+namespace CallaghanDev.ML.Enums
 {
-    internal class CNNTrainingManager
+    public enum AccelerationType
     {
+        CPU,
+        GPU,
+        CUDA
     }
+
 }
