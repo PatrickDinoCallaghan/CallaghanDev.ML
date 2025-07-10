@@ -295,6 +295,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             double a, d;
             switch (t)
             {
+                case ActivationType.None:
+                    a =z;
+                    d = 1;
+                    break;
+
                 case ActivationType.Sigmoid:
                     double e = XMath.Exp(z);
                     a = e / (1 + e);

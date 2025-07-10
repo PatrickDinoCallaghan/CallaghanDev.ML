@@ -32,7 +32,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 AccelerationType = AccelerationType.CPU,
                 CostFunction = CostFunctionType.mse,
-                ActivationDistribution = ActivationDistribution.Uniform,
+                ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { 2, 4, 1 },
                 LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
             };

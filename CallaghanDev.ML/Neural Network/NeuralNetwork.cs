@@ -94,7 +94,115 @@ namespace CallaghanDev.ML
                 cur.Derivatives = der;
             }
         }
+        private void BackPropagate(double[] costDerivs, double LearningRate)
+        {
+            int L = data.layers.Length - 1;
 
+            var outLayer = data.layers[L];
+            var outDeltas = accelerationManager.CalculateOutputGradients(
+                costDerivs,
+                outLayer.Derivatives
+            );
+
+
+            double normSq = 0.0;
+
+            Parallel.For(0, outDeltas.Length, i =>
+            {
+                double v = outDeltas[i];
+                InterlockedAdd(ref normSq, v * v);
+            });
+
+            int hiddenCount = L - 1;
+            var hiddenDeltas = new double[hiddenCount][];
+            double[] nextDeltas = outDeltas;
+
+            for (int idx = 0; idx < hiddenCount; idx++)
+            {
+                int layerIdx = L - 1 - idx;
+                var layer = data.layers[layerIdx];
+                var weightsAbove = data.layers[layerIdx + 1].Weights;
+
+                var hidDeltas = accelerationManager.CalculateHiddenGradients(
+                    weightsAbove,
+                    nextDeltas,
+                    layer.Derivatives
+                );
+                hiddenDeltas[idx] = hidDeltas;
+                nextDeltas = hidDeltas;
+
+                Parallel.For(0, hidDeltas.Length, j =>
+                {
+                    double v = hidDeltas[j];
+                    InterlockedAdd(ref normSq, v * v);
+                });
+            }
+
+            double globalNorm = Math.Sqrt(normSq);
+            double clipTh = data.parameters.GradientClippingThreshold;
+            double scale = (globalNorm > clipTh)
+                              ? clipTh / globalNorm
+                              : 1.0;
+
+            Parallel.For(0, outDeltas.Length, i =>
+            {
+                outDeltas[i] *= scale;
+            });
+
+            Parallel.For(0, hiddenCount, idx =>
+            {
+                var deltas = hiddenDeltas[idx];
+                for (int j = 0; j < deltas.Length; j++)
+                    deltas[j] *= scale;
+            });
+
+            // Output layer:
+            outLayer.Weights = accelerationManager.UpdateWeights(
+                outLayer.Weights,
+                outDeltas,
+                data.layers[L - 1].Activations,
+                LearningRate
+            );
+            outLayer.Biases = accelerationManager.UpdateBias(
+                outLayer.Biases,
+                outDeltas,
+                LearningRate
+            );
+
+            for (int idx = 0; idx < hiddenCount; idx++)
+            {
+                int layerIdx = L - 1 - idx;
+                var layer = data.layers[layerIdx];
+                var deltas = hiddenDeltas[idx];
+
+                layer.Weights = accelerationManager.UpdateWeights(
+                    layer.Weights,
+                    deltas,
+                    data.layers[layerIdx - 1].Activations,
+                    LearningRate
+                );
+                layer.Biases = accelerationManager.UpdateBias(
+                    layer.Biases,
+                    deltas,
+                    LearningRate
+                );
+            }
+        }
+
+        // Thread‑safe adder for a shared double
+        private static void InterlockedAdd(ref double target, double value)
+        {
+            double initial, computed;
+            do
+            {
+                initial = target;
+                computed = initial + value;
+            }
+            while (Interlocked.CompareExchange(
+                       ref target, computed, initial) != initial);
+        }
+
+        /*
         private void BackPropagate(double[] costDerivs, double LearningRate)
         {
             int L = data.layers.Length - 1;
@@ -131,6 +239,24 @@ namespace CallaghanDev.ML
                 nextDeltas = hidDeltas;
             }
         }
+        private double GetGlobalGradientClippingScale(double[] OutputGradients, double[][] HiddenGradients)
+        {
+            double globalNormSquared = OutputGradients.Select(g => g * g).Sum();
+            foreach (var layerGradients in HiddenGradients)
+            {
+                globalNormSquared += layerGradients.Select(g => g * g).Sum();
+            }
+            double globalNorm = Math.Sqrt(globalNormSquared);
+
+            // Determine scaling factor
+            double scale = 1.0;
+            if (globalNorm > data.parameters.GradientClippingThreshold)
+            {
+                scale = data.parameters.GradientClippingThreshold / globalNorm;
+            }
+
+            return scale;
+        }*/
         public void SetSensoryNeuronsValues(double[] inputValues)
         {
             var inputLayer = data.layers[0].Activations;

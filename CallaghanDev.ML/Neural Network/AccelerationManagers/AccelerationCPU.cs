@@ -123,6 +123,8 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             switch (type)
             {
+                case ActivationType.None:
+                    return x => x;
                 case ActivationType.Sigmoid:
                     return x =>
                     {
@@ -157,6 +159,10 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             switch (type)
             {
+                case ActivationType.None:
+
+                    return x => 1;
+
                 case ActivationType.Sigmoid:
                     return x =>
                     {
