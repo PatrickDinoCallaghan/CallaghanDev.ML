@@ -25,12 +25,9 @@ namespace CallaghanDev.ML
             }
             set
             {
-                if (CostFunction != CostFunctionType.huberLoss)
+                if (CostFunction == CostFunctionType.huberLoss)
                 {
-                    throw new Exception("CostFunction must be huberloss if huberloss deleta is selected");
-                }
-                else
-                {
+
                     _HuberLossDelta = value;
                 }
             }
