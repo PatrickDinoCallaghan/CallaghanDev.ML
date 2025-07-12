@@ -27,13 +27,17 @@ namespace CallaghanDev.ML
         private void InitAcceleration()
         {
 
-            if (data.parameters.AccelerationType == AccelerationType.GPU)
+            if (data.parameters.AccelerationType == AccelerationType.GPU || data.parameters.AccelerationType == AccelerationType.CUDA)
             {
-                accelerationManager = new AccelerationGPU();
+                accelerationManager = new AccelerationGPU(data.parameters.AccelerationType , data.parameters.AccelerationDeviceId);
             }
             else if (data.parameters.AccelerationType == AccelerationType.CPU)
             {
                 accelerationManager = new AccelerationCPU();
+            }
+            else if (data.parameters.AccelerationType == AccelerationType.MutliThreadCPU)
+            {
+                accelerationManager = new AccelerationMutliThreadCPU();
             }
             else
             {

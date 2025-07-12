@@ -12,6 +12,8 @@ namespace CallaghanDev.ML
         private float _HuberLossDelta = 1;
 
         public AccelerationType AccelerationType { get; set; }
+        public int AccelerationDeviceId { get; set; } = 0;
+
         public CostFunctionType CostFunction { get; set; }
         public ActivationDistribution ActivationDistribution { get; set; }
 

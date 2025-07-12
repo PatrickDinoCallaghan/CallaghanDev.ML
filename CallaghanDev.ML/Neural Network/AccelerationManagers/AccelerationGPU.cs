@@ -3,6 +3,7 @@ using ILGPU.Algorithms;
 using ILGPU.Runtime;
 using ILGPU;
 using ILGPU.Runtime.OpenCL;
+using ILGPU.Runtime.Cuda;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
@@ -55,10 +56,19 @@ namespace CallaghanDev.ML.AccelerationManagers
              MemoryBuffer1D<double, Stride1D.Dense> res)> _dotTransposedCache
             = new();
 
-        public AccelerationGPU()
+        public AccelerationGPU(AccelerationType accelerationType, int deviceIndex = 0)
         {
-            var context = Context.Create(builder => builder.AllAccelerators());
-            _accelerator = context.CreateCLAccelerator(0);
+            Context context = Context.Create(builder => builder.AllAccelerators());
+
+            if (accelerationType == AccelerationType.GPU)
+            {
+                _accelerator = context.CreateCLAccelerator(deviceIndex);
+            }
+            else if(accelerationType == AccelerationType.CUDA)
+            {
+               _accelerator = context.CreateCudaAccelerator(deviceIndex);
+            }
+
 
             _dotKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
@@ -232,13 +242,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public double[,] UpdateWeights(
-            double[,] weights,
-            double[] deltas,
-            double[] prevActivations,
-            double learningRate,
-            double lambda           // ← new L2 weight‐decay term
-        )
+        public double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate, double lambda)
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
