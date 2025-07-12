@@ -343,11 +343,12 @@ namespace CallaghanDev.ML
             return costDifferences;
         }
 
-        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType)
+        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType, int DeviceId= 0)
         {
             Data data = Data.Load(FileName);
             NeuralNetwork nn = new NeuralNetwork(data);
             data.parameters.AccelerationType = accelerationType;
+            data.parameters.AccelerationDeviceId = DeviceId;
             nn.data = data;
             return nn;
         }

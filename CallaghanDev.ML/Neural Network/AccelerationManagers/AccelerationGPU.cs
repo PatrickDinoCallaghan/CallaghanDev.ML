@@ -58,8 +58,11 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public AccelerationGPU(AccelerationType accelerationType, int deviceIndex = 0)
         {
-            Context context = Context.Create(builder => builder.AllAccelerators());
-
+            Context context = Context.Create(builder =>
+            {
+                builder.EnableAlgorithms();
+                builder.AllAccelerators();
+            });
             if (accelerationType == AccelerationType.GPU)
             {
                 _accelerator = context.CreateCLAccelerator(deviceIndex);
