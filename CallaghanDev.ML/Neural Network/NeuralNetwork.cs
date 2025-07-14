@@ -35,7 +35,7 @@ namespace CallaghanDev.ML
             {
                 accelerationManager = new AccelerationCPU();
             }
-            else if (data.parameters.AccelerationType == AccelerationType.MutliThreadCPU)
+            else if (data.parameters.AccelerationType == AccelerationType.MultiThreadCPU)
             {
                 accelerationManager = new AccelerationMutliThreadCPU();
             }

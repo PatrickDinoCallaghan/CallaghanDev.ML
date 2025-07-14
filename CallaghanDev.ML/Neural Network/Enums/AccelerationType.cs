@@ -9,7 +9,7 @@ namespace CallaghanDev.ML.Enums
     public enum AccelerationType
     {
         CPU,
-        MutliThreadCPU,
+        MultiThreadCPU,
         GPU,
         CUDA
     }

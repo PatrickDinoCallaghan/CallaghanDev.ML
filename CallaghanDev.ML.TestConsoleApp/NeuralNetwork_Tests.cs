@@ -80,7 +80,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             Parameters parameters = new Parameters()
             {
                 AccelerationType = AccelerationType.GPU,
-                CostFunction = CostFunctionType.mse,
+                CostFunction = CostFunctionType.huberLoss,
+                HuberLossDelta = 0.5f,
                 ActivationDistribution = ActivationDistribution.Uniform,
                 LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
                 LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.None },
