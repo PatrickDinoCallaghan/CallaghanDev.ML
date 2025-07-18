@@ -195,5 +195,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     };
             }
         }
+
+        public void Dispose() { }
     }
+    
 }

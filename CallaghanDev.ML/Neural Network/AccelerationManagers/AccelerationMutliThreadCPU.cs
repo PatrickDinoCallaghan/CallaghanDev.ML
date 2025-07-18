@@ -152,5 +152,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 default: return x => { var e = Math.Exp(x); var s = e / (1 + e); return s * (1 - s); };
             }
         }
+
+        public void Dispose() { }
     }
 }

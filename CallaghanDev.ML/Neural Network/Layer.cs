@@ -15,6 +15,9 @@ namespace CallaghanDev.ML
 
         public double[,] Weights { get; set; }
 
+        public double[][] ActivationsBatch { get; set; }
+        public double[][] DerivativesBatch { get; set; }
+        public double[][] DeltasBatch { get; set; }
 
         public Layer(int inputSize, int size, ActivationType actType)
         {
@@ -27,7 +30,11 @@ namespace CallaghanDev.ML
             Deltas = new double[size];
 
             Weights = new double[size, inputSize];
-            ActivationType = actType;
+            ActivationType = actType; 
+            
+            ActivationsBatch = null;
+            DerivativesBatch = null;
+            DeltasBatch = null;
         }
 
         public ActivationType ActivationType { get; }

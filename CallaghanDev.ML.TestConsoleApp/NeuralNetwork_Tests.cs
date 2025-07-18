@@ -60,6 +60,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void NeuralNetworkAndGPUTest()
         {
             Console.WriteLine("GPU test");
+
             double[][] inputs = new double[][]
             {
                 new double[] { 0, 0 },
@@ -87,14 +88,14 @@ namespace CallaghanDev.ML.TestConsoleApp
                 LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.None },
 
             };
-            // Setup the neural network
+
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
-            // Train the neural network
+
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
             Console.WriteLine($"\n");
-            // Evaluate the network with sample inputs
+
             for (int i = 0; i < inputs.Length; i++)
             {
                 double[] prediction = neuralNetwork.Predict(inputs[i]);
@@ -170,7 +171,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 new double[] { 1 }
             };
 
-            // Initialize sensory neurons
+
             Parameters parameters = new Parameters()
             {
                 AccelerationType = AccelerationType.CPU,
@@ -179,14 +180,14 @@ namespace CallaghanDev.ML.TestConsoleApp
                 LayerWidths = new List<int> { 2, 4,4, 1 },
                 LayerActivations = new List<ActivationType> { ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh },
             };
-            // Setup the neural network
+
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
-            // Train the neural network
+
             neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
 
             Console.WriteLine($"\n");
-            // Evaluate the network with sample inputs
+
             for (int i = 0; i < inputs.Length; i++)
             {
                 double[] prediction = neuralNetwork.Predict(inputs[i]);
@@ -197,5 +198,60 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
         }
 
+
+        public void NeuralNetworkBatchXorTest()
+        {
+            Console.WriteLine("NeuralNetworkBatchXorTest:");
+
+            double[][] inputs = new double[][]
+            {
+                new double[] { 0, 0 },
+                new double[] { 0, 1 },
+                new double[] { 1, 0 },
+                new double[] { 1, 1 }
+            };
+            double[][] expectedOutputs = new double[][]
+            {
+                new double[] { 0 },
+                new double[] { 1 },
+                new double[] { 1 },
+                new double[] { 0 }
+            };
+
+
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CUDA,
+                CostFunction = CostFunctionType.mse,
+                ActivationDistribution = ActivationDistribution.Normal,
+                LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
+                LayerActivations = new List<ActivationType>
+                {
+                    ActivationType.Leakyrelu,
+                    ActivationType.Leakyrelu,
+                    ActivationType.Leakyrelu,
+                    ActivationType.Leakyrelu,
+                    ActivationType.Sigmoid
+                },
+            };
+
+            var nn = new NeuralNetwork(parameters);
+
+
+            int batchSize = 100;
+            double lr = 0.1f;
+            int epochs = 1000;
+            nn.TrainBatch(inputs, expectedOutputs, batchSize, lr, epochs);
+
+            Console.WriteLine();
+
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var pred = nn.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+            }
+        }
     }
 }

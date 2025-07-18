@@ -15,5 +15,6 @@ namespace CallaghanDev.ML.AccelerationManagers
         double[] CalculateHiddenGradients(double[,] weights, double[] nextDeltas, double[] derivative);
         double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate, double lambda);
         double[] UpdateBias(double[] bias, double[] deltas, double learningRate);
+        void Dispose();
     }
 }
