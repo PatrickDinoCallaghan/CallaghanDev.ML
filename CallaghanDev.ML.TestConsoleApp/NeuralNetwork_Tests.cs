@@ -55,8 +55,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 Console.WriteLine($"Expected Label:{expectedLabel}, PredictedLabel:{predictedLabel}");
             }
         }
-
-
         public void NeuralNetworkAndGPUTest()
         {
             Console.WriteLine("GPU test");
@@ -197,11 +195,9 @@ namespace CallaghanDev.ML.TestConsoleApp
                 Console.WriteLine($"Expected Label: {expectedLabel}, Predicted Label: {predictedLabel}");
             }
         }
-
-
-        public void NeuralNetworkBatchXorTest()
+        public void NeuralNetworkBatchXorTestCUDA()
         {
-            Console.WriteLine("NeuralNetworkBatchXorTest:");
+            Console.WriteLine("NeuralNetworkBatchXorTestCUDA:");
 
             double[][] inputs = new double[][]
             {
