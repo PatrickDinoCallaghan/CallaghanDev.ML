@@ -47,12 +47,10 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
-                float[] prediction = neuralNetwork.Predict(inputs[i]);
-                Console.WriteLine(prediction[0]);
-                int predictedLabel = prediction[0] >= 0.1 ? 1 : 0;  // Threshold at 0.5
-                int expectedLabel = (int)expectedOutputs[i][0];
-
-                Console.WriteLine($"Expected Label:{expectedLabel}, PredictedLabel:{predictedLabel}");
+                var pred = neuralNetwork.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkAndGPUTest()
@@ -78,29 +76,28 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.GPU,
+                AccelerationType = AccelerationType.CUDA,
                 CostFunction = CostFunctionType.huberLoss,
                 HuberLossDelta = 0.5f,
                 ActivationDistribution = ActivationDistribution.Uniform,
                 LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.None },
+                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
 
             };
 
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
 
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
+            neuralNetwork.Train(inputs, expectedOutputs, 0.1f, 1000);
 
             Console.WriteLine($"\n");
 
             for (int i = 0; i < inputs.Length; i++)
             {
-                float[] prediction = neuralNetwork.Predict(inputs[i]);
-                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
-                int expectedLabel = (int)expectedOutputs[i][0];
-
-                Console.WriteLine($"Expected Label: {expectedLabel}, Predicted Label: {predictedLabel}");
+                var pred = neuralNetwork.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkAndCPUTest()
@@ -143,11 +140,10 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
-                float[] prediction = neuralNetwork.Predict(inputs[i]);
-                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
-                int expectedLabel = (int)expectedOutputs[i][0];
-
-                Console.WriteLine($"Expected Label: {expectedLabel}, Predicted Label: {predictedLabel}");
+                var pred = neuralNetwork.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkOrTest()
@@ -188,11 +184,10 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             for (int i = 0; i < inputs.Length; i++)
             {
-                float[] prediction = neuralNetwork.Predict(inputs[i]);
-                int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
-                int expectedLabel = (int)expectedOutputs[i][0];
-
-                Console.WriteLine($"Expected Label: {expectedLabel}, Predicted Label: {predictedLabel}");
+                var pred = neuralNetwork.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkBatchXorTestCUDA()
@@ -234,8 +229,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             var nn = new NeuralNetwork(parameters);
 
 
-            int batchSize = 100;
-            float lr = 0.1f;
+            int batchSize = 100000;
+            float lr = 0.5f;
             int epochs = 1000;
             nn.TrainBatch(inputs, expectedOutputs, batchSize, lr, epochs);
 

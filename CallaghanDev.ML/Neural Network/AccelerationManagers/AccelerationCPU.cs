@@ -78,7 +78,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 float sum = 0.0f;
                 for (int i = 0; i < rows; i++)
+                {
                     sum += weights[i, j] * nextDeltas[i];
+                }
                 pre[j] = sum;
             }
 
