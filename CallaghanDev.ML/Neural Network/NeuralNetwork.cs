@@ -9,7 +9,7 @@ namespace CallaghanDev.ML
         private Data data;
         private IAccelerationManager accelerationManager;
         private CostFunction CostFunctionDeriv { get; set; }
-        private delegate double CostFunction(double value, double prediction);
+        private delegate float CostFunction(float value, float prediction);
         private CostFunction costFunction { get; set; }
 
         public NeuralNetwork(Parameters parameters)
@@ -45,7 +45,7 @@ namespace CallaghanDev.ML
             }
         }
 
-        public void Train(double[][] inputs, double[][] expected, double learningRate, int epochs, bool silent = false)
+        public void Train(float[][] inputs, float[][] expected, float learningRate, int epochs, bool silent = false)
         {
             // Build a *fixed* min/max from the entire training set:
             CalibrateInputs(inputs);
@@ -65,39 +65,39 @@ namespace CallaghanDev.ML
                 }
             }
         }
-        private double[] ScaleInput(double[] raw)
+        private float[] ScaleInput(float[] raw)
         {
             int n = raw.Length;
-            var scaled = new double[n];
+            var scaled = new float[n];
             var min = data.parameters.inputActivationMin;
             var max = data.parameters.inputActivationMax;
 
             for (int i = 0; i < n; i++)
             {
-                double range = max[i] - min[i];
+                float range = max[i] - min[i];
                 scaled[i] = (range <= 0)
                     ? 0
                     : (raw[i] - min[i]) / range;
             }
             return scaled;
         }
-        private void CalibrateInputs(double[][] inputs)
+        private void CalibrateInputs(float[][] inputs)
         {
             int inputSize = inputs[0].Length;
-            var min = new double[inputSize];
-            var max = new double[inputSize];
+            var min = new float[inputSize];
+            var max = new float[inputSize];
             for (int i = 0; i < inputSize; i++)
             {
-                min[i] = double.PositiveInfinity;
-                max[i] = double.NegativeInfinity;
+                min[i] = float.PositiveInfinity;
+                max[i] = float.NegativeInfinity;
             }
 
             foreach (var row in inputs)
             {
                 for (int i = 0; i < inputSize; i++)
                 {
-                    min[i] = Math.Min(min[i], row[i]);
-                    max[i] = Math.Max(max[i], row[i]);
+                    min[i] = MathF.Min(min[i], row[i]);
+                    max[i] = MathF.Max(max[i], row[i]);
                 }
             }
 
@@ -105,13 +105,13 @@ namespace CallaghanDev.ML
             data.parameters.inputActivationMax = max;
         }
 
-        private void Learn(double[] x, double[] y, double LearningRate)
+        private void Learn(float[] x, float[] y, float LearningRate)
         {
             SetInputLayer(x);
             ForwardPropagate();
 
             var last = data.layers[^1];
-            double[] costDerivs = new double[last.Size];
+            float[] costDerivs = new float[last.Size];
             for (int i = 0; i < last.Size; i++)
             {
                 costDerivs[i] = CostFunctionDeriv(last.Activations[i], y[i]);
@@ -119,7 +119,7 @@ namespace CallaghanDev.ML
             BackPropagate(costDerivs, LearningRate);
         }
 
-        private void SetInputLayer(double[] x)
+        private void SetInputLayer(float[] x)
         {
             Array.Copy(x, data.layers[0].Activations, x.Length);
         }
@@ -139,7 +139,7 @@ namespace CallaghanDev.ML
                 cur.Derivatives = der;
             }
         }
-        private void BackPropagate(double[] costDerivs, double learningRate)
+        private void BackPropagate(float[] costDerivs, float learningRate)
         {
             int L = data.layers.Length - 1;
 
@@ -153,9 +153,9 @@ namespace CallaghanDev.ML
 
         #region Global Gradient Scale Clipping 
 
-        private List<double[]> ComputeDeltas(double[] costDerivs, int outputLayerIdx)
+        private List<float[]> ComputeDeltas(float[] costDerivs, int outputLayerIdx)
         {
-            var deltas = new List<double[]>();
+            var deltas = new List<float[]>();
 
             // output layer
             var outLayer = data.layers[outputLayerIdx];
@@ -163,7 +163,7 @@ namespace CallaghanDev.ML
             deltas.Add(outDeltas);
 
             // hidden layers, in reverse
-            double[] next = outDeltas;
+            float[] next = outDeltas;
             for (int i = outputLayerIdx - 1; i > 0; i--)
             {
                 var layerAbove = data.layers[i + 1];
@@ -180,29 +180,29 @@ namespace CallaghanDev.ML
             return deltas;
         }
 
-        private double ComputeGlobalNorm(List<double[]> deltas)
+        private float ComputeGlobalNorm(List<float[]> deltas)
         {
-            double sumSq = deltas
+            float sumSq = deltas
                 .SelectMany(arr => arr)
                 .Sum(v => v * v);
-            return Math.Sqrt(sumSq);
+            return MathF.Sqrt(sumSq);
         }
 
-        private double ComputeClipScale(double globalNorm, double clipThreshold)
+        private float ComputeClipScale(float globalNorm, float clipThreshold)
             => (globalNorm > clipThreshold)
                  ? clipThreshold / globalNorm
-                 : 1.0;
+                 : 1.0f;
 
-        private void ScaleAllDeltas(List<double[]> deltas, double scale)
+        private void ScaleAllDeltas(List<float[]> deltas, float scale)
         {
             foreach (var arr in deltas)
                 for (int i = 0; i < arr.Length; i++)
                     arr[i] *= scale;
         }
-        private void ApplyUpdates(List<double[]> deltasByLayer, double learningRate)
+        private void ApplyUpdates(List<float[]> deltasByLayer, float learningRate)
         {
             int L = data.layers.Length - 1;
-            double λ = data.parameters.L2RegulationLamda;
+            float λ = data.parameters.L2RegulationLamda;
 
             // output layer
             {
@@ -239,14 +239,14 @@ namespace CallaghanDev.ML
 
         #endregion
 
-        public void SetSensoryNeuronsValues(double[] inputValues)
+        public void SetSensoryNeuronsValues(float[] inputValues)
         {
             var inputLayer = data.layers[0].Activations;
             Parallel.For(0, inputValues.Length, i =>
                 inputLayer[i] = inputValues[i]
             );
         }
-        public double[] Predict(double[] rawInput)
+        public float[] Predict(float[] rawInput)
         {
             var xScaled = ScaleInput(rawInput);
             SetInputLayer(xScaled);
@@ -262,81 +262,81 @@ namespace CallaghanDev.ML
             switch (data.parameters.CostFunction)
             {
                 case CostFunctionType.mse:
-                    costFunction = (double ActualValue, double predicted) => { return Math.Pow(predicted - ActualValue, 2); };
-                    CostFunctionDeriv = (double ActualValue, double predicted) => { return 2 * (predicted - ActualValue); };
+                    costFunction = (float ActualValue, float predicted) => { return MathF.Pow(predicted - ActualValue, 2); };
+                    CostFunctionDeriv = (float ActualValue, float predicted) => { return 2 * (predicted - ActualValue); };
                     break;
                 case CostFunctionType.ZeroWeightedMSE:
-                    costFunction = (double ActualValue, double predicted) => {
-                        double zeroWeight = 0.25;
-                        double nonZeroWeight = 1.0;
+                    costFunction = (float ActualValue, float predicted) => {
+                        float zeroWeight = 0.25f;
+                        float nonZeroWeight = 1.0f;
 
                         // Determine the weight based on the true value
-                        double weight = (ActualValue == 0) ? zeroWeight : nonZeroWeight;
+                        float weight = (ActualValue == 0) ? zeroWeight : nonZeroWeight;
 
                         // Calculate the weighted MSE for the single prediction
-                        return weight * Math.Pow(predicted - ActualValue, 2);
+                        return weight * MathF.Pow(predicted - ActualValue, 2f);
                     };
-                    CostFunctionDeriv = (double ActualValue, double predicted) => {
-                        double zeroWeight = 0.25;
-                        double nonZeroWeight = 1.0;
+                    CostFunctionDeriv = (float ActualValue, float predicted) => {
+                        float zeroWeight = 0.25f;
+                        float nonZeroWeight = 1.0f;
 
                         // Determine the weight based on the true value
-                        double weight = (ActualValue == 0) ? zeroWeight : nonZeroWeight;
+                        float weight = (ActualValue == 0) ? zeroWeight : nonZeroWeight;
 
                         // Calculate the derivative of the weighted MSE for the single prediction
                         return 2 * weight * (predicted - ActualValue);
                     };
                     break;
                 case CostFunctionType.binaryCrossEntropy:
-                    costFunction = (double ActualValue, double predicted) => { return -(ActualValue * Math.Log(predicted) + (1 - ActualValue) * Math.Log(1 - predicted)); };
-                    CostFunctionDeriv = (double ActualValue, double predicted) => { return (predicted - ActualValue) / (predicted * (1 - predicted)); };
+                    costFunction = (float ActualValue, float predicted) => { return -(ActualValue * MathF.Log(predicted) + (1 - ActualValue) * MathF.Log(1 - predicted)); };
+                    CostFunctionDeriv = (float ActualValue, float predicted) => { return (predicted - ActualValue) / (predicted * (1 - predicted)); };
                     break;
                 case CostFunctionType.mae:
-                    costFunction = (double ActualValue, double predicted) => { return Math.Abs(ActualValue - predicted); };
-                    CostFunctionDeriv = (double ActualValue, double predicted) => { return ActualValue > predicted ? -1 : 1; };
+                    costFunction = (float ActualValue, float predicted) => { return MathF.Abs(ActualValue - predicted); };
+                    CostFunctionDeriv = (float ActualValue, float predicted) => { return ActualValue > predicted ? -1 : 1; };
                     break;
                 case CostFunctionType.huberLoss:
                     costFunction = (ActualValue, predicted) => {
-                        double diff = ActualValue - predicted;
-                        if (Math.Abs(diff) <= data.parameters.HuberLossDelta)
+                        float diff = ActualValue - predicted;
+                        if (MathF.Abs(diff) <= data.parameters.HuberLossDelta)
                         {
-                            return 0.5 * diff * diff;
+                            return 0.5f * diff * diff;
                         }
                         else
                         {
-                            return data.parameters.HuberLossDelta * (Math.Abs(diff) - 0.5 * data.parameters.HuberLossDelta);
+                            return data.parameters.HuberLossDelta * (MathF.Abs(diff) - 0.5f * data.parameters.HuberLossDelta);
                         }};
                     CostFunctionDeriv = (ActualValue, predicted) => {
-                        double diff = ActualValue - predicted;
-                        if (Math.Abs(diff) <= data.parameters.HuberLossDelta)
+                        float diff = ActualValue - predicted;
+                        if (MathF.Abs(diff) <= data.parameters.HuberLossDelta)
                         {
                             return diff;
                         }
                         else
                         {
-                            return data.parameters.HuberLossDelta * Math.Sign(diff);
+                            return data.parameters.HuberLossDelta * MathF.Sign(diff);
                         }
                     };
                     break;
                 case CostFunctionType.categoricalCrossEntropy:
                     costFunction = (ActualValue, predicted) => {
-                        return -ActualValue * Math.Log(predicted + 1e-15);
+                        return -ActualValue * MathF.Log(predicted + 1e-15f);
                     };
-                    CostFunctionDeriv = (double ActualValue, double predicted) => { return predicted - ActualValue; };
+                    CostFunctionDeriv = (float ActualValue, float predicted) => { return predicted - ActualValue; };
                     break;
                 default:
                     throw new ArgumentException("Unsupported cost function type");
             }
         }
-        public double[] CalculateCost(double[] expectedOutputValues)
+        public float[] CalculateCost(float[] expectedOutputValues)
         {
             int columnIndex = data.layers.Length - 1;
 
-            double[] costDifferences = new double[data.layers[columnIndex].Size];
+            float[] costDifferences = new float[data.layers[columnIndex].Size];
 
             Parallel.For(0, data.layers[columnIndex].Size, i =>
             {
-                double nnOutputValue = data.layers[columnIndex].Activations[i];
+                float nnOutputValue = data.layers[columnIndex].Activations[i];
                 costDifferences[i] = CostFunctionDeriv(nnOutputValue, expectedOutputValues[i]);
             });
 
@@ -359,7 +359,7 @@ namespace CallaghanDev.ML
 
         #region Batch-Processing Methods
         private AccelerationGPUBatch GPUBatchAccelerationManager;
-        public void TrainBatch(double[][] inputs, double[][] expected, int batchSize, double learningRate, int epochs, bool silent = false)
+        public void TrainBatch(float[][] inputs, float[][] expected, int batchSize, float learningRate, int epochs, bool silent = false)
         {
             if (data.parameters.AccelerationType != AccelerationType.GPU && data.parameters.AccelerationType != AccelerationType.CUDA)
             {
@@ -377,7 +377,7 @@ namespace CallaghanDev.ML
             CalibrateInputs(inputs);
 
             int n = inputs.Length;
-            long totalBatches = (long)Math.Ceiling(n / (double)batchSize) * epochs;
+            long totalBatches = (long)MathF.Ceiling(n / (float)batchSize) * epochs;
             long count = 0;
             var rand = new Random();
 
@@ -387,8 +387,8 @@ namespace CallaghanDev.ML
                 for (int start = 0; start < n; start += batchSize)
                 {
                     int size = Math.Min(batchSize, n - start);
-                    var batchX = new double[size][];
-                    var batchY = new double[size][];
+                    var batchX = new float[size][];
+                    var batchY = new float[size][];
                     for (int j = 0; j < size; j++)
                     {
                         batchX[j] = ScaleInput(inputs[idx[start + j]]);
@@ -409,7 +409,7 @@ namespace CallaghanDev.ML
         /// Initializes the first-layer activations for a mini‑batch.
         /// </summary>
         /// <param name="xBatch">A [batchSize][inputSize] jagged array of scaled inputs.</param>
-        private void SetInputBatch(double[][] xBatch)
+        private void SetInputBatch(float[][] xBatch)
         {
             if (xBatch == null || xBatch.Length == 0)
             {
@@ -417,22 +417,22 @@ namespace CallaghanDev.ML
             }
             data.layers[0].ActivationsBatch = xBatch;
 
-            data.layers[0].DerivativesBatch = new double[xBatch.Length][];
+            data.layers[0].DerivativesBatch = new float[xBatch.Length][];
             for (int i = 0; i < xBatch.Length; i++)
             {
-                data.layers[0].DerivativesBatch[i] = new double[data.layers[0].Size];
+                data.layers[0].DerivativesBatch[i] = new float[data.layers[0].Size];
             }
         }
-        private void LearnBatch(double[][] xBatch, double[][] yBatch, double lr)
+        private void LearnBatch(float[][] xBatch, float[][] yBatch, float lr)
         {
             SetInputBatch(xBatch);
             ForwardPropagateBatch();
             var outL = data.layers[^1];
             int B = yBatch.Length;
-            var costDeriv = new double[B][];
+            var costDeriv = new float[B][];
             for (int i = 0; i < B; i++)
             {
-                costDeriv[i] = new double[outL.Size];
+                costDeriv[i] = new float[outL.Size];
                 for (int j = 0; j < outL.Size; j++)
                 {
                     costDeriv[i][j] = CostFunctionDeriv(outL.ActivationsBatch[i][j], yBatch[i][j]);
@@ -453,7 +453,7 @@ namespace CallaghanDev.ML
             }
         }
 
-        private void BackPropagateBatch(double[][] costDerivBatch, double lr)
+        private void BackPropagateBatch(float[][] costDerivBatch, float lr)
         {
             int L = data.layers.Length - 1;
             var deltas = ComputeBatchDeltas(costDerivBatch, L);
@@ -466,9 +466,9 @@ namespace CallaghanDev.ML
             ApplyBatchUpdates(deltas, lr);
         }
 
-        private List<double[][]> ComputeBatchDeltas(double[][] costDerivBatch, int outIdx)
+        private List<float[][]> ComputeBatchDeltas(float[][] costDerivBatch, int outIdx)
         {
-            var list = new List<double[][]>();
+            var list = new List<float[][]>();
             var outLayer = data.layers[outIdx];
             list.Add(GPUBatchAccelerationManager.CalculateBatchOutputGradients(costDerivBatch, outLayer.DerivativesBatch));
             var next = list[0];
@@ -482,9 +482,9 @@ namespace CallaghanDev.ML
             return list;
         }
 
-        private double ComputeBatchGlobalNorm(List<double[][]> deltas) => Math.Sqrt(deltas.SelectMany(m => m).SelectMany(a => a).Sum(v => v * v));
+        private float ComputeBatchGlobalNorm(List<float[][]> deltas) => MathF.Sqrt(deltas.SelectMany(m => m).SelectMany(a => a).Sum(v => v * v));
 
-        private void ScaleAllBatchDeltas(List<double[][]> deltas, double scale)
+        private void ScaleAllBatchDeltas(List<float[][]> deltas, float scale)
         {
             foreach (var mat in deltas)
             {
@@ -498,7 +498,7 @@ namespace CallaghanDev.ML
             }
         }
 
-        private void ApplyBatchUpdates(List<double[][]> deltas, double lr)
+        private void ApplyBatchUpdates(List<float[][]> deltas, float lr)
         {
             int L = data.layers.Length - 1;
             var lambda = data.parameters.L2RegulationLamda;

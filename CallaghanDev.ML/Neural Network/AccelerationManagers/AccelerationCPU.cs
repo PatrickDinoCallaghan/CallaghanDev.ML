@@ -11,14 +11,14 @@ namespace CallaghanDev.ML.AccelerationManagers
 
     public class AccelerationCPU : IAccelerationManager
     {
-        private delegate double ActivationFunction(double x);
+        private delegate float ActivationFunction(float x);
 
         public AccelerationCPU()
         {
         }
         
         // I realize this behaves like a transpose rather than a plain dot product—but that’s exactly what we want, and it’s correct.
-        public double[] CalculateDotProduct(double[,] matrix, double[] vector)
+        public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
             int rows = matrix.GetLength(0);   // number of neurons in this layer
             int cols = matrix.GetLength(1);   // number of neurons in previous layer
@@ -27,10 +27,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                 throw new ArgumentException($"Expected vector of length {cols}, got {vector.Length}");
             }
 
-            var result = new double[rows];
+            var result = new float[rows];
             for (int i = 0; i < rows; i++)
             {
-                double sum = 0.0;
+                float sum = 0.0f;
                 for (int j = 0; j < cols; j++)
                 {
                     sum += matrix[i, j] * vector[j];
@@ -39,28 +39,28 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             return result;
         }
-        public (double[] activation, double[] derivative) ActivateLayer(double[] dot, double[] bias, ActivationType activationType)
+        public (float[] activation, float[] derivative) ActivateLayer(float[] dot, float[] bias, ActivationType activationType)
         {
             int n = dot.Length;
-            var activation = new double[n];
-            var derivative = new double[n];
+            var activation = new float[n];
+            var derivative = new float[n];
 
             ActivationFunction activationFunction = GetActivationFunction(activationType);
             ActivationFunction activationFunctionDeriv = GetActivationFunctionDeriv(activationType);
 
             for (int i = 0; i < n; i++)
             {
-                double z = dot[i] + bias[i];
+                float z = dot[i] + bias[i];
                 activation[i] = activationFunction(z);
                 derivative[i] = activationFunctionDeriv(z);
             }
             return (activation, derivative);
         }
 
-        public double[] CalculateOutputGradients(double[] cost, double[] derivative)
+        public float[] CalculateOutputGradients(float[] cost, float[] derivative)
         {
             int n = cost.Length;
-            var grad = new double[n];
+            var grad = new float[n];
             for (int i = 0; i < n; i++)
             {
                 grad[i] = -cost[i] * derivative[i];
@@ -68,21 +68,21 @@ namespace CallaghanDev.ML.AccelerationManagers
             return grad;
         }
 
-        public double[] CalculateHiddenGradients(double[,] weights, double[] nextDeltas, double[] derivative)
+        public float[] CalculateHiddenGradients(float[,] weights, float[] nextDeltas, float[] derivative)
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
-            var pre = new double[cols];
+            var pre = new float[cols];
 
             for (int j = 0; j < cols; j++)
             {
-                double sum = 0.0;
+                float sum = 0.0f;
                 for (int i = 0; i < rows; i++)
                     sum += weights[i, j] * nextDeltas[i];
                 pre[j] = sum;
             }
 
-            var delta = new double[cols];
+            var delta = new float[cols];
             for (int i = 0; i < cols; i++)
             {
                 delta[i] = pre[i] * derivative[i];
@@ -91,19 +91,19 @@ namespace CallaghanDev.ML.AccelerationManagers
             return delta;
         }
 
-        public double[,] UpdateWeights(double[,] weights,double[] deltas, double[] prevActivations, double learningRate, double lambda )
+        public float[,] UpdateWeights(float[,] weights,float[] deltas, float[] prevActivations, float learningRate, float lambda )
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
-            var updated = new double[rows, cols];
+            var updated = new float[rows, cols];
 
             for (int i = 0; i < rows; i++)
             {
                 for (int j = 0; j < cols; j++)
                 {
-                    double gradStep = deltas[i] * prevActivations[j];
+                    float gradStep = deltas[i] * prevActivations[j];
 
-                    double regTerm = lambda * weights[i, j];
+                    float regTerm = lambda * weights[i, j];
 
                     updated[i, j] = weights[i, j]
                                   - learningRate * (gradStep + regTerm);
@@ -112,10 +112,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             return updated;
         }
 
-        public double[] UpdateBias(double[] bias, double[] deltas, double learningRate)
+        public float[] UpdateBias(float[] bias, float[] deltas, float learningRate)
         {
             int n = bias.Length;
-            var updated = new double[n];
+            var updated = new float[n];
             for (int i = 0; i < n; i++)
             {
                 updated[i] = bias[i] - learningRate * deltas[i];
@@ -133,13 +133,13 @@ namespace CallaghanDev.ML.AccelerationManagers
                 case ActivationType.Sigmoid:
                     return x =>
                     {
-                        double k = Math.Exp(x);
-                        return k / (1.0d + k);
+                        float k = MathF.Exp(x);
+                        return k / (1.0f + k);
                     };
                 case ActivationType.Tanh:
                     return x =>
                     {
-                        return Math.Tanh(x);
+                        return MathF.Tanh(x);
                     };
                 case ActivationType.Relu:
                     return x =>
@@ -149,13 +149,13 @@ namespace CallaghanDev.ML.AccelerationManagers
                 case ActivationType.Leakyrelu:
                     return x =>
                     {
-                        return 0 >= x ? 0.01d * x : x;
+                        return 0 >= x ? 0.01f * x : x;
                     };
                 default: // ActivationType.Sigmoid:
                     return x =>
                     {
-                        double k = Math.Exp(x);
-                        return k / (1.0d + k);
+                        float k = MathF.Exp(x);
+                        return k / (1.0f + k);
                     };
             }
         }
@@ -171,7 +171,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 case ActivationType.Sigmoid:
                     return x =>
                     {
-                        return Math.Exp(x) / (1.0d + Math.Exp(x)) * (1 - Math.Exp(x) / (1.0d + Math.Exp(x)));
+                        return MathF.Exp(x) / (1.0f + MathF.Exp(x)) * (1 - MathF.Exp(x) / (1.0f+ MathF.Exp(x)));
                     };
                 case ActivationType.Tanh:
                     return x =>
@@ -186,12 +186,12 @@ namespace CallaghanDev.ML.AccelerationManagers
                 case ActivationType.Leakyrelu:
                     return x =>
                     {
-                        return 0 >= x ? 0.1d : 1;
+                        return 0 >= x ? 0.1f : 1;
                     };
                 default: //ActivationType.Sigmoid:
                     return x =>
                     {
-                        return Math.Exp(x) / (1.0d + Math.Exp(x)) * (1 - Math.Exp(x) / (1.0d + Math.Exp(x)));
+                        return MathF.Exp(x) / (1.0f + MathF.Exp(x)) * (1 - MathF.Exp(x) / (1.0f + MathF.Exp(x)));
                     };
             }
         }

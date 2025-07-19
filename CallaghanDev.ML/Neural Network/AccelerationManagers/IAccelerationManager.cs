@@ -9,12 +9,12 @@ namespace CallaghanDev.ML.AccelerationManagers
 {
     public interface IAccelerationManager
     {
-        double[] CalculateDotProduct(double[,] matrix, double[] vector);
-        (double[] activation, double[] derivative) ActivateLayer(double[] dot, double[] bias, ActivationType activationType);
-        double[] CalculateOutputGradients(double[] cost, double[] derivative);
-        double[] CalculateHiddenGradients(double[,] weights, double[] nextDeltas, double[] derivative);
-        double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate, double lambda);
-        double[] UpdateBias(double[] bias, double[] deltas, double learningRate);
+        float[] CalculateDotProduct(float[,] matrix, float[] vector);
+        (float[] activation, float[] derivative) ActivateLayer(float[] dot, float[] bias, ActivationType activationType);
+        float[] CalculateOutputGradients(float[] cost, float[] derivative);
+        float[] CalculateHiddenGradients(float[,] weights, float[] nextDeltas, float[] derivative);
+        float[,] UpdateWeights(float[,] weights, float[] deltas, float[] prevActivations, float learningRate, float lambda);
+        float[] UpdateBias(float[] bias, float[] deltas, float learningRate);
         void Dispose();
     }
 }

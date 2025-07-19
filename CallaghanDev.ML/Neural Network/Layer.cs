@@ -7,29 +7,29 @@ namespace CallaghanDev.ML
         public int Size { get; }
         public int InputSize { get; }
 
-        public double[] Activations { get; set; }
-        public double[] Biases { get; set; }
-        public double[] Derivatives { get; set; } 
+        public float[] Activations { get; set; }
+        public float[] Biases { get; set; }
+        public float[] Derivatives { get; set; } 
 
-        public double[] Deltas { get; set; }
+        public float[] Deltas { get; set; }
 
-        public double[,] Weights { get; set; }
+        public float[,] Weights { get; set; }
 
-        public double[][] ActivationsBatch { get; set; }
-        public double[][] DerivativesBatch { get; set; }
-        public double[][] DeltasBatch { get; set; }
+        public float[][] ActivationsBatch { get; set; }
+        public float[][] DerivativesBatch { get; set; }
+        public float[][] DeltasBatch { get; set; }
 
         public Layer(int inputSize, int size, ActivationType actType)
         {
             InputSize = inputSize;
             Size = size;
 
-            Activations = new double[size];
-            Biases = new double[size];
-            Derivatives = new double[size];
-            Deltas = new double[size];
+            Activations = new float[size];
+            Biases = new float[size];
+            Derivatives = new float[size];
+            Deltas = new float[size];
 
-            Weights = new double[size, inputSize];
+            Weights = new float[size, inputSize];
             ActivationType = actType; 
             
             ActivationsBatch = null;

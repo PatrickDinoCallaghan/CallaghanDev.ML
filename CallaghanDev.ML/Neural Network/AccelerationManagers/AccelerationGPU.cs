@@ -11,49 +11,49 @@ namespace CallaghanDev.ML.AccelerationManagers
     {
         private readonly Accelerator _accelerator;
 
-        private readonly Action<Index1D, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>> _dotKernel;
-        private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>> _outGradKernel;
-        private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>> _hidGradKernel;
+        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>> _dotKernel;
+        private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>> _outGradKernel;
+        private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>> _hidGradKernel;
         private readonly Action<
     Index2D,
-    ArrayView2D<double, Stride2D.DenseX>,
-    ArrayView1D<double, Stride1D.Dense>,
-    ArrayView1D<double, Stride1D.Dense>,
-    double,
-    double
+    ArrayView2D<float, Stride2D.DenseX>,
+    ArrayView1D<float, Stride1D.Dense>,
+    ArrayView1D<float, Stride1D.Dense>,
+    float,
+    float
 > _updWKernel;
-        private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, double> _updBKernel;
-        private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>> _dotTransposedKernel;
-        private readonly Action<Index1D, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ArrayView1D<double, Stride1D.Dense>, ActivationType> _actKernel;
+        private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float> _updBKernel;
+        private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _dotTransposedKernel;
+        private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ActivationType> _actKernel;
 
         private readonly Dictionary<(int rows, int cols),
-            (MemoryBuffer2D<double, Stride2D.DenseX> mat,
-             MemoryBuffer1D<double, Stride1D.Dense> vec,
-             MemoryBuffer1D<double, Stride1D.Dense> res)> _dotCache
+            (MemoryBuffer2D<float, Stride2D.DenseX> mat,
+             MemoryBuffer1D<float, Stride1D.Dense> vec,
+             MemoryBuffer1D<float, Stride1D.Dense> res)> _dotCache
             = new();
         private readonly Dictionary<int,
-            (MemoryBuffer1D<double, Stride1D.Dense> cost,
-             MemoryBuffer1D<double, Stride1D.Dense> der,
-             MemoryBuffer1D<double, Stride1D.Dense> grad)> _outGradCache
+            (MemoryBuffer1D<float, Stride1D.Dense> cost,
+             MemoryBuffer1D<float, Stride1D.Dense> der,
+             MemoryBuffer1D<float, Stride1D.Dense> grad)> _outGradCache
             = new();
         private readonly Dictionary<int,
-            (MemoryBuffer1D<double, Stride1D.Dense> pre,
-             MemoryBuffer1D<double, Stride1D.Dense> der,
-             MemoryBuffer1D<double, Stride1D.Dense> delta)> _hidGradCache
+            (MemoryBuffer1D<float, Stride1D.Dense> pre,
+             MemoryBuffer1D<float, Stride1D.Dense> der,
+             MemoryBuffer1D<float, Stride1D.Dense> delta)> _hidGradCache
             = new();
         private readonly Dictionary<(int rows, int cols),
-            (MemoryBuffer2D<double, Stride2D.DenseX> w,
-             MemoryBuffer1D<double, Stride1D.Dense> d,
-             MemoryBuffer1D<double, Stride1D.Dense> pa)> _updWCache
+            (MemoryBuffer2D<float, Stride2D.DenseX> w,
+             MemoryBuffer1D<float, Stride1D.Dense> d,
+             MemoryBuffer1D<float, Stride1D.Dense> pa)> _updWCache
             = new();
         private readonly Dictionary<int,
-            (MemoryBuffer1D<double, Stride1D.Dense> b,
-             MemoryBuffer1D<double, Stride1D.Dense> d)> _updBCache
+            (MemoryBuffer1D<float, Stride1D.Dense> b,
+             MemoryBuffer1D<float, Stride1D.Dense> d)> _updBCache
             = new();
         private readonly Dictionary<(int rows, int cols),
-            (MemoryBuffer2D<double, Stride2D.DenseX> mat,
-             MemoryBuffer1D<double, Stride1D.Dense> vec,
-             MemoryBuffer1D<double, Stride1D.Dense> res)> _dotTransposedCache
+            (MemoryBuffer2D<float, Stride2D.DenseX> mat,
+             MemoryBuffer1D<float, Stride1D.Dense> vec,
+             MemoryBuffer1D<float, Stride1D.Dense> res)> _dotTransposedCache
             = new();
 
         public AccelerationGPU(AccelerationType accelerationType, int deviceIndex = 0)
@@ -75,56 +75,56 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             _dotKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
-                ArrayView2D<double, Stride2D.DenseX>,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>>(
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>>(
                 DotKernel);
 
             _dotTransposedKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView2D<double, Stride2D.DenseX>,
-                ArrayView1D<double, Stride1D.Dense>>(
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView1D<float, Stride1D.Dense>>(
                 DotTransposedKernel);
 
             _actKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
                 ActivationType>(ActivateKernel);
 
             _outGradKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>>(
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>>(
                 OutputGradientKernel);
 
             _hidGradKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>>(
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>>(
                 HiddenGradientKernel);
 
             _updWKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index2D,
-                ArrayView2D<double, Stride2D.DenseX>,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
-                double,
-                double>(UpdateWeightsKernel);
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                float,
+                float>(UpdateWeightsKernel);
 
             _updBKernel = _accelerator.LoadAutoGroupedStreamKernel<
                 Index1D,
-                ArrayView1D<double, Stride1D.Dense>,
-                ArrayView1D<double, Stride1D.Dense>,
-                double>(UpdateBiasKernel);
+                ArrayView1D<float, Stride1D.Dense>,
+                ArrayView1D<float, Stride1D.Dense>,
+                float>(UpdateBiasKernel);
         }
 
-        public double[] CalculateDotProduct(double[,] matrix, double[] vector)
+        public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
@@ -134,7 +134,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             if (!_dotCache.TryGetValue((rows, cols), out var bufs))
             {
-                bufs = (_accelerator.Allocate2DDenseX<double>(new Index2D(rows, cols)), _accelerator.Allocate1D<double>(cols), _accelerator.Allocate1D<double>(rows));
+                bufs = (_accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)), _accelerator.Allocate1D<float>(cols), _accelerator.Allocate1D<float>(rows));
 
                 _dotCache[(rows, cols)] = bufs;
             }
@@ -144,12 +144,12 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             _dotKernel(new Index1D(rows), bufs.mat.View, bufs.vec.View, bufs.res.View);
 
-            var result = new double[rows];
+            var result = new float[rows];
             bufs.res.CopyToCPU(result);
             return result;
         }
 
-        private double[] CalculateDotProductTransposed(double[,] matrix, double[] vector)
+        private float[] CalculateDotProductTransposed(float[,] matrix, float[] vector)
         {
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
@@ -159,7 +159,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             if (!_dotTransposedCache.TryGetValue((rows, cols), out var bufferTemp))
             {
-                bufferTemp = (_accelerator.Allocate2DDenseX<double>(new Index2D(rows, cols)), _accelerator.Allocate1D<double>(rows), _accelerator.Allocate1D<double>(cols));
+                bufferTemp = (_accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)), _accelerator.Allocate1D<float>(rows), _accelerator.Allocate1D<float>(cols));
                 _dotTransposedCache[(rows, cols)] = bufferTemp;
             }
 
@@ -168,22 +168,22 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             _dotTransposedKernel(new Index1D(cols), bufferTemp.vec.View, bufferTemp.mat.View, bufferTemp.res.View);
 
-            var result = new double[cols];
+            var result = new float[cols];
             bufferTemp.res.CopyToCPU(result);
             return result;
         }
 
-        public (double[] activation, double[] derivative) ActivateLayer(double[] dot, double[] bias, ActivationType t)
+        public (float[] activation, float[] derivative) ActivateLayer(float[] dot, float[] bias, ActivationType t)
         {
             int n = dot.Length;
             if (bias.Length != n)
             {
                 throw new ArgumentException($"Expected bias length {n}, got {bias.Length}");
             }
-            var dotBuf = _accelerator.Allocate1D<double>(n);
-            var biasBuf = _accelerator.Allocate1D<double>(n);
-            var actBuf = _accelerator.Allocate1D<double>(n);
-            var derBuf = _accelerator.Allocate1D<double>(n);
+            var dotBuf = _accelerator.Allocate1D<float>(n);
+            var biasBuf = _accelerator.Allocate1D<float>(n);
+            var actBuf = _accelerator.Allocate1D<float>(n);
+            var derBuf = _accelerator.Allocate1D<float>(n);
             try
             {
                 dotBuf.CopyFromCPU(dot);
@@ -191,8 +191,8 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                 _actKernel(new Index1D(n), dotBuf.View, biasBuf.View, actBuf.View, derBuf.View, t);
 
-                var activation = new double[n];
-                var derivative = new double[n];
+                var activation = new float[n];
+                var derivative = new float[n];
                 actBuf.CopyToCPU(activation);
                 derBuf.CopyToCPU(derivative);
                 return (activation, derivative);
@@ -203,15 +203,15 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
 
-        public double[] CalculateOutputGradients(double[] cost, double[] derivative)
+        public float[] CalculateOutputGradients(float[] cost, float[] derivative)
         {
             int n = cost.Length;
             if (!_outGradCache.TryGetValue(n, out var bufs))
             {
                 _outGradCache[n] = bufs = (
-                    _accelerator.Allocate1D<double>(n),
-                    _accelerator.Allocate1D<double>(n),
-                    _accelerator.Allocate1D<double>(n)
+                    _accelerator.Allocate1D<float>(n),
+                    _accelerator.Allocate1D<float>(n),
+                    _accelerator.Allocate1D<float>(n)
                 );
             }
 
@@ -219,42 +219,42 @@ namespace CallaghanDev.ML.AccelerationManagers
             bufs.der.CopyFromCPU(derivative);
             _outGradKernel(new Index1D(n), bufs.cost.View, bufs.der.View, bufs.grad.View);
 
-            var result = new double[n];
+            var result = new float[n];
             bufs.grad.CopyToCPU(result);
             return result;
         }
 
-        public double[] CalculateHiddenGradients(double[,] weights, double[] nextDeltas, double[] derivative)
+        public float[] CalculateHiddenGradients(float[,] weights, float[] nextDeltas, float[] derivative)
         {
             var pre = CalculateDotProductTransposed(weights, nextDeltas);
             int cols = pre.Length;
             if (!_hidGradCache.TryGetValue(cols, out var bufs))
             {
                 _hidGradCache[cols] = bufs = (
-                    _accelerator.Allocate1D<double>(cols),
-                    _accelerator.Allocate1D<double>(cols),
-                    _accelerator.Allocate1D<double>(cols)
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate1D<float>(cols)
                 );
             }
             bufs.pre.CopyFromCPU(pre);
             bufs.der.CopyFromCPU(derivative);
             _hidGradKernel(new Index1D(cols), bufs.pre.View, bufs.der.View, bufs.delta.View);
 
-            var result = new double[cols];
+            var result = new float[cols];
             bufs.delta.CopyToCPU(result);
             return result;
         }
 
-        public double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate, double lambda)
+        public float[,] UpdateWeights(float[,] weights, float[] deltas, float[] prevActivations, float learningRate, float lambda)
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
             if (!_updWCache.TryGetValue((rows, cols), out var bufs))
             {
                 _updWCache[(rows, cols)] = bufs = (
-                    _accelerator.Allocate2DDenseX<double>(new Index2D(rows, cols)),
-                    _accelerator.Allocate1D<double>(rows),
-                    _accelerator.Allocate1D<double>(cols)
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate1D<float>(rows),
+                    _accelerator.Allocate1D<float>(cols)
                 );
             }
 
@@ -272,18 +272,18 @@ namespace CallaghanDev.ML.AccelerationManagers
                 lambda
             );
 
-            var result = new double[rows, cols];
+            var result = new float[rows, cols];
             bufs.w.CopyToCPU(result);
             return result;
         }
-        public double[] UpdateBias(double[] bias, double[] deltas, double learningRate)
+        public float[] UpdateBias(float[] bias, float[] deltas, float learningRate)
         {
             int n = bias.Length;
             if (!_updBCache.TryGetValue(n, out var bufs))
             {
                 _updBCache[n] = bufs = (
-                    _accelerator.Allocate1D<double>(n),
-                    _accelerator.Allocate1D<double>(n)
+                    _accelerator.Allocate1D<float>(n),
+                    _accelerator.Allocate1D<float>(n)
                 );
             }
 
@@ -291,14 +291,14 @@ namespace CallaghanDev.ML.AccelerationManagers
             bufs.d.CopyFromCPU(deltas);
             _updBKernel(new Index1D(n), bufs.b.View, bufs.d.View, learningRate);
 
-            var result = new double[n];
+            var result = new float[n];
             bufs.b.CopyToCPU(result);
             return result;
         }
 
-        private static void DotKernel(Index1D row, ArrayView2D<double, Stride2D.DenseX> mat, ArrayView1D<double, Stride1D.Dense> vec, ArrayView1D<double, Stride1D.Dense> res)
+        private static void DotKernel(Index1D row, ArrayView2D<float, Stride2D.DenseX> mat, ArrayView1D<float, Stride1D.Dense> vec, ArrayView1D<float, Stride1D.Dense> res)
         {
-            double sum = 0;
+            float sum = 0;
             int cols = (int)mat.Extent.Y;
             for (int j = 0; j < cols; ++j)
             {
@@ -307,9 +307,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             res[row] = sum;
         }
 
-        private static void DotTransposedKernel(Index1D col, ArrayView1D<double, Stride1D.Dense> vec, ArrayView2D<double, Stride2D.DenseX> mat, ArrayView1D<double, Stride1D.Dense> res)
+        private static void DotTransposedKernel(Index1D col, ArrayView1D<float, Stride1D.Dense> vec, ArrayView2D<float, Stride2D.DenseX> mat, ArrayView1D<float, Stride1D.Dense> res)
         {
-            double sum = 0;
+            float sum = 0;
             int rows = (int)mat.Extent.X;
             for (int i = 0; i < rows; ++i)
             {
@@ -318,10 +318,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             res[col] = sum;
         }
 
-        private static void ActivateKernel(Index1D i, ArrayView1D<double, Stride1D.Dense> dot,  ArrayView1D<double, Stride1D.Dense> bias,  ArrayView1D<double, Stride1D.Dense> act, ArrayView1D<double, Stride1D.Dense> der, ActivationType t)
+        private static void ActivateKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> dot,  ArrayView1D<float, Stride1D.Dense> bias,  ArrayView1D<float, Stride1D.Dense> act, ArrayView1D<float, Stride1D.Dense> der, ActivationType t)
         {
-            double z = dot[i] + bias[i];
-            double a, d;
+            float z = dot[i] + bias[i];
+            float a, d;
             switch (t)
             {
                 case ActivationType.None:
@@ -330,7 +330,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     break;
 
                 case ActivationType.Sigmoid:
-                    double e = XMath.Exp(z);
+                    float e = XMath.Exp(z);
                     a = e / (1 + e);
                     d = a * (1 - a);
                     break;
@@ -339,15 +339,15 @@ namespace CallaghanDev.ML.AccelerationManagers
                     d = 1 - a * a;
                     break;
                 case ActivationType.Relu:
-                    a = XMath.Max(0.0, z);
+                    a = XMath.Max(0.0f, z);
                     d = z > 0 ? 1 : 0;
                     break;
                 case ActivationType.Leakyrelu:
-                    a = z > 0 ? z : 0.01 * z;
-                    d = z > 0 ? 1 : 0.01;
+                    a = z > 0f ? z : 0.01f * z;
+                    d = z > 0f ? 1 : 0.01f;
                     break;
                 default:
-                    double ee = XMath.Exp(z);
+                    float ee = XMath.Exp(z);
                     a = ee / (1 + ee);
                     d = a * (1 - a);
                     break;
@@ -356,32 +356,32 @@ namespace CallaghanDev.ML.AccelerationManagers
             der[i] = d;
         }
 
-        private static void OutputGradientKernel(Index1D i, ArrayView1D<double, Stride1D.Dense> cost, ArrayView1D<double, Stride1D.Dense> der, ArrayView1D<double, Stride1D.Dense> grad)
+        private static void OutputGradientKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> cost, ArrayView1D<float, Stride1D.Dense> der, ArrayView1D<float, Stride1D.Dense> grad)
         {
             grad[i] = -cost[i] * der[i];
         }
 
-        private static void HiddenGradientKernel(Index1D i, ArrayView1D<double, Stride1D.Dense> pre,  ArrayView1D<double, Stride1D.Dense> der, ArrayView1D<double, Stride1D.Dense> delta)
+        private static void HiddenGradientKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> pre,  ArrayView1D<float, Stride1D.Dense> der, ArrayView1D<float, Stride1D.Dense> delta)
         {
             delta[i] = pre[i] * der[i];
         }
 
         private static void UpdateWeightsKernel(
             Index2D idx,
-            ArrayView2D<double, Stride2D.DenseX> W,
-            ArrayView1D<double, Stride1D.Dense> delta,
-            ArrayView1D<double, Stride1D.Dense> prevAct,
-            double learningRate,
-            double lambda            // ← accept it here
+            ArrayView2D<float, Stride2D.DenseX> W,
+            ArrayView1D<float, Stride1D.Dense> delta,
+            ArrayView1D<float, Stride1D.Dense> prevAct,
+            float learningRate,
+            float lambda            // ← accept it here
         )
         {
             int r = idx.X, c = idx.Y;
             // compute gradient + L2 penalty term
-            double grad = delta[r] * prevAct[c];
-            double decay = lambda * W[r, c];
+            float grad = delta[r] * prevAct[c];
+            float decay = lambda * W[r, c];
             W[r, c] -= learningRate * (grad + decay);
         }
-        private static void UpdateBiasKernel(Index1D i, ArrayView1D<double, Stride1D.Dense> bais, ArrayView1D<double, Stride1D.Dense> delta, double learningRate)
+        private static void UpdateBiasKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> bais, ArrayView1D<float, Stride1D.Dense> delta, float learningRate)
         {
             bais[i] -= learningRate * delta[i];
         }

@@ -155,20 +155,20 @@ namespace CallaghanDev.ML
       public class NeuralNetworkFailureTests
       {
           // Placeholder for gradient computation method
-          private List<double> ComputeGradients() => new List<double> { /* Gradient values here */
+          private List<float> ComputeGradients() => new List<float> { /* Gradient values here */
 
 
             // Placeholder for activation outputs per layer
-           // private List<List<double>> GetLayerActivations() => new List<List<double>> { /* Activations here */ };
+           // private List<List<float>> GetLayerActivations() => new List<List<float>> { /* Activations here */ };
 
             // Placeholder for loss computation
-           // private double ComputeLoss() => 0.0;
+           // private float ComputeLoss() => 0.0;
 
             // Placeholder for batch gradient variances
-          //  private List<double> GetGradientVariances() => new List<double> { /* Variance values */ };
+          //  private List<float> GetGradientVariances() => new List<float> { /* Variance values */ };
 
             // Placeholder for detecting numerical issues
-           // private bool HasNumericalInstability(double value) => double.IsNaN(value) || double.IsInfinity(value);
+           // private bool HasNumericalInstability(float value) => float.IsNaN(value) || float.IsInfinity(value);
 
     // <summary> Test for Dead Neurons: ReLU outputs zero constantly. </summary>
 
@@ -179,7 +179,7 @@ namespace CallaghanDev.ML
             foreach (var layer in activations)
             {
                 int zeroCount = layer.Count(a => a == 0);
-                double zeroPercentage = (double)zeroCount / layer.Count;
+                float zeroPercentage = (float)zeroCount / layer.Count;
                 Assert.Less(zeroPercentage, 0.9, "Dead Neurons Detected: Too many zero activations.");
             }
         }
@@ -188,9 +188,9 @@ namespace CallaghanDev.ML
         [Test]
         public void TestImproperLearningRate()
         {
-            var losses = new List<double> { /* Training loss values per epoch */
+            var losses = new List<float> { /* Training loss values per epoch */
        
-        /*         double lossDecrease = losses.First() - losses.Last();
+        /*         float lossDecrease = losses.First() - losses.Last();
 
                 Assert.Greater(lossDecrease, 1e-2, "Improper Learning Rate Detected: Loss not decreasing sufficiently.");
             }
@@ -199,7 +199,7 @@ namespace CallaghanDev.ML
             [Test]
             public void TestDataIssues()
             {
-                double loss = ComputeLoss();
+                float loss = ComputeLoss();
                 Assert.Less(loss, 1e3, "Data Issues Detected: Loss plateau or instability.");
             }
 
@@ -207,13 +207,13 @@ namespace CallaghanDev.ML
             [Test]
             public void TestOverfitting()
             {
-                var trainingLoss = new List<double> { /* Training loss values */ 
+                var trainingLoss = new List<float> { /* Training loss values */ 
            
-        /*     var validationLoss = new List<double> { /* Validation loss values */ 
+        /*     var validationLoss = new List<float> { /* Validation loss values */ 
 
       
-        /*          double trainLossFinal = trainingLoss.Last();
-                double valLossFinal = validationLoss.Last();
+        /*          float trainLossFinal = trainingLoss.Last();
+                float valLossFinal = validationLoss.Last();
 
                 Assert.Less(trainLossFinal, valLossFinal, "Overfitting Detected: Validation loss higher than training loss.");
             }
@@ -223,7 +223,7 @@ namespace CallaghanDev.ML
             public void TestBatchSizeIssues()
             {
                 var variances = GetGradientVariances();
-                double varianceRange = variances.Max() - variances.Min();
+                float varianceRange = variances.Max() - variances.Min();
 
                 Assert.Less(varianceRange, 1.0, "Batch Size Issues Detected: Gradient variance too high.");
             }
@@ -232,7 +232,7 @@ namespace CallaghanDev.ML
             [Test]
             public void TestNumericalInstability()
             {
-                double loss = ComputeLoss();
+                float loss = ComputeLoss();
                 Assert.IsFalse(HasNumericalInstability(loss), "Numerical Instability Detected: Loss is NaN or Infinity.");
             }
         }*/

@@ -8,24 +8,24 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void NeuralNetworkXorTest()
         {
             Console.WriteLine("NeuralNetworkXorTest:");
-            double[][] inputs;
-            double[][] expectedOutputs;
+            float[][] inputs;
+            float[][] expectedOutputs;
             // Create a simple synthetic dataset
             // XOR problem dataset
-            inputs = new double[][]
+            inputs = new float[][]
                 {
-                new double[] { 0, 0 },
-                new double[] { 0, 1 },
-                new double[] { 1, 0 },
-                new double[] { 1, 1 }
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
                 };
 
-            expectedOutputs = new double[][]
+            expectedOutputs = new float[][]
             {
-                new double[] { 0 },
-                new double[] { 1 },
-                new double[] { 1 },
-                new double[] { 0 }
+                new float[] { 0 },
+                new float[] { 1 },
+                new float[] { 1 },
+                new float[] { 0 }
             };
 
             Parameters parameters = new Parameters()
@@ -47,7 +47,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
-                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                float[] prediction = neuralNetwork.Predict(inputs[i]);
                 Console.WriteLine(prediction[0]);
                 int predictedLabel = prediction[0] >= 0.1 ? 1 : 0;  // Threshold at 0.5
                 int expectedLabel = (int)expectedOutputs[i][0];
@@ -59,20 +59,20 @@ namespace CallaghanDev.ML.TestConsoleApp
         {
             Console.WriteLine("GPU test");
 
-            double[][] inputs = new double[][]
+            float[][] inputs = new float[][]
             {
-                new double[] { 0, 0 },
-                new double[] { 0, 1 },
-                new double[] { 1, 0 },
-                new double[] { 1, 1 }
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
             };
 
-            double[][] expectedOutputs = new double[][]
+            float[][] expectedOutputs = new float[][]
             {
-                new double[] { 0 },
-                new double[] { 0 },
-                new double[] { 0 },
-                new double[] { 1 }
+                new float[] { 0 },
+                new float[] { 0 },
+                new float[] { 0 },
+                new float[] { 1 }
             };
 
 
@@ -96,7 +96,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             for (int i = 0; i < inputs.Length; i++)
             {
-                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                float[] prediction = neuralNetwork.Predict(inputs[i]);
                 int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
                 int expectedLabel = (int)expectedOutputs[i][0];
 
@@ -106,20 +106,20 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void NeuralNetworkAndCPUTest()
         {
             Console.WriteLine("CPU test");
-            double[][] inputs = new double[][]
+            float[][] inputs = new float[][]
             {
-                new double[] { 0, 0 },
-                new double[] { 0, 1 },
-                new double[] { 1, 0 },
-                new double[] { 1, 1 }
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
             };
 
-            double[][] expectedOutputs = new double[][]
+            float[][] expectedOutputs = new float[][]
             {
-                new double[] { 0 },
-                new double[] { 0 },
-                new double[] { 0 },
-                new double[] { 1 }
+                new float[] { 0 },
+                new float[] { 0 },
+                new float[] { 0 },
+                new float[] { 1 }
             };
 
             // Initialize sensory neurons
@@ -143,7 +143,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Evaluate the network with sample inputs
             for (int i = 0; i < inputs.Length; i++)
             {
-                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                float[] prediction = neuralNetwork.Predict(inputs[i]);
                 int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
                 int expectedLabel = (int)expectedOutputs[i][0];
 
@@ -153,20 +153,20 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void NeuralNetworkOrTest()
         {
             Console.WriteLine("NeuralNetworkOrTest");
-            double[][] inputs = new double[][]
+            float[][] inputs = new float[][]
             {
-                new double[] { 0, 0 },
-                new double[] { 0, 1 },
-                new double[] { 1, 0 },
-                new double[] { 1, 1 }
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
             };
 
-            double[][] expectedOutputs = new double[][]
+            float[][] expectedOutputs = new float[][]
             {
-                new double[] { 0 },
-                new double[] { 1 },
-                new double[] { 1 },
-                new double[] { 1 }
+                new float[] { 0 },
+                new float[] { 1 },
+                new float[] { 1 },
+                new float[] { 1 }
             };
 
 
@@ -188,7 +188,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             for (int i = 0; i < inputs.Length; i++)
             {
-                double[] prediction = neuralNetwork.Predict(inputs[i]);
+                float[] prediction = neuralNetwork.Predict(inputs[i]);
                 int predictedLabel = prediction[0] >= 0.5 ? 1 : 0;
                 int expectedLabel = (int)expectedOutputs[i][0];
 
@@ -199,19 +199,19 @@ namespace CallaghanDev.ML.TestConsoleApp
         {
             Console.WriteLine("NeuralNetworkBatchXorTestCUDA:");
 
-            double[][] inputs = new double[][]
+            float[][] inputs = new float[][]
             {
-                new double[] { 0, 0 },
-                new double[] { 0, 1 },
-                new double[] { 1, 0 },
-                new double[] { 1, 1 }
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
             };
-            double[][] expectedOutputs = new double[][]
+            float[][] expectedOutputs = new float[][]
             {
-                new double[] { 0 },
-                new double[] { 1 },
-                new double[] { 1 },
-                new double[] { 0 }
+                new float[] { 0 },
+                new float[] { 1 },
+                new float[] { 1 },
+                new float[] { 0 }
             };
 
 
@@ -235,7 +235,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
 
             int batchSize = 100;
-            double lr = 0.1f;
+            float lr = 0.1f;
             int epochs = 1000;
             nn.TrainBatch(inputs, expectedOutputs, batchSize, lr, epochs);
 

@@ -16,7 +16,7 @@ namespace CallaghanDev.ML.OpenAI
     public class OpenAIAssetSignal
     {
         public string Name { get; set; }
-        public double Signal { get; set; }
+        public float Signal { get; set; }
         public int NewsId { get; set; }
 
         public override string ToString()
@@ -166,7 +166,7 @@ Only output the JSON array, nothing else.
                     return arrayResult.Select(arr => new OpenAIAssetSignal
                     {
                         Name = arr[0]?.ToString() ?? "",
-                        Signal = Convert.ToDouble(arr[1], CultureInfo.InvariantCulture)
+                        Signal = Convert.ToSingle(arr[1], CultureInfo.InvariantCulture)
                     }).ToList();
                 }
             }
@@ -181,7 +181,7 @@ Only output the JSON array, nothing else.
                     return arrayResult.Select(arr => new OpenAIAssetSignal
                     {
                         Name = arr[0]?.ToString() ?? "",
-                        Signal = Convert.ToDouble(arr[1], CultureInfo.InvariantCulture)
+                        Signal = Convert.ToSingle(arr[1], CultureInfo.InvariantCulture)
                     }).ToList();
                 }
             }
@@ -196,16 +196,16 @@ Only output the JSON array, nothing else.
                     return arrayResult.Select(arr => new OpenAIAssetSignal
                     {
                         Name = arr[0],
-                        Signal = Convert.ToDouble(arr[1], CultureInfo.InvariantCulture)
+                        Signal = Convert.ToSingle(arr[1], CultureInfo.InvariantCulture)
                     }).ToList();
                 }
             }
             catch (Exception ex) { lastEx = ex; }
 
-            // 4. Try List<Tuple<string, double>>
+            // 4. Try List<Tuple<string, float>>
             try
             {
-                var tupleResult = JsonConvert.DeserializeObject<List<Tuple<string, double>>>(json);
+                var tupleResult = JsonConvert.DeserializeObject<List<Tuple<string, float>>>(json);
                 if (tupleResult != null && tupleResult.All(x => x.Item1 != null))
                 {
                     return tupleResult.Select(t => new OpenAIAssetSignal
@@ -247,13 +247,13 @@ Only output the JSON array, nothing else.
                         {
                             var name = dict[nameKey]?.ToString() ?? "";
                             var valObj = dict[valueKey];
-                            double val = 0.0;
-                            if (valObj is double d) val = d;
-                            else if (valObj is float f) val = (double)f;
+                            float val = 0.0f;
+                            if (valObj is float d) val = d;
+                            else if (valObj is float f) val = (float)f;
                             else if (valObj is int i) val = i;
                             else if (valObj is long l) val = l;
-                            else if (valObj is decimal m) val = (double)m;
-                            else if (valObj != null) val = Convert.ToDouble(valObj, CultureInfo.InvariantCulture);
+                            else if (valObj is decimal m) val = (float)m;
+                            else if (valObj != null) val = Convert.ToSingle(valObj, CultureInfo.InvariantCulture);
 
                             list.Add(new OpenAIAssetSignal { Name = name, Signal = val });
                         }
@@ -263,7 +263,7 @@ Only output the JSON array, nothing else.
             }
             catch (Exception ex) { lastEx = ex; }
 
-            // 7. Try single quotes replaced by double quotes
+            // 7. Try single quotes replaced by float quotes
             try
             {
                 var alt = json.Replace('\'', '"');
@@ -273,7 +273,7 @@ Only output the JSON array, nothing else.
                     return arrayResult.Select(arr => new OpenAIAssetSignal
                     {
                         Name = arr[0]?.ToString() ?? "",
-                        Signal = Convert.ToDouble(arr[1], CultureInfo.InvariantCulture)
+                        Signal = Convert.ToSingle(arr[1], CultureInfo.InvariantCulture)
                     }).ToList();
                 }
             }
@@ -290,7 +290,7 @@ Only output the JSON array, nothing else.
                     if (token is JArray innerArr && innerArr.Count == 2)
                     {
                         var name = innerArr[0]?.ToString();
-                        double value = Convert.ToDouble(innerArr[1]?.ToString(), CultureInfo.InvariantCulture);
+                        float value = Convert.ToSingle(innerArr[1]?.ToString(), CultureInfo.InvariantCulture);
                         list.Add(new OpenAIAssetSignal { Name = name, Signal = value });
                     }
                     // If object { ... }
@@ -298,7 +298,7 @@ Only output the JSON array, nothing else.
                     {
                         var props = obj.Properties().ToList();
                         string name = null;
-                        double value = 0.0;
+                        float value = 0.0f;
                         foreach (var prop in props)
                         {
                             if (prop.Name.Equals("Item1", StringComparison.OrdinalIgnoreCase) ||
@@ -311,7 +311,7 @@ Only output the JSON array, nothing else.
                                 prop.Name.ToLower().Contains("signal") ||
                                 prop.Name.ToLower().Contains("value"))
                             {
-                                value = Convert.ToDouble(prop.Value.ToString(), CultureInfo.InvariantCulture);
+                                value = Convert.ToSingle(prop.Value.ToString(), CultureInfo.InvariantCulture);
                             }
                         }
                         if (name != null)
@@ -342,7 +342,7 @@ Only output the JSON array, nothing else.
                         return arrayResult.Select(arr => new OpenAIAssetSignal
                         {
                             Name = arr[0]?.ToString() ?? "",
-                            Signal = Convert.ToDouble(arr[1], CultureInfo.InvariantCulture)
+                            Signal = Convert.ToSingle(arr[1], CultureInfo.InvariantCulture)
                         }).ToList();
                     }
                 }
@@ -377,7 +377,7 @@ Only output the JSON array, nothing else.
 
                         if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(valString))
                         {
-                            if (double.TryParse(valString, NumberStyles.Any, CultureInfo.InvariantCulture, out double value))
+                            if (float.TryParse(valString, NumberStyles.Any, CultureInfo.InvariantCulture, out float value))
                             {
                                 list.Add(new OpenAIAssetSignal { Name = name, Signal = value });
                             }

@@ -11,7 +11,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
     public class AccelerationMutliThreadCPU : IAccelerationManager
     {
-        private delegate double ActivationFunction(double x);
+        private delegate float ActivationFunction(float x);
         private readonly ParallelOptions _parallelOptions;
 
         public AccelerationMutliThreadCPU()
@@ -22,18 +22,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             };
         }
 
-        public double[] CalculateDotProduct(double[,] matrix, double[] vector)
+        public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
             if (vector.Length != cols)
                 throw new ArgumentException($"Expected vector of length {cols}, got {vector.Length}");
 
-            var result = new double[rows];
+            var result = new float[rows];
 
             Parallel.For(0, rows, _parallelOptions, i =>
             {
-                double sum = 0.0;
+                float sum = 0.0f;
                 for (int j = 0; j < cols; j++)
                     sum += matrix[i, j] * vector[j];
                 result[i] = sum;
@@ -42,18 +42,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public (double[] activation, double[] derivative) ActivateLayer(double[] dot, double[] bias, ActivationType activationType)
+        public (float[] activation, float[] derivative) ActivateLayer(float[] dot, float[] bias, ActivationType activationType)
         {
             int n = dot.Length;
-            var activation = new double[n];
-            var derivative = new double[n];
+            var activation = new float[n];
+            var derivative = new float[n];
 
             var func = GetActivationFunction(activationType);
             var deriv = GetActivationFunctionDeriv(activationType);
 
             Parallel.For(0, n, _parallelOptions, i =>
             {
-                double z = dot[i] + bias[i];
+                float z = dot[i] + bias[i];
                 activation[i] = func(z);
                 derivative[i] = deriv(z);
             });
@@ -61,10 +61,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (activation, derivative);
         }
 
-        public double[] CalculateOutputGradients(double[] cost, double[] derivative)
+        public float[] CalculateOutputGradients(float[] cost, float[] derivative)
         {
             int n = cost.Length;
-            var grad = new double[n];
+            var grad = new float[n];
 
             Parallel.For(0, n, _parallelOptions, i =>
                 grad[i] = -cost[i] * derivative[i]
@@ -73,22 +73,22 @@ namespace CallaghanDev.ML.AccelerationManagers
             return grad;
         }
 
-        public double[] CalculateHiddenGradients(double[,] weights, double[] nextDeltas, double[] derivative)
+        public float[] CalculateHiddenGradients(float[,] weights, float[] nextDeltas, float[] derivative)
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
-            var pre = new double[cols];
+            var pre = new float[cols];
 
             // accumulate weighted deltas
             Parallel.For(0, cols, _parallelOptions, j =>
             {
-                double sum = 0.0;
+                float sum = 0.0f;
                 for (int i = 0; i < rows; i++)
                     sum += weights[i, j] * nextDeltas[i];
                 pre[j] = sum;
             });
 
-            var delta = new double[cols];
+            var delta = new float[cols];
             Parallel.For(0, cols, _parallelOptions, i =>
                 delta[i] = pre[i] * derivative[i]
             );
@@ -96,18 +96,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             return delta;
         }
 
-        public double[,] UpdateWeights(double[,] weights, double[] deltas, double[] prevActivations, double learningRate, double lambda)
+        public float[,] UpdateWeights(float[,] weights, float[] deltas, float[] prevActivations, float learningRate, float lambda)
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
-            var updated = new double[rows, cols];
+            var updated = new float[rows, cols];
 
             Parallel.For(0, rows, _parallelOptions, i =>
             {
                 for (int j = 0; j < cols; j++)
                 {
-                    double gradStep = deltas[i] * prevActivations[j];
-                    double regTerm = lambda * weights[i, j];
+                    float gradStep = deltas[i] * prevActivations[j];
+                    float regTerm = lambda * weights[i, j];
                     updated[i, j] = weights[i, j] - learningRate * (gradStep + regTerm);
                 }
             });
@@ -115,10 +115,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             return updated;
         }
 
-        public double[] UpdateBias(double[] bias, double[] deltas, double learningRate)
+        public float[] UpdateBias(float[] bias, float[] deltas, float learningRate)
         {
             int n = bias.Length;
-            var updated = new double[n];
+            var updated = new float[n];
 
             Parallel.For(0, n, _parallelOptions, i =>
                 updated[i] = bias[i] - learningRate * deltas[i]
@@ -132,11 +132,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             switch (type)
             {
                 case ActivationType.None: return x => x;
-                case ActivationType.Sigmoid: return x => { var k = Math.Exp(x); return k / (1 + k); };
-                case ActivationType.Tanh: return x => Math.Tanh(x);
+                case ActivationType.Sigmoid: return x => { var k = MathF.Exp(x); return k / (1f + k); };
+                case ActivationType.Tanh: return x => MathF.Tanh(x);
                 case ActivationType.Relu: return x => x > 0 ? x : 0;
-                case ActivationType.Leakyrelu: return x => x > 0 ? x : 0.01 * x;
-                default: return x => { var k = Math.Exp(x); return k / (1 + k); };
+                case ActivationType.Leakyrelu: return x => x > 0 ? x : 0.01f * x;
+                default: return x => { var k = MathF.Exp(x); return k / (1f + k); };
             }
         }
 
@@ -145,11 +145,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             switch (type)
             {
                 case ActivationType.None: return x => 1;
-                case ActivationType.Sigmoid: return x => { var e = Math.Exp(x); var s = e / (1 + e); return s * (1 - s); };
-                case ActivationType.Tanh: return x => 1 - Math.Tanh(x) * Math.Tanh(x);
+                case ActivationType.Sigmoid: return x => { var e = MathF.Exp(x); var s = e / (1 + e); return s * (1 - s); };
+                case ActivationType.Tanh: return x => 1 - MathF.Tanh(x) * MathF.Tanh(x);
                 case ActivationType.Relu: return x => x >= 0 ? 1 : 0;
-                case ActivationType.Leakyrelu: return x => x >= 0 ? 1 : 0.01;
-                default: return x => { var e = Math.Exp(x); var s = e / (1 + e); return s * (1 - s); };
+                case ActivationType.Leakyrelu: return x => x >= 0f ? 1f : 0.01f;
+                default: return x => { var e = MathF.Exp(x); var s = e / (1 + e); return s * (1 - s); };
             }
         }
 

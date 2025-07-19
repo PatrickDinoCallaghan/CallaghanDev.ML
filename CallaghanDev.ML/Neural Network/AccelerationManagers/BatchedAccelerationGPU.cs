@@ -16,7 +16,7 @@ namespace CallaghanDev.ML.AccelerationManagers
     public class AccelerationGPUBatch
     {
         private readonly Accelerator _accelerator;
-        private readonly Action<Index2D, ArrayView2D<double, Stride2D.DenseX>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView2D<double, Stride2D.DenseX>, ActivationType> kernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ActivationType> kernel;
 
         private readonly int  _deviceId;
 
@@ -50,15 +50,15 @@ namespace CallaghanDev.ML.AccelerationManagers
                 throw new Exception("Unsupported Acceleration Type for GPU Batch Processing. Use AccelerationType.GPU or AccelerationType.CUDA.");
             }
            
-            kernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<double, Stride2D.DenseX>, ArrayView2D<double, Stride2D.DenseX>, ArrayView1D<double, Stride1D.Dense>, ArrayView2D<double, Stride2D.DenseX>, ArrayView2D<double, Stride2D.DenseX>, ActivationType>(BatchKernel);
+            kernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ActivationType>(BatchKernel);
         }
-        public (double[][] activation, double[][] derivative) CalculateBatch(double[][] X, double[,] W, double[] B, ActivationType t)
+        public (float[][] activation, float[][] derivative) CalculateBatch(float[][] X, float[,] W, float[] B, ActivationType t)
         {
             int Bsz = X.Length;
             int F = X[0].Length;
             int N = B.Length;
 
-            var flatX = new double[Bsz, F];
+            var flatX = new float[Bsz, F];
             for (int i = 0; i < Bsz; i++)
             {
                 for (int j = 0; j < F; j++)
@@ -67,11 +67,11 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
 
-            var bufX = _accelerator.Allocate2DDenseX<double>(new Index2D(Bsz, F));
-            var bufW = _accelerator.Allocate2DDenseX<double>(new Index2D(N, F));
-            var bufB = _accelerator.Allocate1D<double>(N);
-            var bufA = _accelerator.Allocate2DDenseX<double>(new Index2D(Bsz, N));
-            var bufD = _accelerator.Allocate2DDenseX<double>(new Index2D(Bsz, N));
+            var bufX = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, F));
+            var bufW = _accelerator.Allocate2DDenseX<float>(new Index2D(N, F));
+            var bufB = _accelerator.Allocate1D<float>(N);
+            var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, N));
+            var bufD = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, N));
 
             bufX.CopyFromCPU(flatX);
             bufW.CopyFromCPU(W);
@@ -79,17 +79,17 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             kernel(new Index2D(Bsz, N), bufX.View, bufW.View, bufB.View, bufA.View, bufD.View, t);
 
-            var act2d = new double[Bsz, N];
-            var der2d = new double[Bsz, N];
+            var act2d = new float[Bsz, N];
+            var der2d = new float[Bsz, N];
             bufA.CopyToCPU(act2d);
             bufD.CopyToCPU(der2d);
 
-            var acts = new double[Bsz][];
-            var ders = new double[Bsz][];
+            var acts = new float[Bsz][];
+            var ders = new float[Bsz][];
             for (int i = 0; i < Bsz; i++)
             {
-                acts[i] = new double[N];
-                ders[i] = new double[N];
+                acts[i] = new float[N];
+                ders[i] = new float[N];
                 for (int j = 0; j < N; j++)
                 {
                     acts[i][j] = act2d[i, j];
@@ -104,17 +104,17 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
 
-        private static void BatchKernel(Index2D idx, ArrayView2D<double, Stride2D.DenseX> X, ArrayView2D<double, Stride2D.DenseX> W, ArrayView1D<double, Stride1D.Dense> B, ArrayView2D<double, Stride2D.DenseX> A, ArrayView2D<double, Stride2D.DenseX> D, ActivationType t)
+        private static void BatchKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> X, ArrayView2D<float, Stride2D.DenseX> W, ArrayView1D<float, Stride1D.Dense> B, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> D, ActivationType t)
         {
             int i = idx.X; // sample
             int j = idx.Y; // neuron
-            double sum = 0;
+            float sum = 0;
             for (int k = 0; k < X.Extent.Y; k++)
             {
                 sum += X[i, k] * W[j, k];
             }
-            double z = sum + B[j];
-            double a, d;
+            float z = sum + B[j];
+            float a, d;
             switch (t)
             {
                 case ActivationType.None:
@@ -129,12 +129,12 @@ namespace CallaghanDev.ML.AccelerationManagers
                     d = 1 - a * a;
                     break;
                 case ActivationType.Relu:
-                    a = XMath.Max(0.0, z);
+                    a = XMath.Max(0.0f, z);
                     d = z > 0 ? 1 : 0;
                     break;
                 case ActivationType.Leakyrelu:
-                    a = z > 0 ? z : 0.01 * z;
-                    d = z > 0 ? 1 : 0.01;
+                    a = z > 0 ? z : 0.01f * z;
+                    d = z > 0 ? 1f : 0.01f;
                     break;
                 default:
                     var ee = XMath.Exp(z);
@@ -146,10 +146,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             D[i, j] = d;
         }
 
-        public double[][] CalculateBatchOutputGradients(double[][] costBatch, double[][] derivBatch)
+        public float[][] CalculateBatchOutputGradients(float[][] costBatch, float[][] derivBatch)
         {
             int B = costBatch.Length;
-            var outL = new double[B][];
+            var outL = new float[B][];
             var inner = new AccelerationGPU(_accelerationType, _deviceId);
             for (int i = 0; i < B; i++)
             {
@@ -159,10 +159,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             return outL;
         }
 
-        public double[][] CalculateBatchHiddenGradients(double[,] weights, double[][] nextBatch, double[][] derivBatch)
+        public float[][] CalculateBatchHiddenGradients(float[,] weights, float[][] nextBatch, float[][] derivBatch)
         {
             int B = nextBatch.Length;
-            var outL = new double[B][];
+            var outL = new float[B][];
 
             for (int i = 0; i < B; i++)
             {
@@ -171,11 +171,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             return outL;
         }
 
-        public double[,] UpdateBatchWeights(double[,] W, double[][] deltas, double[][] prevBatch, double lr, double λ)
+        public float[,] UpdateBatchWeights(float[,] W, float[][] deltas, float[][] prevBatch, float lr, float λ)
         {
             int rows = W.GetLength(0), cols = W.GetLength(1);
             int B = deltas.Length;
-            var gradSum = new double[rows, cols];
+            var gradSum = new float[rows, cols];
             for (int i = 0; i < B; i++)
             {
                 for (int r = 0; r < rows; r++)
@@ -186,7 +186,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
             }
-            var newW = new double[rows, cols];
+            var newW = new float[rows, cols];
             for (int r = 0; r < rows; r++)
             {
                 for (int c = 0; c < cols; c++)
@@ -198,16 +198,16 @@ namespace CallaghanDev.ML.AccelerationManagers
             return newW;
         }
 
-        public double[] UpdateBatchBias(double[] B, double[][] deltas, double lr)
+        public float[] UpdateBatchBias(float[] B, float[][] deltas, float lr)
         {
             int n = B.Length, Bsz = deltas.Length;
-            var sum = new double[n];
+            var sum = new float[n];
             for (int i = 0; i < Bsz; i++)
             {
                 for (int j = 0; j < n; j++) sum[j] += deltas[i][j];
 
             }
-            var outB = new double[n];
+            var outB = new float[n];
             for (int j = 0; j < n; j++)
             {
                 outB[j] = B[j] - lr * (sum[j] / Bsz);

@@ -17,7 +17,7 @@ namespace CallaghanDev.ML
         public CostFunctionType CostFunction { get; set; }
         public ActivationDistribution ActivationDistribution { get; set; }
 
-        public double L2RegulationLamda { get; set; } = 0;
+        public float L2RegulationLamda { get; set; } = 0;
         public float GradientClippingThreshold { get; set; } = 1;
         public float HuberLossDelta
         {
@@ -35,14 +35,14 @@ namespace CallaghanDev.ML
             }
         }
 
-        public double GradientExplosionThreshold { get; set; } = 1e3;
-        public double GradientVanishingThreshold { get; set; } = 1e-5;
+        public float GradientExplosionThreshold { get; set; } = 1e3f;
+        public float GradientVanishingThreshold { get; set; } = 1e-5f;
 
         public List<int> LayerWidths { get; set; } = new List<int>();
         public List<ActivationType> LayerActivations { get; set; } = new List<ActivationType>();
 
-        internal double[] inputActivationMin { get; set; }
-        internal double[] inputActivationMax { get; set; }
+        internal float[] inputActivationMin { get; set; }
+        internal float[] inputActivationMax { get; set; }
 
         public override string ToString()
         {

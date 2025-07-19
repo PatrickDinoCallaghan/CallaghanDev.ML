@@ -46,7 +46,7 @@ namespace CallaghanDev.ML
                 {
                     for (int neuron = 0; neuron < layerSize; neuron++)
                     {
-                        layer.Biases[neuron] = 0.0;
+                        layer.Biases[neuron] = 0.0f;
 
                         for (int prev = 0; prev < fanIn; prev++)
                         {
@@ -59,7 +59,7 @@ namespace CallaghanDev.ML
             }
         }
 
-        private double Initializer(ActivationDistribution activationDistribution, ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        private float Initializer(ActivationDistribution activationDistribution, ActivationType activationType, int incomingNeurites, int outgoingNeurites)
         {
             switch (activationDistribution)
             {
@@ -72,7 +72,7 @@ namespace CallaghanDev.ML
             }
 
         }
-        private double InitializerNormal(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        private float InitializerNormal(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
         {
             switch (activationType)
             {
@@ -88,7 +88,7 @@ namespace CallaghanDev.ML
                     return GetRandomDouble(_random, -1, 1);
             }
         }
-        private double InitializerUniform(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
+        private float InitializerUniform(ActivationType activationType, int incomingNeurites, int outgoingNeurites)
         {
             switch (activationType)
             {
@@ -109,13 +109,13 @@ namespace CallaghanDev.ML
         /// </summary>
         /// <param name="incomingNeurites"></param>
         /// <returns></returns>
-        private double HeNormalInitializer(int incomingNeurites)
+        private float HeNormalInitializer(int incomingNeurites)
         {
-            double standardDeviation = Math.Sqrt(2.0 / incomingNeurites);
+            float standardDeviation = MathF.Sqrt(2.0f / incomingNeurites);
             // Generate a normally distributed _random value
-            double u1 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
-            double u2 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
-            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2); // Box-Muller transform
+            float u1 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
+            float u2 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
+            float z = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Sin(2.0f * MathF.PI * u2); // Box-Muller transform
             return z * standardDeviation; // Scale by standard deviation
         }
         /// <summary>
@@ -124,18 +124,18 @@ namespace CallaghanDev.ML
         /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
         /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
         /// <returns>A weight value initialized using Xavier/Glorot method.</returns>
-        public double XavierGlorotNormalInitializer(int incomingNeurites, int outgoingNeurites)
+        public float XavierGlorotNormalInitializer(int incomingNeurites, int outgoingNeurites)
         {
             if (incomingNeurites <= 0)
                 throw new ArgumentException("Neurites count must be positive.");
 
             // Compute the standard deviation for Xavier Initialization
-            double standardDeviation = Math.Sqrt(2.0 / (incomingNeurites + outgoingNeurites));
+            float standardDeviation = MathF.Sqrt(2.0f / (incomingNeurites + outgoingNeurites));
 
             // Box-Muller transform to generate normally distributed _random value
-            double u1 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
-            double u2 = 1.0 - _random.NextDouble(); // Uniform (0,1] _random double
-            double z = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2); // Normally distributed _random value
+            float u1 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
+            float u2 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
+            float z = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2); // Normally distributed _random value
 
             // Scale the value by the standard deviation
             return z * standardDeviation;
@@ -146,16 +146,16 @@ namespace CallaghanDev.ML
         /// </summary>
         /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
         /// <returns>A weight value initialized using He Uniform method.</returns>
-        private double HeUniformInitializer(int incomingNeurites)
+        private float HeUniformInitializer(int incomingNeurites)
         {
             if (incomingNeurites <= 0)
                 throw new ArgumentException("Neurites count must be positive.", nameof(incomingNeurites));
 
             // Compute the limit for the uniform distribution
-            double limit = Math.Sqrt(6.0 / incomingNeurites);
+            float limit = MathF.Sqrt(6.0f / incomingNeurites);
 
             // Generate a uniformly distributed _random value in the range [-limit, limit]
-            return _random.NextDouble() * (2 * limit) - limit;
+            return _random.NextSingle() * (2 * limit) - limit;
         }
 
         /// <summary>
@@ -165,26 +165,26 @@ namespace CallaghanDev.ML
         /// <param name="incomingNeurites">Number of incoming connections (neurons in the previous layer).</param>
         /// <param name="outgoingNeurites">Number of outgoing connections (neurons in the next layer).</param>
         /// <returns>A weight value initialized using Xavier/Glorot Uniform method.</returns>
-        public double XavierGlorotUniformInitializer(int incomingNeurites, int outgoingNeurites)
+        public float XavierGlorotUniformInitializer(int incomingNeurites, int outgoingNeurites)
         {
             if (incomingNeurites <= 0)
                 throw new ArgumentException("Neurites count must be positive.");
 
             // Compute the limit for the uniform distribution
-            double limit = Math.Sqrt(6.0 / (incomingNeurites + outgoingNeurites));
+            float limit = MathF.Sqrt(6.0f / (incomingNeurites + outgoingNeurites));
 
             // Generate a uniformly distributed _random value in the range [-limit, limit]
-            return _random.NextDouble() * (2 * limit) - limit;
+            return _random.NextSingle() * (2 * limit) - limit;
         }
-        private double GetRandomDouble(Random random, double min, double max)
+        private float GetRandomDouble(Random random, float min, float max)
         {
             if (min >= max)
             {
                 throw new ArgumentException("The minimum value must be less than the maximum value.");
             }
 
-            // Generate a _random double between 0.0 (inclusive) and 1.0 (exclusive)
-            double randomValue = random.NextDouble();
+            // Generate a _random float between 0.0 (inclusive) and 1.0 (exclusive)
+            float randomValue = random.NextSingle();
 
             // Scale and shift the value to the specified range
             return min + (randomValue * (max - min));
@@ -263,7 +263,7 @@ namespace CallaghanDev.ML
 
                 for (int i = 0; i < size; i++)
                     for (int j = 0; j < inSize; j++)
-                        layer.Weights[i, j] = reader.ReadDouble();
+                        layer.Weights[i, j] = reader.ReadSingle();
 
                 layers[idx] = layer;
             }
@@ -274,11 +274,11 @@ namespace CallaghanDev.ML
                 AccelerationType = (AccelerationType)reader.ReadInt32(),
                 CostFunction = (CostFunctionType)reader.ReadInt32(),
                 ActivationDistribution = (ActivationDistribution)reader.ReadInt32(),
-                L2RegulationLamda = reader.ReadDouble(),
+                L2RegulationLamda = reader.ReadSingle(),
                 GradientClippingThreshold = reader.ReadSingle(),
                 HuberLossDelta = reader.ReadSingle(),
-                GradientExplosionThreshold = reader.ReadDouble(),
-                GradientVanishingThreshold = reader.ReadDouble()
+                GradientExplosionThreshold = reader.ReadSingle(),
+                GradientVanishingThreshold = reader.ReadSingle()
             };
 
             int lwCount = reader.ReadInt32();
@@ -292,25 +292,25 @@ namespace CallaghanDev.ML
                 p.LayerActivations.Add((ActivationType)reader.ReadInt32());
 
             int minCount = reader.ReadInt32();
-            p.inputActivationMin = new double[minCount];
+            p.inputActivationMin = new float[minCount];
             for (int i = 0; i < minCount; i++)
-                p.inputActivationMin[i] = reader.ReadDouble();
+                p.inputActivationMin[i] = reader.ReadSingle();
 
             int maxCount = reader.ReadInt32();
-            p.inputActivationMax = new double[maxCount];
+            p.inputActivationMax = new float[maxCount];
             for (int i = 0; i < maxCount; i++)
-                p.inputActivationMax[i] = reader.ReadDouble();
+                p.inputActivationMax[i] = reader.ReadSingle();
 
             result.parameters = p;
             return result;
         }
 
-        private static void WriteDoubleArray(BinaryWriter writer, double[] arr)
+        private static void WriteDoubleArray(BinaryWriter writer, float[] arr)
         {
             writer.Write(arr.Length);
             foreach (var v in arr) writer.Write(v);
         }
-        private static void ReadDoubleArray(BinaryReader reader, double[] arr)
+        private static void ReadDoubleArray(BinaryReader reader, float[] arr)
         {
             int len = reader.ReadInt32();
             if (len != arr.Length)
@@ -319,7 +319,7 @@ namespace CallaghanDev.ML
             }
             for (int i = 0; i < len; i++)
             {
-                arr[i] = reader.ReadDouble();
+                arr[i] = reader.ReadSingle();
             }
         }
 
