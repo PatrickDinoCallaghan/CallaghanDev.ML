@@ -108,7 +108,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
         public void NeuralNetworkAndCPUTest()
         {
-            Console.WriteLine("CPU test");
+            Console.WriteLine("NeuralNetworkAndCPUTest");
             float[][] inputs = new float[][]
             {
                 new float[] { 0, 0 },
@@ -132,15 +132,15 @@ namespace CallaghanDev.ML.TestConsoleApp
                 AccelerationType = AccelerationType.CPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Uniform,
-                LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh, ActivationType.Tanh },
+                LayerWidths = new List<int> { 2, 4, 4, 1 },
+                LayerActivations = new List<ActivationType> { ActivationType.None, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.None },
 
             };
             // Setup the neural network
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
 
             // Train the neural network
-            neuralNetwork.Train(inputs, expectedOutputs, 0.01f, 1000);
+            neuralNetwork.Train(inputs, expectedOutputs, 0.5f, 1000);
 
             Console.WriteLine($"\n");
             // Evaluate the network with sample inputs
@@ -235,7 +235,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var nn = new NeuralNetwork(parameters);
 
 
-            int batchSize = 100000;
+            int batchSize = 1000;
             float lr = 0.5f;
             int epochs = 1000;
             nn.TrainBatch(inputs, expectedOutputs, batchSize, lr, epochs);
