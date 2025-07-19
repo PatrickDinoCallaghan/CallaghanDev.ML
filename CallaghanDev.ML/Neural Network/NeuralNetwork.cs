@@ -61,7 +61,9 @@ namespace CallaghanDev.ML
                     Learn(xScaled, expected[i], learningRate);
                     count++;
                     if (!silent)
+                    {
                         Terminal.Gui.Helpers.ProgressBarHelper.DisplayProgressBar(count, total, "Progress");
+                    }
                 }
             }
         }
@@ -260,7 +262,6 @@ namespace CallaghanDev.ML
         }
 
         public void ComputeOutputs() => ForwardPropagate();
-
 
         private void InitCostFunction()
         {

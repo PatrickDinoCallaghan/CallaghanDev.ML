@@ -74,15 +74,21 @@ namespace CallaghanDev.ML.TestConsoleApp
             };
 
 
+
             Parameters parameters = new Parameters()
             {
                 AccelerationType = AccelerationType.CUDA,
-                CostFunction = CostFunctionType.huberLoss,
-                HuberLossDelta = 0.5f,
-                ActivationDistribution = ActivationDistribution.Uniform,
+                CostFunction = CostFunctionType.mse,
+                ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
-                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
-
+                LayerActivations = new List<ActivationType>
+                {
+                    ActivationType.Leakyrelu,
+                    ActivationType.Leakyrelu,
+                    ActivationType.Leakyrelu,
+                    ActivationType.Leakyrelu,
+                    ActivationType.Sigmoid
+                },
             };
 
             NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
