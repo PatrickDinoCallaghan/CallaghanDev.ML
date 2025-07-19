@@ -77,41 +77,71 @@ namespace CallaghanDev.ML.AccelerationManagers
                 float>(BiasUpdateKernel);
             kernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ActivationType>(BatchKernel);
         }
-
+        private void DisposeLayerBuffers(int layerIdx)
+        {
+            if (_buffers.TryGetValue(layerIdx, out var buf))
+            {
+                if (buf.Initialized)
+                {
+                    buf.X.Dispose();
+                    buf.W.Dispose();
+                    buf.B.Dispose();
+                    buf.A.Dispose();
+                    buf.D.Dispose();
+                }
+                _buffers.Remove(layerIdx);
+            }
+        }
         public (float[][] activation, float[][] derivative) CalculateBatch(float[][] Xcpu, float[,] Wcpu, float[] Bcpu, ActivationType t, int layerIdx)
         {
-            if (!_buffers.TryGetValue(layerIdx, out var buf))
+            int Bsz = Xcpu.Length;         // current batch size
+            int F = Xcpu[0].Length;      // feature count
+
+            // If we have existing buffers, but the dimensions differ, tear them down
+            if (_buffers.TryGetValue(layerIdx, out var buf))
             {
-                // first time we see this layer: allocate buffers *and* upload weights & biases
-                int Bsz = Xcpu.Length, F = Xcpu[0].Length, N = Bcpu.Length;
+                var ext = buf.X.View.Extent; // (rows, cols)
+                if (ext.X != Bsz || ext.Y != F)
+                {
+                    DisposeLayerBuffers(layerIdx);
+                    buf = default;
+                }
+            }
+
+            // First time or after a reallocation: allocate & upload W/B
+            if (!_buffers.TryGetValue(layerIdx, out buf))
+            {
                 buf = new LayerBuffers
                 {
                     X = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, F)),
-                    W = _accelerator.Allocate2DDenseX<float>(new Index2D(N, F)),
-                    B = _accelerator.Allocate1D<float>(new Index1D(N)),
-                    A = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, N)),
-                    D = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, N)),
-                    // now mark initialized
+                    W = _accelerator.Allocate2DDenseX<float>(new Index2D(Wcpu.GetLength(0), F)),
+                    B = _accelerator.Allocate1D<float>(new Index1D(Bcpu.Length)),
+                    A = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, Bcpu.Length)),
+                    D = _accelerator.Allocate2DDenseX<float>(new Index2D(Bsz, Bcpu.Length)),
                     Initialized = true
                 };
-                // upload the CPU master copy exactly once
+
+                // upload weights & biases once
                 buf.W.CopyFromCPU(Wcpu);
                 buf.B.CopyFromCPU(Bcpu);
 
                 _buffers[layerIdx] = buf;
             }
 
-            // every batch we only re‐upload the inputs
+            // Every batch: upload inputs, run the kernel, download outputs
+            // 1) Copy input batch
             buf.X.CopyFromCPU(Flatten(Xcpu));
 
-            // run the forward kernel
-            kernel(new Index2D(Xcpu.Length, Bcpu.Length),
-                   buf.X.View, buf.W.View, buf.B.View,
-                   buf.A.View, buf.D.View, t);
+            // 2) Launch activation kernel
+            kernel(
+                new Index2D(Bsz, Bcpu.Length),
+                buf.X.View, buf.W.View, buf.B.View,
+                buf.A.View, buf.D.View, t
+            );
 
-            // read back activations & derivatives
-            var act2d = new float[Xcpu.Length, Bcpu.Length];
-            var der2d = new float[Xcpu.Length, Bcpu.Length];
+            // 3) Copy activations & derivatives back
+            var act2d = new float[Bsz, Bcpu.Length];
+            var der2d = new float[Bsz, Bcpu.Length];
             buf.A.CopyToCPU(act2d);
             buf.D.CopyToCPU(der2d);
 

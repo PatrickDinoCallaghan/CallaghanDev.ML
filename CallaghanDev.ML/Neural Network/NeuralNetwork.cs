@@ -1,5 +1,6 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
+using CallaghanDev.Utilities.Utilities.Diagnostics;
 using Terminal.Gui.Helpers;
 
 namespace CallaghanDev.ML
@@ -77,9 +78,7 @@ namespace CallaghanDev.ML
             for (int i = 0; i < n; i++)
             {
                 float range = max[i] - min[i];
-                scaled[i] = (range <= 0)
-                    ? 0
-                    : (raw[i] - min[i]) / range;
+                scaled[i] = (range <= 0) ? 0 : (raw[i] - min[i]) / range;
             }
             return scaled;
         }
@@ -365,25 +364,18 @@ namespace CallaghanDev.ML
 
         #region Batch-Processing Methods
         private AccelerationGPUBatch GPUBatchAccelerationManager;
-        // In NeuralNetwork:
 
-        public void TrainBatch(
-            float[][] inputs,
-            float[][] expected,
-            int batchSize,
-            float learningRate,
-            int epochs,
-            bool silent = false)
+        public void TrainBatch(float[][] inputs, float[][] expected, int batchSize, float learningRate, int epochs, bool silent = false)
         {
-            if (data.parameters.AccelerationType != AccelerationType.GPU
-             && data.parameters.AccelerationType != AccelerationType.CUDA)
+            if (data.parameters.AccelerationType != AccelerationType.GPU && data.parameters.AccelerationType != AccelerationType.CUDA)
+            {
                 throw new InvalidOperationException("Batch training requires GPU/CUDA.");
+            }
 
             if (GPUBatchAccelerationManager == null)
-                GPUBatchAccelerationManager = new AccelerationGPUBatch(
-                    accelerationManager,
-                    data.parameters.AccelerationType,
-                    data.parameters.AccelerationDeviceId);
+            {
+                GPUBatchAccelerationManager = new AccelerationGPUBatch(accelerationManager, data.parameters.AccelerationType, data.parameters.AccelerationDeviceId);
+            }
 
             if (batchSize <= 1)
             {
@@ -391,19 +383,19 @@ namespace CallaghanDev.ML
                 return;
             }
 
-            CalibrateInputs(inputs);
+            using(CodeProfiler.Step("CalibrateInputs"))
+            {
+                CalibrateInputs(inputs);
+            }
 
             int n = inputs.Length;
             long totalBatches = (long)MathF.Ceiling(n / (float)batchSize) * epochs;
             long count = 0;
             var rand = new Random();
 
-            // **training loop** (unchanged)
             for (int e = 0; e < epochs; e++)
             {
-                var idx = Enumerable.Range(0, n)
-                                    .OrderBy(_ => rand.Next())
-                                    .ToArray();
+                var idx = Enumerable.Range(0, n).OrderBy(_ => rand.Next()).ToArray();
 
                 for (int start = 0; start < n; start += batchSize)
                 {
@@ -420,20 +412,20 @@ namespace CallaghanDev.ML
                     LearnBatch(batchX, batchY, learningRate);
                     count++;
                     if (!silent)
+                    {
                         ProgressBarHelper.DisplayProgressBar(count, totalBatches, "Training Batches");
+                    }
                 }
             }
 
-            // ─── only once, *after* all epochs ───
-            // copy the final learned weights/biases back into data.layers for CPU inference or Save()
             for (int l = 1; l < data.layers.Length; l++)
             {
                 var layer = data.layers[l];
-                GPUBatchAccelerationManager.CopyLayerToCPU(
-                    l,
-                    layer.Weights,
-                    layer.Biases
-                );
+
+                using (CodeProfiler.Step("GPUBatchAccelerationManager.CopyLayerToCPU"))
+                {
+                    GPUBatchAccelerationManager.CopyLayerToCPU(l, layer.Weights, layer.Biases);
+                }
             }
         }
 
@@ -477,19 +469,6 @@ namespace CallaghanDev.ML
             BackPropagateBatch(costDeriv, lr);
         }
 
-        /*
-        private void ForwardPropagateBatch()
-        {
-            for (int l = 1; l < data.layers.Length; l++)
-            {
-                var prev = data.layers[l - 1];
-                var cur = data.layers[l];
-                var (acts, ders) = GPUBatchAccelerationManager.CalculateBatch(prev.ActivationsBatch, cur.Weights, cur.Biases, cur.ActivationType);
-                cur.ActivationsBatch = acts;
-                cur.DerivativesBatch = ders;
-            }
-        }*/
-
         private void ForwardPropagateBatch()
         {
             for (int l = 1; l < data.layers.Length; l++)
@@ -497,7 +476,6 @@ namespace CallaghanDev.ML
                 var prev = data.layers[l - 1];
                 var cur = data.layers[l];
 
-                // note the extra 'l' argument at the end
                 var (acts, ders) = GPUBatchAccelerationManager.CalculateBatch(
                     prev.ActivationsBatch,
                     cur.Weights,
@@ -540,7 +518,6 @@ namespace CallaghanDev.ML
             return list;
         }
 
-        //private float ComputeBatchGlobalNorm(List<float[][]> deltas) => MathF.Sqrt(deltas.SelectMany(m => m).SelectMany(a => a).Sum(v => v * v));
         private float ComputeBatchGlobalNorm(List<float[][]> deltas)
         {
             float sumSq = deltas
