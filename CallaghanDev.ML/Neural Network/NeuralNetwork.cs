@@ -30,7 +30,7 @@ namespace CallaghanDev.ML
 
             if (data.parameters.AccelerationType == AccelerationType.GPU || data.parameters.AccelerationType == AccelerationType.CUDA)
             {
-                accelerationManager = new AccelerationGPU(data.parameters.AccelerationType , data.parameters.AccelerationDeviceId);
+                accelerationManager = new AccelerationGPU(data.parameters.AccelerationType, data.parameters.AccelerationDeviceId);
             }
             else if (data.parameters.AccelerationType == AccelerationType.CPU)
             {
@@ -271,7 +271,8 @@ namespace CallaghanDev.ML
                     CostFunctionDeriv = (float ActualValue, float predicted) => { return 2 * (predicted - ActualValue); };
                     break;
                 case CostFunctionType.ZeroWeightedMSE:
-                    costFunction = (float ActualValue, float predicted) => {
+                    costFunction = (float ActualValue, float predicted) =>
+                    {
                         float zeroWeight = 0.25f;
                         float nonZeroWeight = 1.0f;
 
@@ -281,7 +282,8 @@ namespace CallaghanDev.ML
                         // Calculate the weighted MSE for the single prediction
                         return weight * MathF.Pow(predicted - ActualValue, 2f);
                     };
-                    CostFunctionDeriv = (float ActualValue, float predicted) => {
+                    CostFunctionDeriv = (float ActualValue, float predicted) =>
+                    {
                         float zeroWeight = 0.25f;
                         float nonZeroWeight = 1.0f;
 
@@ -301,7 +303,8 @@ namespace CallaghanDev.ML
                     CostFunctionDeriv = (float ActualValue, float predicted) => { return ActualValue > predicted ? -1 : 1; };
                     break;
                 case CostFunctionType.huberLoss:
-                    costFunction = (ActualValue, predicted) => {
+                    costFunction = (ActualValue, predicted) =>
+                    {
                         float diff = ActualValue - predicted;
                         if (MathF.Abs(diff) <= data.parameters.HuberLossDelta)
                         {
@@ -310,8 +313,10 @@ namespace CallaghanDev.ML
                         else
                         {
                             return data.parameters.HuberLossDelta * (MathF.Abs(diff) - 0.5f * data.parameters.HuberLossDelta);
-                        }};
-                    CostFunctionDeriv = (ActualValue, predicted) => {
+                        }
+                    };
+                    CostFunctionDeriv = (ActualValue, predicted) =>
+                    {
                         float diff = ActualValue - predicted;
                         if (MathF.Abs(diff) <= data.parameters.HuberLossDelta)
                         {
@@ -324,7 +329,8 @@ namespace CallaghanDev.ML
                     };
                     break;
                 case CostFunctionType.categoricalCrossEntropy:
-                    costFunction = (ActualValue, predicted) => {
+                    costFunction = (ActualValue, predicted) =>
+                    {
                         return -ActualValue * MathF.Log(predicted + 1e-15f);
                     };
                     CostFunctionDeriv = (float ActualValue, float predicted) => { return predicted - ActualValue; };
@@ -348,7 +354,7 @@ namespace CallaghanDev.ML
             return costDifferences;
         }
 
-        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType, int DeviceId= 0)
+        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType, int DeviceId = 0)
         {
             Data data = Data.Load(FileName);
             NeuralNetwork nn = new NeuralNetwork(data);
@@ -383,10 +389,7 @@ namespace CallaghanDev.ML
                 return;
             }
 
-            using(CodeProfiler.Step("CalibrateInputs"))
-            {
-                CalibrateInputs(inputs);
-            }
+            CalibrateInputs(inputs);
 
             int n = inputs.Length;
             long totalBatches = (long)MathF.Ceiling(n / (float)batchSize) * epochs;
@@ -422,10 +425,7 @@ namespace CallaghanDev.ML
             {
                 var layer = data.layers[l];
 
-                using (CodeProfiler.Step("GPUBatchAccelerationManager.CopyLayerToCPU"))
-                {
-                    GPUBatchAccelerationManager.CopyLayerToCPU(l, layer.Weights, layer.Biases);
-                }
+                GPUBatchAccelerationManager.CopyLayerToCPU(l, layer.Weights, layer.Biases);
             }
         }
 
@@ -451,7 +451,9 @@ namespace CallaghanDev.ML
         private void LearnBatch(float[][] xBatch, float[][] yBatch, float lr)
         {
             SetInputBatch(xBatch);
+
             ForwardPropagateBatch();
+
             var outL = data.layers[^1];
             int B = yBatch.Length;
             var costDeriv = new float[B][];
@@ -506,13 +508,13 @@ namespace CallaghanDev.ML
         {
             var list = new List<float[][]>();
             var outLayer = data.layers[outIdx];
-            list.Add(GPUBatchAccelerationManager.CalculateBatchOutputGradients(costDerivBatch, outLayer.DerivativesBatch));
+            list.Add(GPUBatchAccelerationManager.CalculateOutputGradients(costDerivBatch, outLayer.DerivativesBatch));
             var next = list[0];
             for (int i = outIdx - 1; i > 0; i--)
             {
                 var layer = data.layers[i];
                 var above = data.layers[i + 1];
-                list.Add(GPUBatchAccelerationManager.CalculateBatchHiddenGradients(above.Weights, next, layer.DerivativesBatch));
+                list.Add(GPUBatchAccelerationManager.CalculateHiddenGradients(above.Weights, next, layer.DerivativesBatch));
                 next = list[^1];
             }
             return list;
@@ -543,8 +545,6 @@ namespace CallaghanDev.ML
 
             });
         }
-
-
         private void ApplyBatchUpdates(List<float[][]> deltas, float lr)
         {
             int L = data.layers.Length - 1;

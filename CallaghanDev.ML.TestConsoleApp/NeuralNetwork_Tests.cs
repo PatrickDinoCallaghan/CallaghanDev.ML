@@ -235,9 +235,9 @@ namespace CallaghanDev.ML.TestConsoleApp
             var nn = new NeuralNetwork(parameters);
 
 
-            int batchSize = 1000;
+            int batchSize = 4000;
             float lr = 0.5f;
-            int epochs = 1000;
+            int epochs = 4000;
             nn.TrainBatch(inputs, expectedOutputs, batchSize, lr, epochs);
 
             Console.WriteLine();
