@@ -357,9 +357,9 @@ namespace CallaghanDev.ML
         public static NeuralNetwork Load(string FileName, AccelerationType accelerationType, int DeviceId = 0)
         {
             Data data = Data.Load(FileName);
-            NeuralNetwork nn = new NeuralNetwork(data);
             data.parameters.AccelerationType = accelerationType;
             data.parameters.AccelerationDeviceId = DeviceId;
+            NeuralNetwork nn = new NeuralNetwork(data);
             nn.data = data;
             return nn;
         }
