@@ -199,32 +199,45 @@ namespace CallaghanDev.ML
 
         public void Save(string filePath)
         {
-            var settings = new JsonSerializerSettings
+            var serializer = new JsonSerializer
             {
                 TypeNameHandling = TypeNameHandling.Auto,
                 Formatting = Formatting.Indented
             };
-            string json = JsonConvert.SerializeObject(this, settings);
-            File.WriteAllText(filePath, json);
+
+            using var fs = File.Create(filePath);
+            using var sw = new StreamWriter(fs, Encoding.UTF8, bufferSize: 16 * 1024, leaveOpen: false);
+            using var jw = new JsonTextWriter(sw)
+            {
+                Formatting = Formatting.Indented,
+                CloseOutput = true,
+            };
+
+            serializer.Serialize(jw, this);
+            jw.Flush();
         }
 
-        /// <summary>
-        /// Load Data from JSON (written by SaveJson).
-        /// </summary>
         public static Data Load(string filePath)
         {
-            var settings = new JsonSerializerSettings
+            var serializer = new JsonSerializer
             {
                 TypeNameHandling = TypeNameHandling.Auto
             };
-            string json = File.ReadAllText(filePath);
-            var data = JsonConvert.DeserializeObject<Data>(json, settings);
 
-            // re‑init anything Json skipped
+            using var fs = File.OpenRead(filePath);
+            using var sr = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 16 * 1024);
+            using var jr = new JsonTextReader(sr)
+            {
+                SupportMultipleContent = false
+            };
+
+            var data = serializer.Deserialize<Data>(jr)!;
+
             data._random = new Random();
-
             return data;
         }
+
+
         #endregion
     }
 }
