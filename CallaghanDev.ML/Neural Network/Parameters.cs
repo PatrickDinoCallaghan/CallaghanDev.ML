@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,6 +10,9 @@ namespace CallaghanDev.ML
 {
     public class Parameters
     {
+        public Parameters() { }
+
+        [JsonProperty("HuberLossDelta")]
         private float _HuberLossDelta = 1;
 
         public AccelerationType AccelerationType { get; set; }
@@ -19,6 +23,8 @@ namespace CallaghanDev.ML
 
         public float L2RegulationLamda { get; set; } = 0;
         public float GradientClippingThreshold { get; set; } = 1;
+        
+        [JsonIgnore]
         public float HuberLossDelta
         {
             get
@@ -40,8 +46,9 @@ namespace CallaghanDev.ML
 
         public List<int> LayerWidths { get; set; } = new List<int>();
         public List<ActivationType> LayerActivations { get; set; } = new List<ActivationType>();
-
+        [JsonProperty]
         internal float[] inputActivationMin { get; set; }
+        [JsonProperty]
         internal float[] inputActivationMax { get; set; }
 
         public override string ToString()

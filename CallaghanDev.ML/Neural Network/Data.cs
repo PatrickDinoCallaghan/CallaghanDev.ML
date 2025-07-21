@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,9 +14,13 @@ namespace CallaghanDev.ML
         public Layer[] layers { get; set; }
         public Parameters parameters { get; set; }
 
+        [JsonIgnore]
         private Random _random;
 
-        public Data() { }
+        public Data()
+        {
+            _random = new Random();
+        }
         public Data(Parameters InParameters)
         {
             this.parameters = InParameters;
@@ -194,135 +199,32 @@ namespace CallaghanDev.ML
 
         public void Save(string filePath)
         {
-            using var fs = File.Open(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
-            using var writer = new BinaryWriter(fs);
-
-            // --- Layers (unchanged) ---
-            writer.Write(layers.Length);
-            foreach (var layer in layers)
+            var settings = new JsonSerializerSettings
             {
-                writer.Write(layer.InputSize);
-                writer.Write(layer.Size);
-                writer.Write((int)layer.ActivationType);
-                WriteDoubleArray(writer, layer.Activations);
-                WriteDoubleArray(writer, layer.Biases);
-                WriteDoubleArray(writer, layer.Derivatives);
-                WriteDoubleArray(writer, layer.Deltas);
-                for (int i = 0; i < layer.Size; i++)
-                    for (int j = 0; j < layer.InputSize; j++)
-                        writer.Write(layer.Weights[i, j]);
-            }
-
-            // --- Parameters primitives first ---
-            writer.Write((int)parameters.AccelerationType);
-            writer.Write((int)parameters.CostFunction);
-            writer.Write((int)parameters.ActivationDistribution);
-            writer.Write(parameters.L2RegulationLamda);
-            writer.Write(parameters.GradientClippingThreshold);
-            writer.Write(parameters.HuberLossDelta);
-            writer.Write(parameters.GradientExplosionThreshold);
-            writer.Write(parameters.GradientVanishingThreshold);
-
-            // --- Then lists in that same order ---
-            writer.Write(parameters.LayerWidths.Count);
-            foreach (var w in parameters.LayerWidths)
-                writer.Write(w);
-
-            writer.Write(parameters.LayerActivations.Count);
-            foreach (var a in parameters.LayerActivations)
-                writer.Write((int)a);
-
-            if (parameters.inputActivationMin == null || parameters.inputActivationMax == null)
-                throw new InvalidOperationException("inputActivationMin/Max must be non-null before saving.");
-
-            WriteDoubleArray(writer, parameters.inputActivationMin);
-            WriteDoubleArray(writer, parameters.inputActivationMax);
+                TypeNameHandling = TypeNameHandling.Auto,
+                Formatting = Formatting.Indented
+            };
+            string json = JsonConvert.SerializeObject(this, settings);
+            File.WriteAllText(filePath, json);
         }
 
+        /// <summary>
+        /// Load Data from JSON (written by SaveJson).
+        /// </summary>
         public static Data Load(string filePath)
         {
-            using var fs = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            using var reader = new BinaryReader(fs);
-
-            var result = new Data();
-
-            // --- Layers (unchanged) ---
-            int layerCount = reader.ReadInt32();
-            var layers = new Layer[layerCount];
-            for (int idx = 0; idx < layerCount; idx++)
+            var settings = new JsonSerializerSettings
             {
-                int inSize = reader.ReadInt32();
-                int size = reader.ReadInt32();
-                var actType = (ActivationType)reader.ReadInt32();
-                var layer = new Layer(inSize, size, actType);
-
-                ReadDoubleArray(reader, layer.Activations);
-                ReadDoubleArray(reader, layer.Biases);
-                ReadDoubleArray(reader, layer.Derivatives);
-                ReadDoubleArray(reader, layer.Deltas);
-
-                for (int i = 0; i < size; i++)
-                    for (int j = 0; j < inSize; j++)
-                        layer.Weights[i, j] = reader.ReadSingle();
-
-                layers[idx] = layer;
-            }
-            result.layers = layers;
-
-            var p = new Parameters
-            {
-                AccelerationType = (AccelerationType)reader.ReadInt32(),
-                CostFunction = (CostFunctionType)reader.ReadInt32(),
-                ActivationDistribution = (ActivationDistribution)reader.ReadInt32(),
-                L2RegulationLamda = reader.ReadSingle(),
-                GradientClippingThreshold = reader.ReadSingle(),
-                HuberLossDelta = reader.ReadSingle(),
-                GradientExplosionThreshold = reader.ReadSingle(),
-                GradientVanishingThreshold = reader.ReadSingle()
+                TypeNameHandling = TypeNameHandling.Auto
             };
+            string json = File.ReadAllText(filePath);
+            var data = JsonConvert.DeserializeObject<Data>(json, settings);
 
-            int lwCount = reader.ReadInt32();
-            p.LayerWidths = new List<int>(lwCount);
-            for (int i = 0; i < lwCount; i++)
-                p.LayerWidths.Add(reader.ReadInt32());
+            // re‑init anything Json skipped
+            data._random = new Random();
 
-            int laCount = reader.ReadInt32();
-            p.LayerActivations = new List<ActivationType>(laCount);
-            for (int i = 0; i < laCount; i++)
-                p.LayerActivations.Add((ActivationType)reader.ReadInt32());
-
-            int minCount = reader.ReadInt32();
-            p.inputActivationMin = new float[minCount];
-            for (int i = 0; i < minCount; i++)
-                p.inputActivationMin[i] = reader.ReadSingle();
-
-            int maxCount = reader.ReadInt32();
-            p.inputActivationMax = new float[maxCount];
-            for (int i = 0; i < maxCount; i++)
-                p.inputActivationMax[i] = reader.ReadSingle();
-
-            result.parameters = p;
-            return result;
+            return data;
         }
-
-        private static void WriteDoubleArray(BinaryWriter writer, float[] arr)
-        {
-            writer.Write(arr.Length);
-            foreach (var v in arr) writer.Write(v);
-        }
-        private static void ReadDoubleArray(BinaryReader reader, float[] arr)
-        {
-            int len = reader.ReadInt32();
-            if (len != arr.Length)
-            {
-                throw new InvalidDataException($"Array length mismatch: expected {arr.Length}, got {len}");
-            }
-            for (int i = 0; i < len; i++)
-            {
-                arr[i] = reader.ReadSingle();
-            }
-        }
-
         #endregion
     }
 }

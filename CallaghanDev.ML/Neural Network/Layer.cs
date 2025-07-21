@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
+using Newtonsoft.Json;
 
 namespace CallaghanDev.ML
 {
@@ -15,9 +16,15 @@ namespace CallaghanDev.ML
 
         public float[,] Weights { get; set; }
 
+        [JsonIgnore]
         public float[][] ActivationsBatch { get; set; }
+
+        [JsonIgnore]
         public float[][] DerivativesBatch { get; set; }
+
+        [JsonIgnore]
         public float[][] DeltasBatch { get; set; }
+        public Layer() { }
 
         public Layer(int inputSize, int size, ActivationType actType)
         {
