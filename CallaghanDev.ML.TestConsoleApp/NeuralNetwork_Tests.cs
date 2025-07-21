@@ -240,6 +240,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             int epochs = 4000;
             nn.TrainBatch(inputs, expectedOutputs, batchSize, lr, epochs);
 
+
+
             Console.WriteLine();
 
             for (int i = 0; i < inputs.Length; i++)
@@ -249,6 +251,35 @@ namespace CallaghanDev.ML.TestConsoleApp
                 int e = (int)expectedOutputs[i][0];
                 Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
             }
+
+
+            Console.WriteLine("Saving.");
+            nn.Save("xor_model.json");
+
+            Console.WriteLine("Model saved to xor_model.json");
+
+
+            Console.WriteLine("Loading xor_model.json");
+
+            NeuralNetwork loadedNN = NeuralNetwork.Load("xor_model.json", AccelerationType.CUDA);
+
+
+
+            int batchSize2 = 4000;
+            float lr2 = 0.5f;
+            int epochs2 = 4000;
+            nn.TrainBatch(inputs, expectedOutputs, batchSize2, lr2, epochs2);
+
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var pred = nn.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+            }
+
+
+
         }
     }
 }

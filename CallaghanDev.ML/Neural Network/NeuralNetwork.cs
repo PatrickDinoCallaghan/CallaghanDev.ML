@@ -360,7 +360,6 @@ namespace CallaghanDev.ML
             data.parameters.AccelerationType = accelerationType;
             data.parameters.AccelerationDeviceId = DeviceId;
             NeuralNetwork nn = new NeuralNetwork(data);
-            nn.data = data;
             return nn;
         }
         public void Save(string FileName)
