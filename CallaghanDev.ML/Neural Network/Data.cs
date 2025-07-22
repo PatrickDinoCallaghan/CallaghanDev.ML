@@ -239,6 +239,32 @@ namespace CallaghanDev.ML
 
 
         #endregion
+
+        public long ParameterCount
+        {
+            get
+            {
+                return CalculateParameterCount(parameters.LayerWidths);
+            }
+        }
+        private long CalculateParameterCount(IList<int> layerWidths)
+        {
+            if (layerWidths == null) throw new ArgumentNullException(nameof(layerWidths));
+            if (layerWidths.Count < 2) return 0;
+
+            long total = 0;
+            for (int i = 0; i < layerWidths.Count - 1; i++)
+            {
+                int n = layerWidths[i];
+                int m = layerWidths[i + 1];
+
+                long weights = (long)n * m;
+                long biases = m;
+
+                total += weights + biases;
+            }
+            return total;
+        }
     }
 }
 

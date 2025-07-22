@@ -1,6 +1,7 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.Utilities.Utilities.Diagnostics;
+using DocumentFormat.OpenXml.Spreadsheet;
 using Terminal.Gui.Helpers;
 
 namespace CallaghanDev.ML
@@ -13,6 +14,13 @@ namespace CallaghanDev.ML
         private delegate float CostFunction(float value, float prediction);
         private CostFunction costFunction { get; set; }
 
+        public long ParameterCount
+        {
+            get
+            {
+                return data.ParameterCount;
+            }
+        }
         public NeuralNetwork(Parameters parameters)
         {
             data = new Data(parameters);
