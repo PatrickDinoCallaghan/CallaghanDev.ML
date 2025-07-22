@@ -1,12 +1,13 @@
 ﻿using CallaghanDev.ML.Enums;
 using Newtonsoft.Json;
+using System.Runtime.Serialization;
 
 namespace CallaghanDev.ML
 {
     public class Layer
     {
-        public int Size { get; }
-        public int InputSize { get; }
+        public int Size { get; set; }
+        public int InputSize { get; set; }
 
         public float[] Activations { get; set; }
         public float[] Biases { get; set; }
@@ -44,6 +45,12 @@ namespace CallaghanDev.ML
             DeltasBatch = null;
         }
 
-        public ActivationType ActivationType { get; }
+        [OnDeserialized]
+        private void OnDeserialized(StreamingContext ctx)
+        {
+            Size = Activations.Length;
+            InputSize = Weights.GetLength(1);
+        }
+        public ActivationType ActivationType { get; set; }
     }
 }

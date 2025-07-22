@@ -363,7 +363,6 @@ namespace CallaghanDev.ML
             data.parameters.AccelerationType = accelerationType;
             data.parameters.AccelerationDeviceId = DeviceId;
             NeuralNetwork nn = new NeuralNetwork(data);
-            nn.ResetGpuBatchManager();
             return nn;
         }
         public void Save(string FileName)
@@ -576,11 +575,6 @@ namespace CallaghanDev.ML
         }
 
         #endregion
-        public void ResetGpuBatchManager()
-        {
-            GPUBatchAccelerationManager?.Dispose();
-            GPUBatchAccelerationManager = null;
-        }
 
     }
 }
