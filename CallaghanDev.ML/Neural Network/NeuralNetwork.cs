@@ -30,14 +30,17 @@ namespace CallaghanDev.ML
 
             if (data.parameters.AccelerationType == AccelerationType.GPU || data.parameters.AccelerationType == AccelerationType.CUDA)
             {
+                Console.WriteLine($"Using {data.parameters.AccelerationType} acceleration on device {data.parameters.AccelerationDeviceId}.");
                 accelerationManager = new AccelerationGPU(data.parameters.AccelerationType, data.parameters.AccelerationDeviceId);
             }
             else if (data.parameters.AccelerationType == AccelerationType.CPU)
             {
+                Console.WriteLine($"Using {data.parameters.AccelerationType} acceleration.");
                 accelerationManager = new AccelerationCPU();
             }
             else if (data.parameters.AccelerationType == AccelerationType.MultiThreadCPU)
             {
+                Console.WriteLine($"Using {data.parameters.AccelerationType} acceleration.");
                 accelerationManager = new AccelerationMutliThreadCPU();
             }
             else
@@ -360,6 +363,7 @@ namespace CallaghanDev.ML
             data.parameters.AccelerationType = accelerationType;
             data.parameters.AccelerationDeviceId = DeviceId;
             NeuralNetwork nn = new NeuralNetwork(data);
+            nn.ResetGpuBatchManager();
             return nn;
         }
         public void Save(string FileName)
@@ -572,6 +576,11 @@ namespace CallaghanDev.ML
         }
 
         #endregion
+        public void ResetGpuBatchManager()
+        {
+            GPUBatchAccelerationManager?.Dispose();
+            GPUBatchAccelerationManager = null;
+        }
 
     }
 }
