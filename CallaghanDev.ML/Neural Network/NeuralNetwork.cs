@@ -69,7 +69,7 @@ namespace CallaghanDev.ML
             {
                 for (int i = 0; i < inputs.Length; i++)
                 {
-                    var xScaled = ScaleInput(inputs[i]);        // apply the same mapping every pass
+                    var xScaled = ScaleInput(inputs[i]); 
                     Learn(xScaled, expected[i], learningRate);
                     count++;
                     if (!silent)
@@ -219,7 +219,7 @@ namespace CallaghanDev.ML
         private void ApplyUpdates(List<float[]> deltasByLayer, float learningRate)
         {
             int L = data.layers.Length - 1;
-            float λ = data.parameters.L2RegulationLamda;
+            float lamda = data.parameters.L2RegulationLamda;
 
             // output layer
             {
@@ -230,7 +230,7 @@ namespace CallaghanDev.ML
                     outDeltas,
                     data.layers[L - 1].Activations,
                     learningRate,
-                    λ                 // << passes lambda into every update
+                    lamda                 // << passes lambda into every update
                 );
                 layer.Biases = accelerationManager.UpdateBias(layer.Biases, outDeltas, learningRate);
             }
@@ -248,7 +248,7 @@ namespace CallaghanDev.ML
                     deltas,
                     prevActs,
                     learningRate,
-                    λ                 // << same lambda again
+                    lamda                 // << same lambda again
                 );
                 layer.Biases = accelerationManager.UpdateBias(layer.Biases, deltas, learningRate);
             }
@@ -558,27 +558,16 @@ namespace CallaghanDev.ML
         private void ApplyBatchUpdates(List<float[][]> deltas, float lr)
         {
             int L = data.layers.Length - 1;
-            float λ = data.parameters.L2RegulationLamda;
+            float lamda = data.parameters.L2RegulationLamda;
 
-            // deltas[0] is for the output layer, deltas[1] for the last hidden, etc.
             for (int idx = 0; idx < deltas.Count; idx++)
             {
                 int layerIdx = L - idx;
                 var layer = data.layers[layerIdx];
 
-                // prevActsBatch is null only for the very first (input) layer
                 float[][] prevActs = layerIdx > 0 ? data.layers[layerIdx - 1].ActivationsBatch : null;
 
-                GPUBatchAccelerationManager.ApplyBatchUpdatesGPU(
-                    layer.Weights,      // CPU array for weights (for backing-up / copy-back)
-                    deltas[idx],        // the [batchSize][neurons] delta array
-                    prevActs,           // the [batchSize][prevNeurons] activations
-                    lr,
-                    λ,
-                    layerIdx
-                );
-
-
+                GPUBatchAccelerationManager.ApplyBatchUpdatesGPU(layer.Weights, deltas[idx], prevActs, lr, lamda, layerIdx);
             }
         }
 

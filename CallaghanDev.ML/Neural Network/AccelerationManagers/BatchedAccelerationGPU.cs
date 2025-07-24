@@ -28,46 +28,21 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Dictionary<(int layer, int B, int N, int F), (MemoryBuffer2D<float, Stride2D.DenseX> deltas, MemoryBuffer2D<float, Stride2D.DenseX> acts, MemoryBuffer2D<float, Stride2D.DenseX> grad, MemoryBuffer1D<float, Stride1D.Dense> bias)> _batchUpdateCache = new();
 
         // Core ILGPU kernels
-        private readonly Action<Index2D,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView1D<float, Stride1D.Dense>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ActivationType> _batchKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ActivationType> _batchKernel;
 
-        private readonly Action<Index2D,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            float,
-            float> _updateWeightsKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, float, float> _updateWeightsKernel;
 
-        private readonly Action<Index1D,
-            ArrayView1D<float, Stride1D.Dense>,
-            ArrayView1D<float, Stride1D.Dense>,
-            float> _updateBiasKernel;
+        private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float> _updateBiasKernel;
 
         // Gradient-sum kernels
-        private readonly Action<Index2D,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>> _gradSumKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _gradSumKernel;
 
-        private readonly Action<Index1D,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView1D<float, Stride1D.Dense>> _biasSumKernel;
+        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _biasSumKernel;
 
         // Batch gradient kernels
-        private readonly Action<Index2D,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>> _outputGradBatchKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _outputGradBatchKernel;
 
-        private readonly Action<Index2D,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>,
-            ArrayView2D<float, Stride2D.DenseX>> _hiddenGradBatchKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _hiddenGradBatchKernel;
 
         public AccelerationGPUBatch(IAccelerationManager accelerationManagerGPU, AccelerationType accelerationType, int deviceId = 0)
         {
@@ -130,22 +105,6 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
         /// <summary>
-        /// Dispose existing GPU buffers for a layer.
-        /// </summary>
-        private void DisposeLayerBuffers(int layerIdx)
-        {
-            if (_buffers.TryGetValue(layerIdx, out var buf) && buf.Initialized)
-            {
-                buf.X.Dispose();
-                buf.W.Dispose();
-                buf.B.Dispose();
-                buf.A.Dispose();
-                buf.D.Dispose();
-                _buffers.Remove(layerIdx);
-            }
-        }
-
-        /// <summary>
         /// Forward and backward propagate a batch through one layer on the GPU.
         /// </summary>
         public (float[][] activation, float[][] derivative) CalculateBatch(float[][] Xcpu, float[,] Wcpu, float[] Bcpu, ActivationType t, int layerIdx)
@@ -180,11 +139,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             buf.X.CopyFromCPU(Flatten(Xcpu));
-            _batchKernel(
-                new Index2D(Bsz, Bcpu.Length),
-                buf.X.View, buf.W.View, buf.B.View,
-                buf.A.View, buf.D.View, t
-            );
+            _batchKernel(new Index2D(Bsz, Bcpu.Length), buf.X.View, buf.W.View, buf.B.View, buf.A.View, buf.D.View, t);
 
             var act2d = new float[Bsz, Bcpu.Length];
             var der2d = new float[Bsz, Bcpu.Length];
@@ -251,7 +206,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// <summary>
         /// Apply batched weight & bias updates on GPU (with gradient clipping & L2).
         /// </summary>
-        public void ApplyBatchUpdatesGPU(float[,] Wcpu, float[][] deltasCpu, float[][] prevActsCpu, float lr, float λ, int layerIdx)
+        public void ApplyBatchUpdatesGPU(float[,] Wcpu, float[][] deltasCpu, float[][] prevActsCpu, float lr, float lamda, int layerIdx)
         {
             int Bsz = deltasCpu.Length;
             var bufRec = _buffers[layerIdx];
@@ -272,7 +227,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             bufs.acts.CopyFromCPU(Flatten(prevActsCpu));
 
             _gradSumKernel(new Index2D(N, Fsz), bufs.deltas.View, bufs.acts.View, bufs.grad.View);
-            _updateWeightsKernel(new Index2D(N, Fsz), bufRec.W.View, bufs.grad.View, lr / Bsz, λ);
+            _updateWeightsKernel(new Index2D(N, Fsz), bufRec.W.View, bufs.grad.View, lr / Bsz, lamda);
 
             _biasSumKernel(new Index1D(N), bufs.deltas.View, bufs.bias.View);
             _updateBiasKernel(new Index1D(N), bufRec.B.View, bufs.bias.View, lr / Bsz);
@@ -284,7 +239,9 @@ namespace CallaghanDev.ML.AccelerationManagers
         public void CopyLayerToCPU(int layerIdx, float[,] weightsCpu, float[] biasesCpu)
         {
             if (!_buffers.TryGetValue(layerIdx, out var buf))
+            {
                 throw new ArgumentException($"No GPU buffers for layer {layerIdx}");
+            }
             buf.W.CopyToCPU(weightsCpu);
             buf.B.CopyToCPU(biasesCpu);
         }
@@ -498,5 +455,19 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
+
+        private void DisposeLayerBuffers(int layerIdx)
+        {
+            if (_buffers.TryGetValue(layerIdx, out var buf) && buf.Initialized)
+            {
+                buf.X.Dispose();
+                buf.W.Dispose();
+                buf.B.Dispose();
+                buf.A.Dispose();
+                buf.D.Dispose();
+                _buffers.Remove(layerIdx);
+            }
+        }
+
     }
 }
