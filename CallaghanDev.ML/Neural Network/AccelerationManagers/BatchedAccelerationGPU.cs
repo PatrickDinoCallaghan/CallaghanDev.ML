@@ -363,19 +363,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #endregion
 
-        /// <summary>
-        /// Flatten jagged float[][] into a 2D array.
-        /// </summary>
-        /*private static float[,] Flatten(float[][] jagged)
-        {
-            int rows = jagged.Length;
-            int cols = jagged[0].Length;
-            var full = new float[rows, cols];
-            for (int i = 0; i < rows; i++)
-                for (int j = 0; j < cols; j++)
-                    full[i, j] = jagged[i][j];
-            return full;
-        }*/
+
         private static float[,] Flatten(float[][] jagged)
         {
             int rows = jagged.Length;
@@ -399,22 +387,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             return full;
         }
 
-        /// <summary>
-        /// Unflatten 2D array back to jagged float[][].
-        /// </summary>
-        /*private static float[][] Unflatten(float[,] arr)
-        {
-            int rows = arr.GetLength(0);
-            int cols = arr.GetLength(1);
-            var jagged = new float[rows][];
-            for (int i = 0; i < rows; i++)
-            {
-                jagged[i] = new float[cols];
-                for (int j = 0; j < cols; j++)
-                    jagged[i][j] = arr[i, j];
-            }
-            return jagged;
-        }*/
         private static float[][] Unflatten(float[,] arr)
         {
             int rows = arr.GetLength(0);
