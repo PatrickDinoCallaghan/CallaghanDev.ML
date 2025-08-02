@@ -11,7 +11,6 @@ namespace CallaghanDev.ML.AccelerationManagers
 
     public class AccelerationMutliThreadCPU : IAccelerationManager
     {
-        private delegate float ActivationFunction(float x);
         private readonly ParallelOptions _parallelOptions;
 
         public AccelerationMutliThreadCPU()
@@ -48,8 +47,8 @@ namespace CallaghanDev.ML.AccelerationManagers
             var activation = new float[n];
             var derivative = new float[n];
 
-            var func = GetActivationFunction(activationType);
-            var deriv = GetActivationFunctionDeriv(activationType);
+            var func = Functions.GetActivationFunction(activationType);
+            var deriv = Functions.GetActivationDerivative(activationType);
 
             Parallel.For(0, n, _parallelOptions, i =>
             {
@@ -127,31 +126,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             return updated;
         }
 
-        private ActivationFunction GetActivationFunction(ActivationType type)
-        {
-            switch (type)
-            {
-                case ActivationType.None: return x => x;
-                case ActivationType.Sigmoid: return x => { var k = MathF.Exp(x); return k / (1f + k); };
-                case ActivationType.Tanh: return x => MathF.Tanh(x);
-                case ActivationType.Relu: return x => x > 0 ? x : 0;
-                case ActivationType.Leakyrelu: return x => x > 0 ? x : 0.01f * x;
-                default: return x => { var k = MathF.Exp(x); return k / (1f + k); };
-            }
-        }
-
-        private ActivationFunction GetActivationFunctionDeriv(ActivationType type)
-        {
-            switch (type)
-            {
-                case ActivationType.None: return x => 1;
-                case ActivationType.Sigmoid: return x => { var e = MathF.Exp(x); var s = e / (1 + e); return s * (1 - s); };
-                case ActivationType.Tanh: return x => 1 - MathF.Tanh(x) * MathF.Tanh(x);
-                case ActivationType.Relu: return x => x >= 0 ? 1 : 0;
-                case ActivationType.Leakyrelu: return x => x >= 0f ? 1f : 0.01f;
-                default: return x => { var e = MathF.Exp(x); var s = e / (1 + e); return s * (1 - s); };
-            }
-        }
 
         public void Dispose() { }
     }

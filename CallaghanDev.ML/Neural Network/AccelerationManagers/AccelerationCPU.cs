@@ -5,13 +5,13 @@ using ILGPU.Runtime.CPU;
 using ILGPU.Algorithms;
 using CallaghanDev.ML.Enums;
 using System;
+using static CallaghanDev.ML.Functions;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
 
     public class AccelerationCPU : IAccelerationManager
     {
-        private delegate float ActivationFunction(float x);
 
         public AccelerationCPU()
         {
@@ -45,8 +45,8 @@ namespace CallaghanDev.ML.AccelerationManagers
             var activation = new float[n];
             var derivative = new float[n];
 
-            ActivationFunction activationFunction = GetActivationFunction(activationType);
-            ActivationFunction activationFunctionDeriv = GetActivationFunctionDeriv(activationType);
+            ActivationFunction activationFunction = Functions.GetActivationFunction(activationType);
+            ActivationFunction activationFunctionDeriv = Functions.GetActivationDerivative(activationType);
 
             for (int i = 0; i < n; i++)
             {
@@ -126,77 +126,6 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
 
-        private ActivationFunction GetActivationFunction(ActivationType type)
-        {
-            switch (type)
-            {
-                case ActivationType.None:
-                    return x => x;
-                case ActivationType.Sigmoid:
-                    return x =>
-                    {
-                        float k = MathF.Exp(x);
-                        return k / (1.0f + k);
-                    };
-                case ActivationType.Tanh:
-                    return x =>
-                    {
-                        return MathF.Tanh(x);
-                    };
-                case ActivationType.Relu:
-                    return x =>
-                    {
-                        return 0 >= x ? 0 : x;
-                    };
-                case ActivationType.Leakyrelu:
-                    return x =>
-                    {
-                        return 0 >= x ? 0.01f * x : x;
-                    };
-                default: // ActivationType.Sigmoid:
-                    return x =>
-                    {
-                        float k = MathF.Exp(x);
-                        return k / (1.0f + k);
-                    };
-            }
-        }
-
-        private ActivationFunction GetActivationFunctionDeriv(ActivationType type)
-        {
-            switch (type)
-            {
-                case ActivationType.None:
-
-                    return x => 1;
-
-                case ActivationType.Sigmoid:
-                    return x =>
-                    {
-                        return MathF.Exp(x) / (1.0f + MathF.Exp(x)) * (1 - MathF.Exp(x) / (1.0f+ MathF.Exp(x)));
-                    };
-                case ActivationType.Tanh:
-                    return x =>
-                    {
-                        return 1 - x * x;
-                    };
-                case ActivationType.Relu:
-                    return x =>
-                    {
-                        return x >= 0 ? 1 : 0;
-                    };
-                case ActivationType.Leakyrelu:
-                    return x =>
-                    {
-                        return 0 >= x ? 0.1f : 1;
-                    };
-                default: //ActivationType.Sigmoid:
-                    return x =>
-                    {
-                        return MathF.Exp(x) / (1.0f + MathF.Exp(x)) * (1 - MathF.Exp(x) / (1.0f + MathF.Exp(x)));
-                    };
-            }
-        }
 
         public void Dispose() { }
     }

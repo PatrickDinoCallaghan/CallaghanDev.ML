@@ -34,11 +34,7 @@ namespace CallaghanDev.ML.AccelerationManagers
              MemoryBuffer1D<float, Stride1D.Dense> der,
              MemoryBuffer1D<float, Stride1D.Dense> delta)> _hidGradCache
             = new();
-        private readonly Dictionary<(int rows, int cols),
-            (MemoryBuffer2D<float, Stride2D.DenseX> w,
-             MemoryBuffer1D<float, Stride1D.Dense> d,
-             MemoryBuffer1D<float, Stride1D.Dense> pa)> _updWCache
-            = new();
+        private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer1D<float, Stride1D.Dense> d, MemoryBuffer1D<float, Stride1D.Dense> pa)> _updWCache  = new();
         private readonly Dictionary<int,
             (MemoryBuffer1D<float, Stride1D.Dense> b,
              MemoryBuffer1D<float, Stride1D.Dense> d)> _updBCache
@@ -282,29 +278,27 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 case ActivationType.None:
                     a = z;
-                    d = 1;
+                    d = 1f;
                     break;
                 case ActivationType.Sigmoid:
-                    float e = XMath.Exp(z);
-                    a = e / (1 + e);
-                    d = a * (1 - a);
+                    a = 1.0f / (1.0f + XMath.Exp(-z));
+                    d = a * (1f - a);
                     break;
                 case ActivationType.Tanh:
                     a = XMath.Tanh(z);
-                    d = 1 - z * z;  // match CPU: derivative = 1 - z^2
+                    d = 1f - a * a;
                     break;
                 case ActivationType.Relu:
                     a = XMath.Max(0.0f, z);
-                    d = z >= 0 ? 1 : 0;
+                    d = z >= 0f ? 1f : 0f;
                     break;
                 case ActivationType.Leakyrelu:
                     a = z > 0f ? z : 0.01f * z;
-                    d = z >= 0f ? 1 : 0.1f;  // match CPU: derivative negative slope = 0.1f
+                    d = z >= 0f ? 1f : 0.1f;
                     break;
                 default:
-                    float ee = XMath.Exp(z);
-                    a = ee / (1 + ee);
-                    d = a * (1 - a);
+                    a = 1.0f / (1.0f + XMath.Exp(-z));
+                    d = a * (1f - a);
                     break;
             }
             act[i] = a;
@@ -337,10 +331,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             float decay = lambda * W[r, c];
             W[r, c] -= learningRate * (grad + decay);
         }
-        private static void UpdateBiasKernel(Index1D i,
-       ArrayView1D<float, Stride1D.Dense> bias,
-       ArrayView1D<float, Stride1D.Dense> delta,
-       float learningRate)
+        private static void UpdateBiasKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> bias, ArrayView1D<float, Stride1D.Dense> delta, float learningRate)
         {
             bias[i] -= learningRate * delta[i];
         }

@@ -1,7 +1,9 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
+using CallaghanDev.Utilities;
 using CallaghanDev.Utilities.Utilities.Diagnostics;
 using DocumentFormat.OpenXml.Spreadsheet;
+using log4net.Repository.Hierarchy;
 using Terminal.Gui.Helpers;
 
 namespace CallaghanDev.ML
@@ -13,7 +15,7 @@ namespace CallaghanDev.ML
         private CostFunction CostFunctionDeriv { get; set; }
         private delegate float CostFunction(float value, float prediction);
         private CostFunction costFunction { get; set; }
-
+        private ILogger logger;
         public long ParameterCount
         {
             get
@@ -21,13 +23,15 @@ namespace CallaghanDev.ML
                 return data.ParameterCount;
             }
         }
-        public NeuralNetwork(Parameters parameters)
+        public NeuralNetwork(Parameters parameters, ILogger? Logger = null)
         {
+            logger = Logger;
             data = new Data(parameters);
             InitAcceleration();
             InitCostFunction();
         }
-        private NeuralNetwork(Data Indata)
+        //For loading from file
+        private NeuralNetwork(Data Indata, ILogger? Logger = null)
         {
             data = Indata;
             InitAcceleration();
@@ -35,20 +39,19 @@ namespace CallaghanDev.ML
         }
         private void InitAcceleration()
         {
-
             if (data.parameters.AccelerationType == AccelerationType.GPU || data.parameters.AccelerationType == AccelerationType.CUDA)
             {
-                Console.WriteLine($"Using {data.parameters.AccelerationType} acceleration on device {data.parameters.AccelerationDeviceId}.");
+                logger?.Info($"Using {data.parameters.AccelerationType} acceleration on device {data.parameters.AccelerationDeviceId}.");
                 accelerationManager = new AccelerationGPU(data.parameters.AccelerationType, data.parameters.AccelerationDeviceId);
             }
             else if (data.parameters.AccelerationType == AccelerationType.CPU)
             {
-                Console.WriteLine($"Using {data.parameters.AccelerationType} acceleration.");
+                logger?.WriteLine($"Using {data.parameters.AccelerationType} acceleration.");
                 accelerationManager = new AccelerationCPU();
             }
             else if (data.parameters.AccelerationType == AccelerationType.MultiThreadCPU)
             {
-                Console.WriteLine($"Using {data.parameters.AccelerationType} acceleration.");
+                logger?.WriteLine($"Using {data.parameters.AccelerationType} acceleration.");
                 accelerationManager = new AccelerationMutliThreadCPU();
             }
             else
@@ -57,6 +60,14 @@ namespace CallaghanDev.ML
             }
         }
 
+        /// <summary>
+        /// Trains the neural network using the provided inputs and expected outputs.
+        /// </summary>
+        /// <param name="inputs"></param>
+        /// <param name="expected"></param>
+        /// <param name="learningRate"></param>
+        /// <param name="epochs"></param>
+        /// <param name="silent">Shows updates in bar on console window</param>
         public void Train(float[][] inputs, float[][] expected, float learningRate, int epochs, bool silent = false)
         {
             // Build a *fixed* min/max from the entire training set:
@@ -162,7 +173,6 @@ namespace CallaghanDev.ML
 
             ApplyUpdates(deltasByLayer, learningRate);
         }
-
 
         #region Global Gradient Scale Clipping 
 
@@ -365,12 +375,12 @@ namespace CallaghanDev.ML
             return costDifferences;
         }
 
-        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType, int DeviceId = 0)
+        public static NeuralNetwork Load(string FileName, AccelerationType accelerationType, int DeviceId = 0, ILogger? Logger = null)
         {
             Data data = Data.Load(FileName);
             data.parameters.AccelerationType = accelerationType;
             data.parameters.AccelerationDeviceId = DeviceId;
-            NeuralNetwork nn = new NeuralNetwork(data);
+            NeuralNetwork nn = new NeuralNetwork(data, Logger);
             return nn;
         }
         public void Save(string FileName)

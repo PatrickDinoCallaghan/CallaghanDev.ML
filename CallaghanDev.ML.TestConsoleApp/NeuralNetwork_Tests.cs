@@ -1,5 +1,5 @@
-﻿
-using CallaghanDev.ML.Enums;
+﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.Utilities;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
@@ -218,7 +218,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.CUDA,
+                AccelerationType = AccelerationType.GPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
@@ -281,5 +281,8 @@ namespace CallaghanDev.ML.TestConsoleApp
 
 
         }
+
+
+
     }
 }

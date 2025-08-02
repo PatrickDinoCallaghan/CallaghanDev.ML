@@ -46,8 +46,10 @@ namespace CallaghanDev.ML
 
         public List<int> LayerWidths { get; set; } = new List<int>();
         public List<ActivationType> LayerActivations { get; set; } = new List<ActivationType>();
+
         [JsonProperty]
         internal float[] inputActivationMin { get; set; }
+
         [JsonProperty]
         internal float[] inputActivationMax { get; set; }
 
