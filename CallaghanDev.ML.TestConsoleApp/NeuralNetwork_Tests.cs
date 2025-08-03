@@ -50,7 +50,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = neuralNetwork.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkAndGPUTest()
@@ -103,7 +103,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = neuralNetwork.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkAndCPUTest()
@@ -149,7 +149,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = neuralNetwork.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkOrTest()
@@ -193,7 +193,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = neuralNetwork.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
         public void NeuralNetworkBatchXorTestCUDA()
@@ -249,7 +249,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = nn.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
 
 
@@ -275,7 +275,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = nn.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
 
 
@@ -308,7 +308,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.MultiThreadCPU,
+                AccelerationType = AccelerationType.mu,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { 2, 1},
@@ -335,7 +335,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var pred = neuralNetwork.Predict(inputs[i])[0];
                 int p = pred >= 0.5 ? 1 : 0;
                 int e = (int)expectedOutputs[i][0];
-                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
             }
         }
 
