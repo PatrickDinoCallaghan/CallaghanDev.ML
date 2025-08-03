@@ -48,14 +48,35 @@ namespace CallaghanDev.ML
         private float globalBestLoss = float.MaxValue;
         private Parameters globalBestParams;
         private List<ArchitectureCandidate> architectureHistory = new List<ArchitectureCandidate>();
+        private int maxNeuronWidth = 1024;
+        private int minNeuronWidth = 3;
+        private int maxEpochs = 200;
+        public void SetMaxNeuronWidth(int maxWidth)
+        {
+            this.maxNeuronWidth = Math.Max(1, maxWidth);
+            logger?.Info($"Maximum neuron width set to: {maxNeuronWidth}");
+        }
+
+        public void SetMinNeuronWidth(int minWidth)
+        {
+            this.minNeuronWidth = Math.Max(1, minWidth);
+            logger?.Info($"Minimum neuron width set to: {minNeuronWidth}");
+        }
+
+        public void SetMaxEpochs(int Epochs)
+        {
+            this.maxEpochs = Math.Max(1, Epochs);
+            logger?.Info($"Training Epochs set to: {Epochs}");
+        }
+
+
+
 
         private int consecutiveChunkFailures = 0;
 
         public NeuralAutoTuner(ILogger Logger = null)
         {
             logger = Logger;
-
-
         }
 
         /// <summary>
@@ -115,7 +136,7 @@ namespace CallaghanDev.ML
         /// <item><description><strong>adaptiveLR</strong>: Dynamically adjusted learning rate starting with warm-up (0.1x to 1x over 20 epochs), then applying 0.98x decay when no improvement detected. Minimum bound at 1% of base learning rate.</description></item>
         /// <item><description><strong>noImproveCount</strong>: Counter tracking epochs without improvement (improvement threshold: 1e-5). Triggers learning rate decay at 5+ and early stopping at patience limit.</description></item>
         /// <item><description><strong>earlyStopPatience</strong>: Calculated as max(15, sum(layer_widths)/50). Larger networks get more patience. Prevents premature stopping on complex architectures.</description></item>
-        /// <item><description><strong>maxEpochs</strong>: Hard limit of 3000 training epochs to prevent infinite training loops.</description></item>
+        /// <item><description><strong>maxEpochs</strong>: Hard limit of int "maxEpochs" training epochs to prevent infinite training loops.</description></item>
         /// <item><description><strong>minImprovement</strong>: Minimum validation loss reduction (1e-5) required to count as improvement. Prevents noise from triggering false improvements.</description></item>
         /// <item><description><strong>bestValLoss</strong>: Tracks the lowest global validation loss seen during training. Used for model state preservation and improvement detection.</description></item>
         /// <item><description><strong>epochSuccess</strong>: Boolean flag indicating whether any meaningful improvement occurred during training. Determines overall attempt success.</description></item>
@@ -132,7 +153,7 @@ namespace CallaghanDev.ML
         /// <para><strong>Training Flow:</strong></para>
         /// <list type="number">
         /// <item><description>Initialize network and diagnostics with provided parameters</description></item>
-        /// <item><description>For each epoch (up to 3000): apply adaptive learning rate scheduling</description></item>
+        /// <item><description>For each epoch (up to int "maxEpochs"): apply adaptive learning rate scheduling</description></item>
         /// <item><description>Execute training epoch with shuffled data and calculate training loss</description></item>
         /// <item><description>Perform local and global validation to assess generalization</description></item>
         /// <item><description>Update best model state if improvement detected (>1e-5 reduction)</description></item>
@@ -440,7 +461,8 @@ namespace CallaghanDev.ML
                     int baseWidth = (int)(prevWidth * (1.2f - depthRatio * 0.8f));
 
                     int variation = (int)(baseWidth * mutationRate * random.NextSingle());
-                    int width = Math.Clamp(baseWidth + random.Next(-variation, variation + 1), 8, 1024);
+
+                    int width = Math.Clamp(baseWidth + random.Next(-variation, variation + 1), minNeuronWidth, maxNeuronWidth);
 
                     var testWidths = new List<int>(mutated.LayerWidths) { width };
                     if (i == targetDepth - 2)
@@ -449,7 +471,7 @@ namespace CallaghanDev.ML
                     }
                     if (CalculateParameterCount(testWidths) > maxParameters)
                     {
-                        width = Math.Max(8, width / 2);
+                        width = Math.Max(minNeuronWidth, width / 2);
                         testWidths[^1] = width;
 
                         if (CalculateParameterCount(testWidths) > maxParameters)
@@ -460,18 +482,16 @@ namespace CallaghanDev.ML
 
                     mutated.LayerWidths.Add(width);
 
-                    var activations = new[] { ActivationType.Relu, ActivationType.Leakyrelu, ActivationType.Tanh, ActivationType.Swish };
+                    ActivationType[] activations = (ActivationType[])Enum.GetValues(typeof(ActivationType));
                     mutated.LayerActivations.Add(activations[random.Next(activations.Length)]);
                 }
 
-                //Output layer must stay the same, we arnt changing this :TODO Consider maybe changing output activations? I dont know
                 mutated.LayerWidths.Add(baseParams.LayerWidths[^1]);
                 mutated.LayerActivations.Add(baseParams.LayerActivations[^1]);
             }
 
             return MutateHyperparameters(mutated, mutationRate);
         }
-
         private Parameters ExploitBestArchitecture(Parameters baseParams, float mutationRate)
         {
             var bestSimilar = architectureHistory
@@ -484,7 +504,6 @@ namespace CallaghanDev.ML
 
             return ConservativeMutation(source, mutationRate * 0.7f);
         }
-
         private Parameters ConservativeMutation(Parameters baseParams, float mutationRate)
         {
             var mutated = baseParams.Clone();
@@ -494,7 +513,9 @@ namespace CallaghanDev.ML
                 if (random.NextSingle() < mutationRate)
                 {
                     int delta = random.Next(-2, 3);
-                    int newWidth = Math.Clamp(mutated.LayerWidths[i] + delta, 8, 512);
+                    // Use configurable constraints instead of hardcoded 8, 512
+                    int newWidth = Math.Clamp(mutated.LayerWidths[i] + delta,
+                                            minNeuronWidth, Math.Min(512, maxNeuronWidth));
 
                     var testWidths = new List<int>(mutated.LayerWidths);
                     testWidths[i] = newWidth;
@@ -520,7 +541,6 @@ namespace CallaghanDev.ML
                     int insertAt = random.Next(1, mutated.LayerWidths.Count - 1);
                     int width = (mutated.LayerWidths[insertAt - 1] + mutated.LayerWidths[insertAt]) / 2;
 
-
                     var testWidths = new List<int>(mutated.LayerWidths);
                     testWidths.Insert(insertAt, width);
 
@@ -544,10 +564,10 @@ namespace CallaghanDev.ML
                 {
                     int delta = random.Next(-8, 9);
 
-                    int newWidth = Math.Clamp(mutated.LayerWidths[i] + delta, 8, 1024);
+                    int newWidth = Math.Clamp(mutated.LayerWidths[i] + delta,
+                                            minNeuronWidth, maxNeuronWidth);
 
                     var testWidths = new List<int>(mutated.LayerWidths);
-
                     testWidths[i] = newWidth;
 
                     if (CalculateParameterCount(testWidths) <= maxParameters)
@@ -559,18 +579,17 @@ namespace CallaghanDev.ML
 
             return MutateHyperparameters(mutated, mutationRate);
         }
-
         private Parameters BalancedMutation(Parameters baseParams, float mutationRate)
         {
             var mutated = baseParams.Clone();
 
-            // Moderate width adjustments
             for (int i = 1; i < mutated.LayerWidths.Count - 1; i++)
             {
                 if (random.NextSingle() < mutationRate * 0.6f)
                 {
                     int delta = random.Next(-4, 5);
-                    int newWidth = Math.Clamp(mutated.LayerWidths[i] + delta, 8, 768);
+
+                    int newWidth = Math.Clamp(mutated.LayerWidths[i] + delta, minNeuronWidth, Math.Min(768, maxNeuronWidth));
 
                     var testWidths = new List<int>(mutated.LayerWidths);
                     testWidths[i] = newWidth;
@@ -581,8 +600,6 @@ namespace CallaghanDev.ML
                     }
                 }
             }
-
-            // Occasional layer addition/removal
             if (random.NextSingle() < mutationRate * 0.3f)
             {
                 if (random.NextBool() && mutated.LayerWidths.Count < 10)
@@ -609,8 +626,6 @@ namespace CallaghanDev.ML
 
             return MutateHyperparameters(mutated, mutationRate * 0.8f);
         }
-
-
         private Parameters AdaptiveMutation(Parameters baseParams, float mutationRate)
         {
             var mutated = baseParams.Clone();
@@ -626,7 +641,8 @@ namespace CallaghanDev.ML
                     if (random.NextSingle() < mutationRate * 0.5f)
                     {
                         int increase = Math.Max(2, mutated.LayerWidths[i] / 10);
-                        int newWidth = Math.Min(1024, mutated.LayerWidths[i] + increase);
+
+                        int newWidth = Math.Min(maxNeuronWidth, mutated.LayerWidths[i] + increase);
 
                         var testWidths = new List<int>(mutated.LayerWidths);
                         testWidths[i] = newWidth;
@@ -650,7 +666,6 @@ namespace CallaghanDev.ML
 
             return MutateHyperparameters(mutated, mutationRate * 0.7f);
         }
-
         private Parameters MutateHyperparameters(Parameters mutated, float mutationRate)
         {
             if (random.NextSingle() < mutationRate)
@@ -714,7 +729,110 @@ namespace CallaghanDev.ML
 
             return tuned;
         }
+        private bool HandleStagnation(Parameters tuned, TrainingDiagnostics diag)
+        {
+            bool changed = false;
 
+            if (diag.LatestValidationLoss > 0.1f && tuned.LayerWidths.Count < 8)
+            {
+                int insertAt = tuned.LayerWidths.Count / 2;
+                int newWidth = (tuned.LayerWidths[insertAt - 1] + tuned.LayerWidths[insertAt]) / 2;
+
+                newWidth = Math.Max(minNeuronWidth, newWidth);
+
+                var testWidths = new List<int>(tuned.LayerWidths);
+                testWidths.Insert(insertAt, newWidth);
+
+                if (CalculateParameterCount(testWidths) <= maxParameters)
+                {
+                    tuned.LayerWidths.Insert(insertAt, newWidth);
+                    tuned.LayerActivations.Insert(insertAt, ActivationType.Relu);
+                    changed = true;
+                    logger?.Info($"Added layer at position {insertAt} with {newWidth} neurons to handle complexity");
+                }
+            }
+            else if (diag.IsOverfitting() && tuned.LayerWidths.Count > 3)
+            {
+                int removeAt = tuned.LayerWidths.Count / 2;
+                if (removeAt > 0 && removeAt < tuned.LayerWidths.Count - 1)
+                {
+                    tuned.LayerWidths.RemoveAt(removeAt);
+                    tuned.LayerActivations.RemoveAt(removeAt);
+                    changed = true;
+                    logger?.Info($"Removed layer at position {removeAt} to reduce overfitting");
+                }
+            }
+
+            return changed;
+        }
+
+        private Parameters ReduceNetworkSize(Parameters parameters)
+        {
+            var reduced = parameters.Clone();
+
+            // Proportionally reduce all hidden layer sizes but respect min width
+            for (int i = 1; i < reduced.LayerWidths.Count - 1; i++)
+            {
+                reduced.LayerWidths[i] = Math.Max(minNeuronWidth, reduced.LayerWidths[i] * 3 / 4);
+            }
+
+            // If still too large, remove layers
+            while (CalculateParameterCount(reduced.LayerWidths) > maxParameters && reduced.LayerWidths.Count > 3)
+            {
+                int removeAt = reduced.LayerWidths.Count / 2;
+                if (removeAt > 0 && removeAt < reduced.LayerWidths.Count - 1)
+                {
+                    reduced.LayerWidths.RemoveAt(removeAt);
+                    reduced.LayerActivations.RemoveAt(removeAt);
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            return reduced;
+        }
+
+
+        private static Parameters ValidateArchitecture(Parameters parameters, int minWidth = 8, int maxWidth = 1024)
+        {
+            for (int i = 1; i < parameters.LayerWidths.Count - 1; i++)
+            {
+                parameters.LayerWidths[i] = Math.Clamp(parameters.LayerWidths[i], minWidth, maxWidth);
+            }
+
+            if (parameters.LayerWidths.Count < 3)
+            {
+                int hiddenWidth = Math.Clamp(32, minWidth, maxWidth);
+                parameters.LayerWidths.Insert(1, hiddenWidth);
+                parameters.LayerActivations.Insert(1, ActivationType.Relu);
+            }
+
+            while (parameters.LayerActivations.Count < parameters.LayerWidths.Count)
+            {
+                parameters.LayerActivations.Insert(parameters.LayerActivations.Count - 1, ActivationType.Relu);
+            }
+
+            while (parameters.LayerActivations.Count > parameters.LayerWidths.Count)
+            {
+                parameters.LayerActivations.RemoveAt(parameters.LayerActivations.Count - 2);
+            }
+
+            return parameters;
+        }
+
+        private static Parameters GenerateNextArchitecture(NeuralAutoTuner tuner, Parameters current, TuningStrategy strategy, int attempt, TrainingDiagnostics diag)
+        {
+            var tuned = tuner.Tune(current, diag, null);
+
+            if (tuned.LayerWidths.SequenceEqual(current.LayerWidths))
+            {
+                tuned = tuner.Mutate(current, strategy, attempt);
+            }
+
+            return ValidateArchitecture(tuned, tuner.minNeuronWidth, tuner.maxNeuronWidth);
+        }
 
         private bool AdjustArchitectureBasedOnUtilization(Parameters tuned, List<Layer> layers)
         {
@@ -733,10 +851,10 @@ namespace CallaghanDev.ML
                 int deadNeurons = validActivations.Count(a => Math.Abs(a) < 1e-6f);
                 float utilization = 1f - (float)deadNeurons / validActivations.Length;
 
-                if (utilization > 0.85f && avgActivation > 0.1f && tuned.LayerWidths[i] < 1024)
+                if (utilization > 0.85f && avgActivation > 0.1f && tuned.LayerWidths[i] < maxNeuronWidth)
                 {
                     int increase = Math.Max(2, tuned.LayerWidths[i] / 20);
-                    int newWidth = Math.Min(1024, tuned.LayerWidths[i] + increase);
+                    int newWidth = Math.Min(maxNeuronWidth, tuned.LayerWidths[i] + increase);
 
                     var testWidths = new List<int>(tuned.LayerWidths);
                     testWidths[i] = newWidth;
@@ -748,51 +866,13 @@ namespace CallaghanDev.ML
                         logger?.Info($"Expanded layer {i} to {newWidth} neurons (utilization: {utilization:F3})");
                     }
                 }
-                // Shrink if underutilized for performance. We cant just keep growing the neural network indefinitely
-                else if (utilization < 0.3f && tuned.LayerWidths[i] > 16)
+
+                else if (utilization < 0.3f && tuned.LayerWidths[i] > minNeuronWidth)
                 {
                     int decrease = Math.Max(1, tuned.LayerWidths[i] / 10);
-                    tuned.LayerWidths[i] = Math.Max(16, tuned.LayerWidths[i] - decrease);
+                    tuned.LayerWidths[i] = Math.Max(minNeuronWidth, tuned.LayerWidths[i] - decrease);
                     changed = true;
                     logger?.Info($"Reduced layer {i} to {tuned.LayerWidths[i]} neurons (utilization: {utilization:F3})");
-                }
-            }
-
-            return changed;
-        }
-
-        private bool HandleStagnation(Parameters tuned, TrainingDiagnostics diag)
-        {
-            bool changed = false;
-
-            //Adds a layer if the validation loss is high and we have room for more layers
-            if (diag.LatestValidationLoss > 0.1f && tuned.LayerWidths.Count < 8)
-            {
-                int insertAt = tuned.LayerWidths.Count / 2;
-                int newWidth = (tuned.LayerWidths[insertAt - 1] + tuned.LayerWidths[insertAt]) / 2;
-                newWidth = Math.Max(16, newWidth);
-
-                var testWidths = new List<int>(tuned.LayerWidths);
-                testWidths.Insert(insertAt, newWidth);
-
-                if (CalculateParameterCount(testWidths) <= maxParameters)
-                {
-                    tuned.LayerWidths.Insert(insertAt, newWidth);
-                    tuned.LayerActivations.Insert(insertAt, ActivationType.Relu);
-                    changed = true;
-                    logger?.Info($"Added layer at position {insertAt} with {newWidth} neurons to handle complexity");
-                }
-            }
-
-            else if (diag.IsOverfitting() && tuned.LayerWidths.Count > 3)
-            {
-                int removeAt = tuned.LayerWidths.Count / 2;
-                if (removeAt > 0 && removeAt < tuned.LayerWidths.Count - 1)
-                {
-                    tuned.LayerWidths.RemoveAt(removeAt);
-                    tuned.LayerActivations.RemoveAt(removeAt);
-                    changed = true;
-                    logger?.Info($"Removed layer at position {removeAt} to reduce overfitting");
                 }
             }
 
@@ -835,34 +915,6 @@ namespace CallaghanDev.ML
             }
         }
 
-        private Parameters ReduceNetworkSize(Parameters parameters)
-        {
-            var reduced = parameters.Clone();
-
-            // Proportionally reduce all hidden layer sizes
-            for (int i = 1; i < reduced.LayerWidths.Count - 1; i++)
-            {
-                reduced.LayerWidths[i] = Math.Max(8, reduced.LayerWidths[i] * 3 / 4);
-            }
-
-            // If still too large, remove layers
-            while (CalculateParameterCount(reduced.LayerWidths) > maxParameters && reduced.LayerWidths.Count > 3)
-            {
-                int removeAt = reduced.LayerWidths.Count / 2;
-                if (removeAt > 0 && removeAt < reduced.LayerWidths.Count - 1)
-                {
-                    reduced.LayerWidths.RemoveAt(removeAt);
-                    reduced.LayerActivations.RemoveAt(removeAt);
-                }
-                else
-                {
-                    break;
-                }
-            }
-
-            return reduced;
-        }
-
         private (bool success, float bestLoss, Parameters bestParams, float bestLR) TrainSingleAttempt(float[][] trainX, float[][] trainY, float[][] valX, float[][] valY, float[][] globalValX, float[][] globalValY, Parameters parameters, float learningRate, float targetLossThreshold, int attempt)
         {
             var net = new NeuralNetwork(parameters);
@@ -871,7 +923,7 @@ namespace CallaghanDev.ML
             float adaptiveLR = learningRate;
             int noImproveCount = 0;
             int earlyStopPatience = Math.Max(15, parameters.LayerWidths.Sum() / 50);
-            const int maxEpochs = 3000;
+      
             const float minImprovement = 1e-5f;
 
             bool epochSuccess = false;
@@ -1109,19 +1161,6 @@ namespace CallaghanDev.ML
             }
             // Default to balanced exploration
             return TuningStrategy.Balanced;
-        }
-
-        private static Parameters GenerateNextArchitecture(NeuralAutoTuner tuner, Parameters current, TuningStrategy strategy, int attempt, TrainingDiagnostics diag)
-        {
-            var tuned = tuner.Tune(current, diag, null);
-
-            // when tuned if there is no significant change, apply mutation
-            if (tuned.LayerWidths.SequenceEqual(current.LayerWidths))
-            {
-                tuned = tuner.Mutate(current, strategy, attempt);
-            }
-
-            return ValidateArchitecture(tuned);
         }
 
         private static Parameters ValidateArchitecture(Parameters parameters)

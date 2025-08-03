@@ -308,7 +308,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.CPU,
+                AccelerationType = AccelerationType.MultiThreadCPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { 2, 1},
@@ -317,7 +317,12 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Setup the neural network
             ILogger logger = new Logger();
-            var ParamsFound = new NeuralAutoTuner(logger).TrainWithAutoTuning(inputs, expectedOutputs, learningRate:0.25f,parameters, maxAttempts:250, targetLossThreshold: 0.1f, maxChunkTrainingAttempts:25);
+            var autoTuner = new NeuralAutoTuner(logger);
+
+            autoTuner.SetMaxNeuronWidth(8);
+            autoTuner.SetMinNeuronWidth(4);
+
+            var ParamsFound = autoTuner.TrainWithAutoTuning(inputs, expectedOutputs, learningRate:0.25f,parameters, maxAttempts:250, targetLossThreshold: 0.2f, maxChunkTrainingAttempts:25);
 
             NeuralNetwork neuralNetwork = new NeuralNetwork(ParamsFound.BestParams);
 
