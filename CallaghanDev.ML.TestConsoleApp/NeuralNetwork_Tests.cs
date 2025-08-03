@@ -283,6 +283,56 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
 
 
+        public void NeuralNetworkXorTestAutoTuneTest()
+        {
+            Console.WriteLine("NeuralNetworkXorTestAutoTuneTest:");
+            float[][] inputs;
+            float[][] expectedOutputs;
+            // Create a simple synthetic dataset
+            // XOR problem dataset
+            inputs = new float[][]
+                {
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
+                };
+
+            expectedOutputs = new float[][]
+            {
+                new float[] { 0 },
+                new float[] { 1 },
+                new float[] { 1 },
+                new float[] { 0 }
+            };
+
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                CostFunction = CostFunctionType.mse,
+                ActivationDistribution = ActivationDistribution.Normal,
+                LayerWidths = new List<int> { 2, 1},
+                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
+            };
+
+            // Setup the neural network
+            ILogger logger = new Logger();
+            var ParamsFound = new NeuralAutoTuner(logger).TrainWithAutoTuning(inputs, expectedOutputs, learningRate:0.25f,parameters, maxAttempts:250, targetLossThreshold: 0.1f, maxChunkTrainingAttempts:25);
+
+            NeuralNetwork neuralNetwork = new NeuralNetwork(ParamsFound.BestParams);
+
+            neuralNetwork.Train(inputs, expectedOutputs, ParamsFound.LearningRate, 4000);
+
+            Console.WriteLine($"\n");
+            // Evaluate the network with sample inputs
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var pred = neuralNetwork.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}]  →  Pred={pred:F3}  Label={p}  (Expected {e})");
+            }
+        }
 
     }
 }

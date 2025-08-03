@@ -40,6 +40,12 @@ namespace CallaghanDev.ML
                     {
                         return 0 >= x ? 0.01f * x : x;
                     };
+
+                case ActivationType.Swish:
+                    return x =>
+                    {
+                        return x*GetActivationFunction(ActivationType.Sigmoid)(x);
+                    };
                 default: // ActivationType.Sigmoid:
                     return x =>
                     {
@@ -76,6 +82,12 @@ namespace CallaghanDev.ML
                     return x =>
                     {
                         return 0 >= x ? 0.1f : 1;
+                    };
+                case ActivationType.Swish:
+                    return x =>
+                    {
+                        float e = XMath.Exp(x);
+                        return  (float)(e*(x+e+1))/(MathF.Pow((e+1), 2));
                     };
                 default: //ActivationType.Sigmoid:
                     return x =>

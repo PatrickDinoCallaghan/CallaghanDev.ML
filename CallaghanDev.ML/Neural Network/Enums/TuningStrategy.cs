@@ -6,14 +6,14 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML.Enums
 {
-    public enum ActivationType
-    {
-        None,
-        Sigmoid,
-        Tanh,
-        Relu,
-        Leakyrelu,
-        Swish
+    public enum TuningStrategy 
+    { 
+        Explore, 
+        Exploit, 
+        Conservative, 
+        Aggressive, 
+        Balanced, 
+        Adaptive
     }
 
 }

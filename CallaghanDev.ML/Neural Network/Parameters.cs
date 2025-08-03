@@ -68,6 +68,25 @@ namespace CallaghanDev.ML
             }
             return sb.ToString();
         }
+        public Parameters Clone()
+        {
+            return new Parameters
+            {
+                AccelerationType = this.AccelerationType,
+                AccelerationDeviceId = this.AccelerationDeviceId,
+                CostFunction = this.CostFunction,
+                ActivationDistribution = this.ActivationDistribution,
+                L2RegulationLamda = this.L2RegulationLamda,
+                GradientClippingThreshold = this.GradientClippingThreshold,
+                GradientExplosionThreshold = this.GradientExplosionThreshold,
+                GradientVanishingThreshold = this.GradientVanishingThreshold,
+                LayerWidths = new List<int>(this.LayerWidths),
+                LayerActivations = new List<ActivationType>(this.LayerActivations),
+                inputActivationMin = this.inputActivationMin?.ToArray(),
+                inputActivationMax = this.inputActivationMax?.ToArray(),
+                HuberLossDelta = this.HuberLossDelta
+            };
+        }
     }
 
 }

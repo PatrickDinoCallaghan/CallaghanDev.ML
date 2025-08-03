@@ -11,6 +11,24 @@ namespace CallaghanDev.ML
 {
     public class Data
     {
+        private long CalculateParameterCount(IList<int> layerWidths)
+        {
+            if (layerWidths == null) throw new ArgumentNullException(nameof(layerWidths));
+            if (layerWidths.Count < 2) return 0;
+
+            long total = 0;
+            for (int i = 0; i < layerWidths.Count - 1; i++)
+            {
+                int n = layerWidths[i];
+                int m = layerWidths[i + 1];
+
+                long weights = (long)n * m;
+                long biases = m;
+
+                total += weights + biases;
+            }
+            return total;
+        }
         public Layer[] layers { get; set; }
         public Parameters parameters { get; set; }
 
@@ -117,9 +135,9 @@ namespace CallaghanDev.ML
         private float HeNormalInitializer(int incomingNeurites)
         {
             float standardDeviation = MathF.Sqrt(2.0f / incomingNeurites);
-            // Generate a normally distributed _random value
-            float u1 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
-            float u2 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
+            // Generate a normally distributed random value
+            float u1 = 1.0f - _random.NextSingle(); // Uniform (0,1] random float
+            float u2 = 1.0f - _random.NextSingle(); // Uniform (0,1] random float
             float z = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Sin(2.0f * MathF.PI * u2); // Box-Muller transform
             return z * standardDeviation; // Scale by standard deviation
         }
@@ -137,10 +155,10 @@ namespace CallaghanDev.ML
             // Compute the standard deviation for Xavier Initialization
             float standardDeviation = MathF.Sqrt(2.0f / (incomingNeurites + outgoingNeurites));
 
-            // Box-Muller transform to generate normally distributed _random value
-            float u1 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
-            float u2 = 1.0f - _random.NextSingle(); // Uniform (0,1] _random float
-            float z = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2); // Normally distributed _random value
+            // Box-Muller transform to generate normally distributed random value
+            float u1 = 1.0f - _random.NextSingle(); // Uniform (0,1] random float
+            float u2 = 1.0f - _random.NextSingle(); // Uniform (0,1] random float
+            float z = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2); // Normally distributed random value
 
             // Scale the value by the standard deviation
             return z * standardDeviation;
@@ -159,7 +177,7 @@ namespace CallaghanDev.ML
             // Compute the limit for the uniform distribution
             float limit = MathF.Sqrt(6.0f / incomingNeurites);
 
-            // Generate a uniformly distributed _random value in the range [-limit, limit]
+            // Generate a uniformly distributed random value in the range [-limit, limit]
             return _random.NextSingle() * (2 * limit) - limit;
         }
 
@@ -178,7 +196,7 @@ namespace CallaghanDev.ML
             // Compute the limit for the uniform distribution
             float limit = MathF.Sqrt(6.0f / (incomingNeurites + outgoingNeurites));
 
-            // Generate a uniformly distributed _random value in the range [-limit, limit]
+            // Generate a uniformly distributed random value in the range [-limit, limit]
             return _random.NextSingle() * (2 * limit) - limit;
         }
         private float GetRandomDouble(Random random, float min, float max)
@@ -188,7 +206,7 @@ namespace CallaghanDev.ML
                 throw new ArgumentException("The minimum value must be less than the maximum value.");
             }
 
-            // Generate a _random float between 0.0 (inclusive) and 1.0 (exclusive)
+            // Generate a random float between 0.0 (inclusive) and 1.0 (exclusive)
             float randomValue = random.NextSingle();
 
             // Scale and shift the value to the specified range
@@ -247,24 +265,7 @@ namespace CallaghanDev.ML
                 return CalculateParameterCount(parameters.LayerWidths);
             }
         }
-        private long CalculateParameterCount(IList<int> layerWidths)
-        {
-            if (layerWidths == null) throw new ArgumentNullException(nameof(layerWidths));
-            if (layerWidths.Count < 2) return 0;
 
-            long total = 0;
-            for (int i = 0; i < layerWidths.Count - 1; i++)
-            {
-                int n = layerWidths[i];
-                int m = layerWidths[i + 1];
-
-                long weights = (long)n * m;
-                long biases = m;
-
-                total += weights + biases;
-            }
-            return total;
-        }
     }
 }
 

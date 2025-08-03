@@ -90,7 +90,9 @@ namespace CallaghanDev.ML
                 }
             }
         }
-        private float[] ScaleInput(float[] raw)
+
+
+       private float[] ScaleInput(float[] raw)
         {
             int n = raw.Length;
             var scaled = new float[n];
