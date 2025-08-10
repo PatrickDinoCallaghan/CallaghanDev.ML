@@ -53,6 +53,9 @@ namespace CallaghanDev.ML
         [JsonProperty]
         internal float[] inputActivationMax { get; set; }
 
+        public float? OptimalLearningRate { get; set; } =null;
+        public int EpochsTrainedOn { get; set; } = 10;
+
         public override string ToString()
         {
             var sb = new StringBuilder();
@@ -86,6 +89,27 @@ namespace CallaghanDev.ML
                 inputActivationMax = this.inputActivationMax?.ToArray(),
                 HuberLossDelta = this.HuberLossDelta
             };
+        }
+
+        /// <summary>
+        /// Saves the current instance to a JSON file.
+        /// </summary>
+        public void SaveToFile(string filePath)
+        {
+            var json = JsonConvert.SerializeObject(this, Formatting.Indented);
+            File.WriteAllText(filePath, json);
+        }
+
+        /// <summary>
+        /// Loads a Parameters instance from a JSON file.
+        /// </summary>
+        public static Parameters LoadFromFile(string filePath)
+        {
+            if (!File.Exists(filePath))
+                throw new FileNotFoundException("Parameters file not found.", filePath);
+
+            var json = File.ReadAllText(filePath);
+            return JsonConvert.DeserializeObject<Parameters>(json);
         }
     }
 

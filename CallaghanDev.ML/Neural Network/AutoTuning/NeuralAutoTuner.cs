@@ -6,7 +6,7 @@ using Newtonsoft.Json;
 namespace CallaghanDev.ML
 {
     /*
-    This Neural Network Auto-Tuning System is attmpting to automaticall automatically discover the optimal neural network architectures and hyperparameters for any given dataset.
+    This Neural Network Auto-Tuning System is attempting to automatically discover the optimal neural network architectures and hyperparameters for any given dataset.
     Primary Objectives:
 
     Automatic Architecture Discovery: Dynamically searches for the best network structure (depth, width, activation functions) without manual tuning
@@ -190,7 +190,7 @@ namespace CallaghanDev.ML
         /// }
         /// </code>
         /// </example>
-        public (Parameters BestParams, float LearningRate) TrainWithAutoTuning(float[][] inputs, float[][] expected, float learningRate, Parameters initialParams, int maxAttempts = 50, float validationSplit = 0.5f, float targetLossThreshold = 0.25f, long maxParameters = long.MaxValue, int maxChunkTrainingAttempts = 7)
+        public Parameters TrainWithAutoTuning(float[][] inputs, float[][] expected, float learningRate, Parameters initialParams, int maxAttempts = 50, float validationSplit = 0.5f, float targetLossThreshold = 0.25f, long maxParameters = long.MaxValue, int maxChunkTrainingAttempts = 7)
         {
             SetMaxParameters(maxParameters);
 
@@ -198,13 +198,19 @@ namespace CallaghanDev.ML
             {
                 AddDataChunk(inputs, expected);
             }
-
+                
             logger?.Info($"=== Enhanced Auto-Tuning Started ===");
             logger?.Info($"Target Loss: ≤ {targetLossThreshold:F4}");
             logger?.Info($"Max Parameters: {maxParameters:N0}");
             logger?.Info($"Data Chunks: {chunkManager.ChunkCount}");
             logger?.Info($"Total Samples: {chunkManager.TotalSamples:N0}");
 
+            if (inputs.Length < 2)
+            {
+                logger?.Error("Insufficient data for training. At least 2 samples required.");
+                return (initialParams);
+            }
+               
             // We need to split the data set into validation and training sets. This is so we can perform various error checks against validation data
             var (trainX, trainY, valX, valY) = SplitDataset(inputs, expected, validationSplit);
 
@@ -272,7 +278,8 @@ namespace CallaghanDev.ML
                         if (chunkLoss <= targetLossThreshold)
                         {
                             logger?.Info($"Target achieved on chunk {chunkAttempt + 1}!");
-                            return (result.bestParams, result.bestLR);
+                            result.bestParams.OptimalLearningRate = result.bestLR;
+                            return (result.bestParams);
                         }
                     }
                     else
@@ -290,7 +297,9 @@ namespace CallaghanDev.ML
                             if (chunkLoss <= targetLossThreshold)
                             {
                                 logger?.Info($"Target achieved!");
-                                return (result.bestParams, result.bestLR);
+                                result.bestParams.OptimalLearningRate = result.bestLR;
+
+                                return result.bestParams;
                             }
                         }
                         break;
@@ -309,7 +318,9 @@ namespace CallaghanDev.ML
                     if (bestLoss <= targetLossThreshold)
                     {
                         logger?.Info($"Global target achieved!");
-                        return (bestParams, bestLR);
+                        bestParams.OptimalLearningRate = bestLR;
+
+                        return bestParams;
                     }
                 }
                 else
@@ -346,7 +357,13 @@ namespace CallaghanDev.ML
             logger?.Info($"Attempts used: {maxAttempts}");
             logger?.Info($"Data Chunks: {chunkManager.ChunkCount}");
             logger?.Info(bestStructure);
-            return (bestParams ?? initialParams, bestLR);
+
+            if (bestParams != null)
+            {
+                bestParams.OptimalLearningRate = bestLR;
+            }
+
+            return (bestParams ?? initialParams);
         }
 
         public void SetMaxParameters(long maxParameters)
@@ -1374,7 +1391,7 @@ namespace CallaghanDev.ML
             // go back to training from best known parameters that were last found
             var result = TrainWithAutoTuning(newInputs, newExpected, learningRate, globalBestParams, maxAdditionalAttempts, 0.3f, targetLossThreshold, maxParameters, 3);
 
-            bool success = result.BestParams != null && GetBestLoss() <= targetLossThreshold;
+            bool success = result != null && GetBestLoss() <= targetLossThreshold;
 
             if (success)
             {

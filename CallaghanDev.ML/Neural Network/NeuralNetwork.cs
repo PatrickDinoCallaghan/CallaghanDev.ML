@@ -60,6 +60,11 @@ namespace CallaghanDev.ML
             }
         }
 
+        public Data GetData()
+        {
+            return data;
+        }
+
         /// <summary>
         /// Trains the neural network using the provided inputs and expected outputs.
         /// </summary>
@@ -68,17 +73,17 @@ namespace CallaghanDev.ML
         /// <param name="learningRate"></param>
         /// <param name="epochs"></param>
         /// <param name="silent">Shows updates in bar on console window</param>
-        public void Train(float[][] inputs, float[][] expected, float learningRate, int epochs, bool silent = false)
+        public void Train(IList<float[]> inputs, IList<float[]> expected, float learningRate, int epochs, bool silent = false)
         {
             // Build a *fixed* min/max from the entire training set:
             CalibrateInputs(inputs);
 
-            long total = (long)inputs.Length * epochs;
+            long total = (long)inputs.Count * epochs;
             long count = 0;
 
             for (int e = 0; e < epochs; e++)
             {
-                for (int i = 0; i < inputs.Length; i++)
+                for (int i = 0; i < inputs.Count; i++)
                 {
                     var xScaled = ScaleInput(inputs[i]); 
                     Learn(xScaled, expected[i], learningRate);
@@ -106,7 +111,7 @@ namespace CallaghanDev.ML
             }
             return scaled;
         }
-        private void CalibrateInputs(float[][] inputs)
+        private void CalibrateInputs(IList<float[]> inputs)
         {
             int inputSize = inputs[0].Length;
             var min = new float[inputSize];

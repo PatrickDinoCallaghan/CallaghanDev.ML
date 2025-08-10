@@ -1,10 +1,78 @@
 ﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Neural_Network.Extensions;
 using CallaghanDev.Utilities;
+using MathNet.Symbolics;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
     public class TestNN
     {
+        public void NeuralNetworkXorTestPolynomial()
+        {
+            Console.WriteLine("NeuralNetworkXorTest:");
+            float[][] inputs;
+            float[][] expectedOutputs;
+            // Create a simple synthetic dataset
+            // XOR problem dataset
+            inputs = new float[][]
+                {
+                new float[] { 0, 0 },
+                new float[] { 0, 1 },
+                new float[] { 1, 0 },
+                new float[] { 1, 1 }
+                };
+
+            expectedOutputs = new float[][]
+            {
+                new float[] { 0 },
+                new float[] { 1 },
+                new float[] { 1 },
+                new float[] { 0 }
+            };
+
+            Parameters parameters = new Parameters()
+            {
+                AccelerationType = AccelerationType.CPU,
+                CostFunction = CostFunctionType.mse,
+                ActivationDistribution = ActivationDistribution.Normal,
+                LayerWidths = new List<int> { 2, 4, 8, 4, 1 },
+                LayerActivations = new List<ActivationType> { ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Leakyrelu, ActivationType.Sigmoid },
+            };
+
+            // Setup the neural network
+            NeuralNetwork neuralNetwork = new NeuralNetwork(parameters);
+
+
+            neuralNetwork.Train(inputs, expectedOutputs, 0.5f, 4000);  // Train with 1000 epochs
+
+
+
+            var polynomialApproximation = PolynomialApproximation.GenerateOutputExpressions(neuralNetwork.GetData());
+
+            // supply values for x0, x1 from the polynomial approximation of the network
+            var values = new Dictionary<string, FloatingPoint>
+            {
+                ["x0"] = 0,
+                ["x1"] = 1,
+                ["x2"] = 1,
+                ["x3"] = 0
+            }; 
+
+            var evaluated = Evaluate.Evaluate(values, polynomialApproximation[0]);
+
+            Console.WriteLine($"\n");
+
+            // Evaluate the network with sample inputs
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var pred = neuralNetwork.Predict(inputs[i])[0];
+                int p = pred >= 0.5 ? 1 : 0;
+                int e = (int)expectedOutputs[i][0];
+                Console.WriteLine($"Input: [{inputs[i][0]}, {inputs[i][1]}] -> Pred={pred:F3}  Label={p}  (Expected {e})");
+            }
+
+
+        }
         public void NeuralNetworkXorTest()
         {
             Console.WriteLine("NeuralNetworkXorTest:");
@@ -308,7 +376,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Parameters parameters = new Parameters()
             {
-                AccelerationType = AccelerationType.mu,
+                AccelerationType = AccelerationType.CPU,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { 2, 1},
@@ -324,9 +392,9 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var ParamsFound = autoTuner.TrainWithAutoTuning(inputs, expectedOutputs, learningRate:0.25f,parameters, maxAttempts:250, targetLossThreshold: 0.2f, maxChunkTrainingAttempts:25);
 
-            NeuralNetwork neuralNetwork = new NeuralNetwork(ParamsFound.BestParams);
+            NeuralNetwork neuralNetwork = new NeuralNetwork(ParamsFound);
 
-            neuralNetwork.Train(inputs, expectedOutputs, ParamsFound.LearningRate, 4000);
+            neuralNetwork.Train(inputs, expectedOutputs, ParamsFound.OptimalLearningRate ?? 0.01f, 4000);
 
             Console.WriteLine($"\n");
             // Evaluate the network with sample inputs
