@@ -1,7 +1,11 @@
 **Neural Network in C# using back propagation**
 
-The Neural Network project attempts to create a flexible and efficient
-framework for building and training neural networks.
+My attempt to create a flexible and efficient framework for building and training neural networks.
+- GPU acceleration using ILGPU.
+- Batch processing to limit cpu/gpu synchronisation bottlenecks
+- Auto-Tuning System implemented to automatically discover the optimal neural network architectures and hyperparameters for any given dataset.
+
+The basic Gradient-based learning technique deployed within this project explained below. 
 
 **Backpropagation**
 
