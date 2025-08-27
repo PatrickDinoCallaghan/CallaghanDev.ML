@@ -74,7 +74,7 @@ Only output the JSON array, nothing else.
         {
             _logger = logger;
             _similarity =new Similarity();
-            _gptClient = new GPTClient(openAiApiKey, OpenAIModel.GPT_4o);
+            _gptClient = new GPTClient(openAiApiKey, OpenAIModel.GPT_4_1_Mini);
             _openAiApiKey = openAiApiKey;
             _TradableAssetNames = TradableAssetNames;
 
@@ -84,7 +84,7 @@ Only output the JSON array, nothing else.
         public async Task<List<OpenAIAssetSignal>> GetSentimentAnalysis(OpenAINewsInput openAINewsInputs, int Attempt = 0)
         {
             string resultjson = "";
-            GPTClient gptClient = new GPTClient(_openAiApiKey, OpenAIModel.GPT_4o);
+            GPTClient gptClient = new GPTClient(_openAiApiKey, OpenAIModel.GPT_4_1_Mini);
             try
             {
                 resultjson = await gptClient.Run(GetSystemPrompt(), openAINewsInputs.Story);

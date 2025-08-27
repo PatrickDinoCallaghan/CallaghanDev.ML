@@ -38,7 +38,7 @@ namespace CallaghanDev.ML.OpenAI
         [ModelName("gpt-4.1-2025-04-14"), Pricing("$2.00", "$0.50", "$8.00"), MaxTokens(128000)]
         GPT_4_1,
 
-        [ModelName("gpt-4.1-mini-2025-04-14"), Pricing("$0.40", "$0.10", "$1.60"), MaxTokens(32000)]
+        [ModelName("gpt-4.1-mini"), Pricing("$0.40", "$0.10", "$1.60"), MaxTokens(32000)]
         GPT_4_1_Mini,
 
         [ModelName("gpt-4.1-nano-2025-04-14"), Pricing("$0.10", "$0.025", "$0.40"), MaxTokens(8192)]

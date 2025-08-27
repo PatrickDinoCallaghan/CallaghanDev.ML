@@ -96,8 +96,33 @@ namespace CallaghanDev.ML
             }
         }
 
+        /// <summary>
+        /// Evaluates the mean squared error loss of the trained network on a validation set.
+        /// </summary>
+        /// <param name="inputs">Validation inputs (unseen data)</param>
+        /// <param name="expected">Expected outputs for validation inputs</param>
+        /// <returns>Average MSE loss</returns>
+        public float EvaluateValidationLoss(IList<float[]> inputs, IList<float[]> expected)
+        {
+            if (inputs.Count != expected.Count)
+            {
+                throw new ArgumentException("Inputs and expected outputs must have the same count.");
+            }
+            float totalLoss = 0f;
 
-       private float[] ScaleInput(float[] raw)
+            for (int i = 0; i < inputs.Count; i++)
+            {
+                var prediction = Predict(inputs[i]);
+
+                float sampleLoss = prediction.Zip(expected[i], (a, b) => (a - b) * (a - b)).Average();
+
+                totalLoss += sampleLoss;
+            }
+
+            return totalLoss / inputs.Count;
+        }
+
+        private float[] ScaleInput(float[] raw)
         {
             int n = raw.Length;
             var scaled = new float[n];
