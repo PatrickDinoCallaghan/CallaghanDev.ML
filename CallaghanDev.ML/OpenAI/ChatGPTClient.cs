@@ -18,6 +18,7 @@ namespace CallaghanDev.ML.OpenAI
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             Model = model;
             _client = new HttpClient { BaseAddress = new Uri(baseUrl) };
+            _client.Timeout = TimeSpan.FromSeconds(60);
         }
 
         public async Task<string> Run(string systemContext, string message) => await RunSingleRequest(systemContext, message);
