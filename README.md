@@ -10,17 +10,17 @@ The basic Gradient-based learning technique deployed within this project explain
 **Backpropagation**
 
 Backpropagation is a fundamental algorithm used for training artificial
-neural networks. It leverages the chain rule from calculus to compute
+neural networks. It uses the chain rule from calculus to compute
 gradients of the loss function with respect to each weight in the
-network, allowing for efficient updates during training. Here’s a
-detailed breakdown of how backpropagation works, including the role of
-the chain rule:
+network, allowing for efficient updates during training. Here’s my attempt at
+a breakdown of how backpropagation works (including the role of
+the chain rule):
 
 **1. Forward Propagation:**
 
-Before diving into backpropagation, it's essential to understand forward
+Before diving into backpropagation, let's try to understand forward
 propagation, where inputs pass through the network to generate an
-output. Here's how it works step-by-step:
+output:
 
 1.  **Input Layer**: The input data is fed into the input layer.
 
