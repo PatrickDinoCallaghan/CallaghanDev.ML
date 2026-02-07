@@ -1,10 +1,4 @@
 ﻿using CallaghanDev.ML.Enums;
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using MathNet.Symbolics;
 
 namespace CallaghanDev.ML.Neural_Network.Extensions

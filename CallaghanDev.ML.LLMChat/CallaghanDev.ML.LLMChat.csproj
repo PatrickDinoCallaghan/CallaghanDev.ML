@@ -16,4 +16,10 @@
     <Folder Include="Model\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Model\mistral-7b-instruct-v0.1.Q4_K_M.gguf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
