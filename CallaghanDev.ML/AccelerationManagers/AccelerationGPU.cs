@@ -1,9 +1,10 @@
 ﻿using CallaghanDev.ML.Enums;
+using ILGPU;
 using ILGPU.Algorithms;
 using ILGPU.Runtime;
-using ILGPU;
-using ILGPU.Runtime.OpenCL;
 using ILGPU.Runtime.Cuda;
+using ILGPU.Runtime.OpenCL;
+using static Microsoft.FSharp.Core.ByRefKinds;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
@@ -18,6 +19,12 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float> _updBKernel;
         private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _dotTransposedKernel;
         private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ActivationType> _actKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _matMulKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _matMulTransposeKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, float> _matScaleKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _matAddKernel;
+        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<int, Stride2D.DenseX>> _softmaxKernel;
+        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, float> _layerNormKernel;
 
         private readonly Dictionary<(int rows, int cols),
             (MemoryBuffer2D<float, Stride2D.DenseX> mat,
@@ -44,6 +51,7 @@ namespace CallaghanDev.ML.AccelerationManagers
              MemoryBuffer1D<float, Stride1D.Dense> vec,
              MemoryBuffer1D<float, Stride1D.Dense> res)> _dotTransposedCache
             = new();
+        private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
 
         public AccelerationGPU(AccelerationType accelerationType, int deviceIndex = 0)
         {
@@ -69,6 +77,13 @@ namespace CallaghanDev.ML.AccelerationManagers
             _hidGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>>(HiddenGradientKernel);
             _updWKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float, float>(UpdateWeightsKernel);
             _updBKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(UpdateBiasKernel);
+            _matMulKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(MatMulKernel);
+            _matMulTransposeKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(MatMulTransposeKernel);
+            _matScaleKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, float>(MatScaleKernel);
+            _matAddKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(MatAddKernel);
+      
+            _softmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<int, Stride2D.DenseX>>(SoftmaxKernel);
+            _layerNormKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, float>(LayerNormKernel);
 
         }
 
@@ -335,9 +350,267 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             bias[i] -= learningRate * delta[i];
         }
+        public float[,] MatrixMultiply(float[,] A, float[,] B)
+        {
+            int r1 = A.GetLength(0);
+            int c1 = A.GetLength(1);
+            int r2 = B.GetLength(0);
+            int c2 = B.GetLength(1);
 
+            if (c1 != r2)
+                throw new ArgumentException($"Matrix dimensions don't match");
+
+            var key = (r1, c1, c2);
+            if (!_matMulCache.TryGetValue(key, out var bufs))
+            {
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(r1, c1)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(r2, c2)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(r1, c2))
+                );
+                _matMulCache[key] = bufs;
+            }
+
+            bufs.a.CopyFromCPU(A);
+            bufs.b.CopyFromCPU(B);
+            _matMulKernel(new Index2D(r1, c2), bufs.a.View, bufs.b.View, bufs.c.View);
+
+            var result = new float[r1, c2];
+            bufs.c.CopyToCPU(result);
+            return result;
+        }
+
+        public float[,] MatrixMultiplyTranspose(float[,] A, float[,] B)
+        {
+            int r1 = A.GetLength(0);
+            int c1 = A.GetLength(1);
+            int r2 = B.GetLength(0);
+            int c2 = B.GetLength(1);
+
+            if (c1 != c2)
+                throw new ArgumentException($"Matrix dimensions don't match for A*B^T");
+
+            var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(r1, c1));
+            var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(r2, c2));
+            var bufC = _accelerator.Allocate2DDenseX<float>(new Index2D(r1, r2));
+
+            try
+            {
+                bufA.CopyFromCPU(A);
+                bufB.CopyFromCPU(B);
+                _matMulTransposeKernel(new Index2D(r1, r2), bufA.View, bufB.View, bufC.View);
+
+                var result = new float[r1, r2];
+                bufC.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufA.Dispose(); bufB.Dispose(); bufC.Dispose();
+            }
+        }
+
+        public float[,] MatrixScale(float[,] matrix, float scalar)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+            try
+            {
+                bufIn.CopyFromCPU(matrix);
+                _matScaleKernel(new Index2D(rows, cols), bufIn.View, scalar);
+
+                var result = new float[rows, cols];
+                bufIn.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufIn.Dispose();
+            }
+        }
+
+        public float[,] MatrixAdd(float[,] A, float[,] B)
+        {
+            int rows = A.GetLength(0);
+            int cols = A.GetLength(1);
+
+            var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+            var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+            var bufC = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+
+            try
+            {
+                bufA.CopyFromCPU(A);
+                bufB.CopyFromCPU(B);
+                _matAddKernel(new Index2D(rows, cols), bufA.View, bufB.View, bufC.View);
+
+                var result = new float[rows, cols];
+                bufC.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufA.Dispose(); bufB.Dispose(); bufC.Dispose();
+            }
+        }
+
+        public float[,] Softmax(float[,] matrix, bool[,] mask = null)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+            var bufOut = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+
+            // FIXED: Convert bool mask to int mask (ILGPU doesn't support bool)
+            var bufMask = mask != null ? _accelerator.Allocate2DDenseX<int>(new Index2D(rows, cols)) : _accelerator.Allocate2DDenseX<int>(new Index2D(1, 1));
+
+            try
+            {
+                bufIn.CopyFromCPU(matrix);
+                if (mask != null)
+                {
+                    // Convert bool[,] to int[,]
+                    var intMask = new int[rows, cols];
+                    for (int i = 0; i < rows; i++)
+                        for (int j = 0; j < cols; j++)
+                            intMask[i, j] = mask[i, j] ? 1 : 0;
+                    bufMask.CopyFromCPU(intMask);
+                }
+
+                _softmaxKernel(new Index1D(rows), bufIn.View, bufOut.View, bufMask.View);
+
+                var result = new float[rows, cols];
+                bufOut.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufIn.Dispose(); bufOut.Dispose(); bufMask.Dispose();
+            }
+        }
+
+        public float[,] LayerNorm(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
+        {
+            int batchSize = input.GetLength(0);
+            int features = input.GetLength(1);
+
+            var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
+            var bufGamma = _accelerator.Allocate1D<float>(features);
+            var bufBeta = _accelerator.Allocate1D<float>(features);
+            var bufOut = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
+
+            try
+            {
+                bufIn.CopyFromCPU(input);
+                bufGamma.CopyFromCPU(gamma);
+                bufBeta.CopyFromCPU(beta);
+
+                _layerNormKernel(new Index1D(batchSize), bufIn.View, bufGamma.View, bufBeta.View, bufOut.View, epsilon);
+
+                var result = new float[batchSize, features];
+                bufOut.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufIn.Dispose(); bufGamma.Dispose(); bufBeta.Dispose(); bufOut.Dispose();
+            }
+        }
+
+        #region GPU Kernels
+
+        private static void MatMulKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            int row = idx.X, col = idx.Y;
+            float sum = 0.0f;
+            int K = (int)A.Extent.Y;
+            for (int k = 0; k < K; k++)
+                sum += A[row, k] * B[k, col];
+            C[row, col] = sum;
+        }
+
+        private static void MatMulTransposeKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            int row = idx.X, col = idx.Y;
+            float sum = 0.0f;
+            int K = (int)A.Extent.Y;
+            for (int k = 0; k < K; k++)
+                sum += A[row, k] * B[col, k];  // B[col,k] not B[k,col]
+            C[row, col] = sum;
+        }
+
+        private static void MatScaleKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> mat, float scalar)
+        {
+            mat[idx] *= scalar;
+        }
+
+        private static void MatAddKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            C[idx] = A[idx] + B[idx];
+        }
+
+        private static void SoftmaxKernel(Index1D row, ArrayView2D<float, Stride2D.DenseX> input, ArrayView2D<float, Stride2D.DenseX> output, ArrayView2D<int, Stride2D.DenseX> mask)
+        {
+            int cols = (int)input.Extent.Y;
+            bool hasMask = mask.Extent.Size > 1;
+
+            float max = float.NegativeInfinity;
+            for (int j = 0; j < cols; j++)
+            {
+                // Convert int to bool: 0 = false, non-zero = true
+                if (!hasMask || mask[row, j] != 0)
+                    max = XMath.Max(max, input[row, j]);
+            }
+
+            float sum = 0.0f;
+            for (int j = 0; j < cols; j++)
+            {
+                if (hasMask && mask[row, j] == 0)
+                    output[row, j] = 0.0f;
+                else
+                {
+                    output[row, j] = XMath.Exp(input[row, j] - max);
+                    sum += output[row, j];
+                }
+            }
+
+            for (int j = 0; j < cols; j++)
+                output[row, j] /= sum;
+        }
+        private static void LayerNormKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, float epsilon)
+        {
+            int features = (int)input.Extent.Y;
+
+            float mean = 0.0f;
+            for (int j = 0; j < features; j++)
+                mean += input[batch, j];
+            mean /= features;
+
+            float variance = 0.0f;
+            for (int j = 0; j < features; j++)
+            {
+                float diff = input[batch, j] - mean;
+                variance += diff * diff;
+            }
+            variance /= features;
+
+            float stdDev = XMath.Sqrt(variance + epsilon);
+            for (int j = 0; j < features; j++)
+                output[batch, j] = gamma[j] * (input[batch, j] - mean) / stdDev + beta[j];
+        }
+
+        #endregion
         public void Dispose()
         {
+            foreach (var v in _matMulCache.Values)
+            {
+                v.a.Dispose();
+                v.b.Dispose();
+                v.c.Dispose();
+            }
             foreach (var v in _outGradCache.Values) { v.cost.Dispose(); v.der.Dispose(); v.grad.Dispose(); }
             foreach (var v in _hidGradCache.Values) { v.pre.Dispose(); v.der.Dispose(); v.delta.Dispose(); }
             foreach (var v in _updWCache.Values) { v.w.Dispose(); v.d.Dispose(); v.pa.Dispose(); }

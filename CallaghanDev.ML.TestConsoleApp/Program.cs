@@ -9,8 +9,9 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
         public static void NNtest()
         {
-            TestNN neuralNetwork_Tests  = new TestNN();
-
+            TestFNN neuralNetwork_Tests  = new TestFNN();
+            Transformer_Tests transformer_Tests = new Transformer_Tests();
+            transformer_Tests.RunAllTests();
             //Doesnt work every time but good progress I think.
             neuralNetwork_Tests.NeuralNetworkXorTestPolynomial();
             neuralNetwork_Tests.NeuralNetworkOrTest();
