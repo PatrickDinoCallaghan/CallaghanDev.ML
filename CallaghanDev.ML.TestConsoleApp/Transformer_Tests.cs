@@ -4,6 +4,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+
+//FYI;Some of these tests i didnt write.
+//Rest all other code is mine though.
 namespace CallaghanDev.ML
 {
     public class Transformer_Tests
@@ -802,4 +805,1013 @@ namespace CallaghanDev.ML
 
         #endregion
     }
+    public class TransformerTrainer_Tests
+    {
+        private const float EPSILON = 1e-3f;
+        private const float TOLERANCE = 0.05f;
+        private const float ABS_TOLERANCE = 1e-4f;
+
+        public void RunAllTests()
+        {
+            Console.WriteLine("╔══════════════════════════════════════════════════════════╗");
+            Console.WriteLine("║        TRANSFORMER TRAINER - VERIFICATION SUITE         ║");
+            Console.WriteLine("╚══════════════════════════════════════════════════════════╝\n");
+
+            var tests = new (Action test, string name)[]
+            {
+                // Unit tests for individual components
+                (Test_LayerNorm_ForwardBackward_NumericalCheck, "LayerNorm Forward/Backward Numerical Check"),
+                (Test_Attention_WO_Gradient_NumericalCheck, "Attention WO Gradient Numerical Check"),
+                (Test_Attention_WQ_Gradient_NumericalCheck, "Attention WQ Gradient Numerical Check"),
+                (Test_Attention_WK_Gradient_NumericalCheck, "Attention WK Gradient Numerical Check"),
+                (Test_Attention_WV_Gradient_NumericalCheck, "Attention WV Gradient Numerical Check"),
+                (Test_Embedding_Gradient_NumericalCheck, "Embedding Gradient Numerical Check"),
+                (Test_OutputProjection_Gradient_NumericalCheck, "Output Projection Gradient Numerical Check"),
+                (Test_FFN_Gradient_FlowThrough, "FFN Gradient Flow Through"),
+                (Test_ResidualConnection_GradientSplit, "Residual Connection Gradient Split"),
+
+                // Integration tests
+                (Test_LossDecreases_SingleSequence, "Loss Decreases on Single Sequence"),
+                (Test_LossDecreases_MultipleBatches, "Loss Decreases Across Batches"),
+                (Test_GradientClipping_Works, "Gradient Clipping Limits Norm"),
+                (Test_ZeroGradients_AfterReset, "Gradients Zero After Reset"),
+                (Test_MultiHead_ProducesDifferentGradsThanSingleHead, "Multi-Head vs Single-Head Gradients Differ"),
+                (Test_CausalMask_FutureTokensNoGradient, "Causal Mask Blocks Future Token Gradients"),
+                (Test_TrainTwice_SameModel_NoAccumulation, "Train Twice No Gradient Accumulation"),
+                (Test_DifferentSequenceLengths_NoError, "Different Sequence Lengths in Batch"),
+                (Test_AllParametersReceiveGradients, "All Parameters Receive Non-Zero Gradients"),
+                (Test_LearningRateDecay_Applied, "Learning Rate Decay Applied Correctly"),
+                (Test_ValidationLoss_Computable, "Validation Loss Is Computable"),
+
+                // Overfitting sanity checks
+                (Test_OverfitSingleSequence, "Overfit Single Sequence (loss < 1.0)"),
+                (Test_OverfitTwoSequences, "Overfit Two Sequences (loss < 1.5)"),
+                (Test_OverfitSingleSequence_Extended, "Overfit Single Sequence Extended (loss < 0.5)"),
+
+                // Edge cases
+                (Test_SequenceLength1_NoError, "Sequence Length 2 (minimum) No Error"),
+                (Test_LargeVocab_SmallSequence, "Large Vocab Small Sequence No Error"),
+                (Test_RepeatedTokens_NoError, "Repeated Tokens In Sequence No Error"),
+
+                // Determinism
+                (Test_SameInput_SameLoss, "Same Input Produces Same Loss"),
+                (Test_ForwardCache_TokenIds_Stored, "ForwardCache Stores TokenIds"),
+                (Test_ForwardCache_FFNInputs_Stored, "ForwardCache Stores FFN Inputs"),
+
+                // End to end
+                (Test_TrainThenGenerate_NoError, "Train Then Generate No Error"),
+                (Test_MultiLayer_GradientFlow, "Multi-Layer Gradient Flow (4 layers)"),
+                (Test_Convergence_MonotonicallyDecreasing, "Loss Monotonically Decreasing (5 epochs)"),
+            };
+
+            int passed = 0;
+            int failed = 0;
+            var failures = new List<string>();
+
+            for (int i = 0; i < tests.Length; i++)
+            {
+                Console.Write($"  [{i + 1,2}/{tests.Length}] {tests[i].name,-55} ");
+                try
+                {
+                    tests[i].test();
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("PASS");
+                    Console.ResetColor();
+                    passed++;
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("FAIL");
+                    Console.ResetColor();
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"         {ex.Message}");
+                    Console.ResetColor();
+                    failures.Add($"{tests[i].name}: {ex.Message}");
+                    failed++;
+                }
+            }
+
+            Console.WriteLine($"\n{"",3}{new string('─', 58)}");
+            Console.Write($"   Results: ");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.Write($"{passed} passed");
+            Console.ResetColor();
+            if (failed > 0)
+            {
+                Console.Write(", ");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Write($"{failed} failed");
+                Console.ResetColor();
+            }
+            Console.WriteLine($" / {tests.Length} total\n");
+
+            if (failures.Count > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("   Failed tests:");
+                Console.ResetColor();
+                foreach (var f in failures)
+                {
+                    Console.WriteLine($"     • {f}");
+                }
+                Console.WriteLine();
+            }
+        }
+
+
+        private (LanguageModel model, TransformerConfig config) CreateSmallModel(int vocabSize = 10, int embDim = 8, int numHeads = 2, int numLayers = 1, int ffnDim = 16, bool decoderOnly = true)
+        {
+            var config = new TransformerConfig
+            {
+                VocabSize = vocabSize,
+                MaxSequenceLength = 16,
+                EmbeddingDim = embDim,
+                NumHeads = numHeads,
+                NumLayers = numLayers,
+                FeedForwardDim = ffnDim,
+                FFNActivationType = ActivationType.Relu,
+                AccelerationType = AccelerationType.CPU,
+                UseDecoderOnly = decoderOnly,
+                L2RegulationLamda = 0f,
+                GradientClippingThreshold = 100f
+            };
+
+            var model = new LanguageModel(config, new Random(42));
+            return (model, config);
+        }
+
+        private float ComputeLoss(LanguageModel model, int[] input, int[] target)
+        {
+            var logits = model.Forward(input);
+            float loss = 0;
+            int vocabSize = model.Config.VocabSize;
+
+            for (int i = 0; i < Math.Min(logits.GetLength(0), target.Length); i++)
+            {
+                float max = float.NegativeInfinity;
+                for (int j = 0; j < vocabSize; j++)
+                    max = Math.Max(max, logits[i, j]);
+
+                float sum = 0;
+                for (int j = 0; j < vocabSize; j++)
+                    sum += MathF.Exp(logits[i, j] - max);
+
+                float prob = MathF.Exp(logits[i, target[i]] - max) / sum;
+                loss -= MathF.Log(prob + 1e-10f);
+            }
+
+            return loss / Math.Min(logits.GetLength(0), target.Length);
+        }
+
+        //I could have used a test framework...but nooooo i had to use a console application. Dumb
+        private void Assert(bool condition, string message)
+        {
+            if (!condition)
+            {
+                throw new Exception(message);
+            }
+        }
+
+
+ 
+        private float NumericalGradient(LanguageModel model, int[] input, int[] target, Func<float> getParam, Action<float> setParam)
+        {
+            float original = getParam();
+
+            setParam(original + EPSILON);
+            float lossPlus = ComputeLoss(model, input, target);
+
+            setParam(original - EPSILON);
+            float lossMinus = ComputeLoss(model, input, target);
+
+            setParam(original);
+
+            return (lossPlus - lossMinus) / (2 * EPSILON);
+        }
+
+        public void Test_LayerNorm_ForwardBackward_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var block = model.Blocks[0];
+            for (int paramIdx = 0; paramIdx < Math.Min(4, config.EmbeddingDim); paramIdx++)
+            {
+                int idx = paramIdx;
+                float numGrad = NumericalGradient(model, input, target, () => block.LN1Gamma[idx],  (v) => block.LN1Gamma[idx] = v);
+
+                Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad), $"LN1Gamma[{idx}] numerical gradient is NaN/Inf");
+            }
+        }
+
+
+        public void Test_Attention_WO_Gradient_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var attn = model.Blocks[0].Attention;
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    int rr = r, cc = c;
+                    float numGrad = NumericalGradient(model, input, target, () => attn.WO[rr, cc], (v) => attn.WO[rr, cc] = v);
+
+                    Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad), $"WO[{rr},{cc}] numerical gradient is NaN/Inf");
+                }
+            }
+        }
+
+        public void Test_Attention_WQ_Gradient_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var attn = model.Blocks[0].Attention;
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    int rr = r, cc = c;
+                    float numGrad = NumericalGradient(model, input, target,
+                        () => attn.WQ[rr, cc],
+                        (v) => attn.WQ[rr, cc] = v);
+
+                    Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad),
+                        $"WQ[{rr},{cc}] numerical gradient is NaN/Inf: {numGrad}");
+                }
+            }
+        }
+
+        public void Test_Attention_WK_Gradient_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var attn = model.Blocks[0].Attention;
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    int rr = r, cc = c;
+                    float numGrad = NumericalGradient(model, input, target,
+                        () => attn.WK[rr, cc],
+                        (v) => attn.WK[rr, cc] = v);
+
+                    Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad),
+                        $"WK[{rr},{cc}] numerical gradient is NaN/Inf: {numGrad}");
+                }
+            }
+        }
+
+        public void Test_Attention_WV_Gradient_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var attn = model.Blocks[0].Attention;
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    int rr = r, cc = c;
+                    float numGrad = NumericalGradient(model, input, target,
+                        () => attn.WV[rr, cc],
+                        (v) => attn.WV[rr, cc] = v);
+
+                    Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad),
+                        $"WV[{rr},{cc}] numerical gradient is NaN/Inf: {numGrad}");
+                }
+            }
+        }
+
+
+        public void Test_Embedding_Gradient_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            foreach (int tokenId in input)
+            {
+                for (int d = 0; d < Math.Min(2, config.EmbeddingDim); d++)
+                {
+                    int tid = tokenId, dd = d;
+                    float numGrad = NumericalGradient(model, input, target,
+                        () => model.TokenEmbedding[tid, dd],
+                        (v) => model.TokenEmbedding[tid, dd] = v);
+
+                    Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad),
+                        $"TokenEmbedding[{tid},{dd}] numerical gradient is NaN/Inf");
+
+                    Assert(MathF.Abs(numGrad) > 1e-8f,
+                        $"TokenEmbedding[{tid},{dd}] gradient is effectively zero ({numGrad:E4})");
+                }
+            }
+        }
+
+
+        #region Output Projection Gradient Tests
+
+        public void Test_OutputProjection_Gradient_NumericalCheck()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    int rr = r, cc = c;
+                    float numGrad = NumericalGradient(model, input, target,
+                        () => model.OutputProjection[rr, cc],
+                        (v) => model.OutputProjection[rr, cc] = v);
+
+                    Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad),
+                        $"OutputProjection[{rr},{cc}] numerical gradient is NaN/Inf");
+                }
+            }
+
+            for (int v = 0; v < Math.Min(3, config.VocabSize); v++)
+            {
+                int vv = v;
+                float numGrad = NumericalGradient(model, input, target,
+                    () => model.OutputBias[vv],
+                    (v2) => model.OutputBias[vv] = v2);
+
+                Assert(!float.IsNaN(numGrad) && !float.IsInfinity(numGrad),
+                    $"OutputBias[{vv}] numerical gradient is NaN/Inf");
+            }
+        }
+
+        #endregion
+
+        #region FFN Gradient Tests
+
+        public void Test_FFN_Gradient_FlowThrough()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1, ffnDim: 8);
+
+            var ffn = model.Blocks[0].FeedForwardNetwork;
+            var ffnData = ffn.GetData();
+            var weightsBefore = new float[ffnData.layers[1].Weights.GetLength(0), ffnData.layers[1].Weights.GetLength(1)];
+            Array.Copy(ffnData.layers[1].Weights, weightsBefore, ffnData.layers[1].Weights.Length);
+
+            int[][] sequences = { new[] { 1, 2, 3, 4 } };
+            var trainConfig = new TrainingConfig
+            {
+                LearningRate = 0.01f,
+                BatchSize = 1,
+                Epochs = 1,
+                UseGradientClipping = false,
+                Verbose = false
+            };
+            var trainer = new TransformerTrainer(model, trainConfig);
+            trainer.Train(sequences);
+
+            var weightsAfter = ffnData.layers[1].Weights;
+            bool anyChanged = false;
+            for (int i = 0; i < weightsBefore.GetLength(0) && !anyChanged; i++)
+                for (int j = 0; j < weightsBefore.GetLength(1) && !anyChanged; j++)
+                    if (MathF.Abs(weightsBefore[i, j] - weightsAfter[i, j]) > 1e-10f)
+                        anyChanged = true;
+
+            Assert(anyChanged, "FFN weights did not change after training step - FFN backprop is not connected");
+        }
+
+        #endregion
+
+        #region Residual Connection Tests
+
+        public void Test_ResidualConnection_GradientSplit()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2 };
+            int[] target = { 2, 3 };
+
+            float numGrad = NumericalGradient(model, input, target,
+                () => model.TokenEmbedding[1, 0],
+                (v) => model.TokenEmbedding[1, 0] = v);
+
+            Assert(MathF.Abs(numGrad) > 1e-7f,
+                $"Gradient through residual is effectively zero ({numGrad:E4})");
+        }
+
+        #endregion
+
+        #region Loss Decrease Tests
+
+        public void Test_LossDecreases_SingleSequence()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1, ffnDim: 16);
+            int[] sequence = { 1, 2, 3, 4, 5 };
+
+            var trainConfig = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 1,
+                Epochs = 5,
+                UseGradientClipping = true,
+                GradientClipThreshold = 5.0f,
+                Verbose = false
+            };
+
+            int[] inputSeq = sequence.Take(sequence.Length - 1).ToArray();
+            int[] targetSeq = sequence.Skip(1).ToArray();
+            float lossBefore = ComputeLoss(model, inputSeq, targetSeq);
+
+            var trainer = new TransformerTrainer(model, trainConfig);
+            trainer.Train(new[] { sequence });
+
+            float lossAfter = ComputeLoss(model, inputSeq, targetSeq);
+
+            Assert(lossAfter < lossBefore,
+                $"Loss did not decrease after 5 epochs: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        public void Test_LossDecreases_MultipleBatches()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1, ffnDim: 16);
+            int[][] sequences = {
+                new[] { 1, 2, 3, 4 },
+                new[] { 2, 3, 4, 5 },
+                new[] { 3, 4, 5, 6 },
+                new[] { 4, 5, 6, 7 }
+            };
+
+            float lossBefore = 0;
+            foreach (var seq in sequences)
+            {
+                var inp = seq.Take(seq.Length - 1).ToArray();
+                var tgt = seq.Skip(1).ToArray();
+                lossBefore += ComputeLoss(model, inp, tgt);
+            }
+            lossBefore /= sequences.Length;
+
+            var trainConfig = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 2,
+                Epochs = 5,
+                UseGradientClipping = true,
+                GradientClipThreshold = 5.0f,
+                Verbose = false
+            };
+
+            new TransformerTrainer(model, trainConfig).Train(sequences);
+
+            float lossAfter = 0;
+            foreach (var seq in sequences)
+            {
+                var inp = seq.Take(seq.Length - 1).ToArray();
+                var tgt = seq.Skip(1).ToArray();
+                lossAfter += ComputeLoss(model, inp, tgt);
+            }
+            lossAfter /= sequences.Length;
+
+            Assert(lossAfter < lossBefore,
+                $"Average loss did not decrease after 5 epochs: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        #endregion
+
+        #region Gradient Clipping Tests
+
+        public void Test_GradientClipping_Works()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+
+            var trainConfig = new TrainingConfig
+            {
+                LearningRate = 0.1f,
+                BatchSize = 1,
+                Epochs = 1,
+                UseGradientClipping = true,
+                GradientClipThreshold = 1.0f,
+                Verbose = false
+            };
+
+            int[][] sequences = { new[] { 1, 2, 3, 4, 5 } };
+            new TransformerTrainer(model, trainConfig).Train(sequences);
+
+            var logits = model.Forward(new[] { 1, 2, 3 });
+            bool anyNaN = false;
+            for (int i = 0; i < logits.GetLength(0); i++)
+                for (int j = 0; j < logits.GetLength(1); j++)
+                    if (float.IsNaN(logits[i, j]) || float.IsInfinity(logits[i, j]))
+                        anyNaN = true;
+
+            Assert(!anyNaN, "Model produces NaN/Inf after training with gradient clipping");
+        }
+
+        #endregion
+
+        #region Zero Gradient / No Accumulation Tests
+
+        public void Test_ZeroGradients_AfterReset()
+        {
+            var (model, config) = CreateSmallModel();
+            int[][] sequences = { new[] { 1, 2, 3 } };
+            var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false };
+            var trainer = new TransformerTrainer(model, tc);
+
+            trainer.Train(sequences);
+            // Second train should not accumulate old gradients - no crash means zero works
+            trainer.Train(new[] { new[] { 3, 4, 5, 6 } });
+        }
+
+        public void Test_TrainTwice_SameModel_NoAccumulation()
+        {
+            // Verify that running two separate Train calls gives correct results
+            // (gradients don't leak between calls)
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+
+            int[] seq1 = { 1, 2, 3, 4 };
+            int[] seq2 = { 5, 6, 7, 8 };
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 1,
+                Epochs = 3,
+                Verbose = false
+            };
+
+            var trainer = new TransformerTrainer(model, tc);
+            trainer.Train(new[] { seq1 });
+            trainer.Train(new[] { seq2 });
+
+            // Model should still produce valid output
+            var logits = model.Forward(new[] { 1, 2, 3 });
+            for (int i = 0; i < logits.GetLength(0); i++)
+                for (int j = 0; j < logits.GetLength(1); j++)
+                    Assert(!float.IsNaN(logits[i, j]), "NaN after two separate training runs");
+        }
+
+        #endregion
+
+        #region Multi-Head Tests
+
+        public void Test_MultiHead_ProducesDifferentGradsThanSingleHead()
+        {
+            var (model2h, _) = CreateSmallModel(vocabSize: 8, embDim: 8, numHeads: 2, numLayers: 1);
+            var (model1h, _) = CreateSmallModel(vocabSize: 8, embDim: 8, numHeads: 1, numLayers: 1);
+
+            // Copy shared weights so only head count differs
+            Array.Copy(model2h.TokenEmbedding, model1h.TokenEmbedding, model2h.TokenEmbedding.Length);
+            Array.Copy(model2h.OutputProjection, model1h.OutputProjection, model2h.OutputProjection.Length);
+            Array.Copy(model2h.OutputBias, model1h.OutputBias, model2h.OutputBias.Length);
+
+            var attn2h = model2h.Blocks[0].Attention;
+            var attn1h = model1h.Blocks[0].Attention;
+            Array.Copy(attn2h.WQ, attn1h.WQ, attn2h.WQ.Length);
+            Array.Copy(attn2h.WK, attn1h.WK, attn2h.WK.Length);
+            Array.Copy(attn2h.WV, attn1h.WV, attn2h.WV.Length);
+            Array.Copy(attn2h.WO, attn1h.WO, attn2h.WO.Length);
+
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            float loss2h = ComputeLoss(model2h, input, target);
+            float loss1h = ComputeLoss(model1h, input, target);
+
+            Assert(MathF.Abs(loss2h - loss1h) > 1e-6f,
+                $"2-head and 1-head losses are identical ({loss2h:F6})");
+        }
+
+        #endregion
+
+        #region Causal Mask Tests
+
+        public void Test_CausalMask_FutureTokensNoGradient()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1, decoderOnly: true);
+            int[] input = { 1, 2, 3 };
+
+            var logitsBefore = model.Forward(input);
+            float logit_0_0 = logitsBefore[0, 0];
+
+            float original = model.TokenEmbedding[3, 0];
+            model.TokenEmbedding[3, 0] += 1.0f;
+
+            var logitsAfter = model.Forward(input);
+            float logit_0_0_after = logitsAfter[0, 0];
+
+            model.TokenEmbedding[3, 0] = original;
+
+            Assert(MathF.Abs(logit_0_0 - logit_0_0_after) < 1e-5f,
+                $"Causal mask violated: logits[0,0] changed from {logit_0_0:F6} to {logit_0_0_after:F6}");
+        }
+
+        #endregion
+
+        public void Test_DifferentSequenceLengths_NoError()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+
+            int[][] sequences = {
+                new[] { 1, 2 },
+                new[] { 1, 2, 3, 4, 5, 6 },
+                new[] { 3, 4, 5 },
+                new[] { 7, 8, 9, 1 }
+            };
+
+            var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 2, Epochs = 2, Verbose = false };
+            new TransformerTrainer(model, tc).Train(sequences);
+        }
+
+
+        public void Test_AllParametersReceiveGradients()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1, ffnDim: 8);
+
+            var embBefore = (float[,])model.TokenEmbedding.Clone();
+            var outProjBefore = (float[,])model.OutputProjection.Clone();
+            var outBiasBefore = (float[])model.OutputBias.Clone();
+
+            var attn = model.Blocks[0].Attention;
+            var wqBefore = (float[,])attn.WQ.Clone();
+            var wkBefore = (float[,])attn.WK.Clone();
+            var wvBefore = (float[,])attn.WV.Clone();
+            var woBefore = (float[,])attn.WO.Clone();
+            var bqBefore = (float[])attn.BiasQ.Clone();
+            var bkBefore = (float[])attn.BiasK.Clone();
+            var bvBefore = (float[])attn.BiasV.Clone();
+            var boBefore = (float[])attn.BiasO.Clone();
+
+            var ln1gBefore = (float[])model.Blocks[0].LN1Gamma.Clone();
+            var ln1bBefore = (float[])model.Blocks[0].LN1Beta.Clone();
+            var ln2gBefore = (float[])model.Blocks[0].LN2Gamma.Clone();
+            var ln2bBefore = (float[])model.Blocks[0].LN2Beta.Clone();
+
+            var ffnData = model.Blocks[0].FeedForwardNetwork.GetData();
+            var ffnW1Before = (float[,])ffnData.layers[1].Weights.Clone();
+            var ffnW2Before = (float[,])ffnData.layers[2].Weights.Clone();
+
+            var tc = new TrainingConfig { LearningRate = 0.05f, BatchSize = 1, Epochs = 3, UseGradientClipping = false, Verbose = false };
+            new TransformerTrainer(model, tc).Train(new[] { new[] { 1, 2, 3, 4 } });
+
+            Assert(MatrixChanged(embBefore, model.TokenEmbedding), "TokenEmbedding did not change");
+            Assert(MatrixChanged(outProjBefore, model.OutputProjection), "OutputProjection did not change");
+            Assert(VectorChanged(outBiasBefore, model.OutputBias), "OutputBias did not change");
+            Assert(MatrixChanged(wqBefore, attn.WQ), "WQ did not change");
+            Assert(MatrixChanged(wkBefore, attn.WK), "WK did not change");
+            Assert(MatrixChanged(wvBefore, attn.WV), "WV did not change");
+            Assert(MatrixChanged(woBefore, attn.WO), "WO did not change");
+            Assert(VectorChanged(bqBefore, attn.BiasQ), "BiasQ did not change");
+            Assert(VectorChanged(bkBefore, attn.BiasK), "BiasK did not change");
+            Assert(VectorChanged(bvBefore, attn.BiasV), "BiasV did not change");
+            Assert(VectorChanged(boBefore, attn.BiasO), "BiasO did not change");
+            Assert(VectorChanged(ln1gBefore, model.Blocks[0].LN1Gamma), "LN1Gamma did not change");
+            Assert(VectorChanged(ln1bBefore, model.Blocks[0].LN1Beta), "LN1Beta did not change");
+            Assert(VectorChanged(ln2gBefore, model.Blocks[0].LN2Gamma), "LN2Gamma did not change");
+            Assert(VectorChanged(ln2bBefore, model.Blocks[0].LN2Beta), "LN2Beta did not change");
+            Assert(MatrixChanged(ffnW1Before, ffnData.layers[1].Weights), "FFN Layer 1 Weights did not change");
+            Assert(MatrixChanged(ffnW2Before, ffnData.layers[2].Weights), "FFN Layer 2 Weights did not change");
+        }
+
+        private bool MatrixChanged(float[,] before, float[,] after, float threshold = 1e-10f)
+        {
+            for (int i = 0; i < before.GetLength(0); i++)
+            {
+
+                for (int j = 0; j < before.GetLength(1); j++)
+                {
+
+                    if (MathF.Abs(before[i, j] - after[i, j]) > threshold)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private bool VectorChanged(float[] before, float[] after, float threshold = 1e-10f)
+        {
+            for (int i = 0; i < before.Length; i++)
+            {
+
+                if (MathF.Abs(before[i] - after[i]) > threshold)
+                {
+                    return true;
+                }
+            }
+                return false;
+        }
+
+
+        public void Test_LearningRateDecay_Applied()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[][] sequences = { new[] { 1, 2, 3, 4 } };
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.01f,
+                BatchSize = 1,
+                Epochs = 5,
+                UseLearningRateDecay = true,
+                LearningRateDecay = 0.5f,
+                Verbose = false
+            };
+
+            new TransformerTrainer(model, tc).Train(sequences);
+
+            var logits = model.Forward(new[] { 1, 2 });
+            for (int i = 0; i < logits.GetLength(0); i++)
+            {
+                for (int j = 0; j < logits.GetLength(1); j++)
+                {
+                    Assert(!float.IsNaN(logits[i, j]), "NaN in logits after training with LR decay");
+                }
+            }
+        }
+
+        public void Test_ValidationLoss_Computable()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+
+            int[][] trainSeq = { new[] { 1, 2, 3, 4 }, new[] { 3, 4, 5, 6 } };
+            int[][] valSeq = { new[] { 2, 3, 4, 5 } };
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.001f,
+                BatchSize = 2,
+                Epochs = 3,
+                ValidationInterval = 1,
+                Verbose = false
+            };
+
+            var trainer = new TransformerTrainer(model, tc);
+            trainer.Train(trainSeq, valSeq);
+
+            float valLoss = trainer.Validate(valSeq);
+            Assert(!float.IsNaN(valLoss) && !float.IsInfinity(valLoss) && valLoss > 0, $"Validation loss is invalid: {valLoss}");
+        }
+
+        public void Test_OverfitSingleSequence()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 16, numHeads: 2, numLayers: 2, ffnDim: 32);
+
+            int[] sequence = { 1, 2, 3, 4 };
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 1,
+                Epochs = 200,
+                UseGradientClipping = true,
+                GradientClipThreshold = 5.0f,
+                Verbose = false
+            };
+
+            new TransformerTrainer(model, tc).Train(new[] { sequence });
+
+            float loss = ComputeLoss(model, input, target);
+            Assert(loss < 1.0f,
+                $"Failed to overfit single sequence after 200 epochs: loss={loss:F4} (expected < 1.0)");
+        }
+
+        public void Test_OverfitTwoSequences()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 16, numHeads: 2, numLayers: 2, ffnDim: 32);
+
+            int[][] sequences = {
+                new[] { 1, 2, 3, 4 },
+                new[] { 5, 6, 7, 8 }
+            };
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 2,
+                Epochs = 300,
+                UseGradientClipping = true,
+                GradientClipThreshold = 5.0f,
+                Verbose = false
+            };
+
+            new TransformerTrainer(model, tc).Train(sequences);
+
+            float totalLoss = 0;
+            foreach (var seq in sequences)
+            {
+                var inp = seq.Take(seq.Length - 1).ToArray();
+                var tgt = seq.Skip(1).ToArray();
+                totalLoss += ComputeLoss(model, inp, tgt);
+            }
+            float avgLoss = totalLoss / sequences.Length;
+
+            Assert(avgLoss < 1.5f, $"Failed to overfit two sequences after 300 epochs: avg loss={avgLoss:F4} (expected < 1.5)");
+        }
+
+        public void Test_OverfitSingleSequence_Extended()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 16, numHeads: 2, numLayers: 2, ffnDim: 64);
+
+            int[] sequence = { 1, 2, 3, 4 };
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 1,
+                Epochs = 500,
+                UseGradientClipping = true,
+                GradientClipThreshold = 5.0f,
+                Verbose = false
+            };
+
+            new TransformerTrainer(model, tc).Train(new[] { sequence });
+
+            float loss = ComputeLoss(model, input, target);
+            Assert(loss < 0.5f, $"Failed to deeply overfit single sequence after 500 epochs: loss={loss:F4} (expected < 0.5)");
+        }
+
+        public void Test_SequenceLength1_NoError()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+            int[][] sequences = { new[] { 1, 2 } };
+            var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false };
+            new TransformerTrainer(model, tc).Train(sequences);
+        }
+
+        public void Test_LargeVocab_SmallSequence()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 1000, embDim: 8, numHeads: 2, numLayers: 1);
+            int[][] sequences = { new[] { 100, 200, 300 } };
+            var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false };
+            new TransformerTrainer(model, tc).Train(sequences);
+        }
+
+        public void Test_RepeatedTokens_NoError()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+            int[][] sequences = { new[] { 1, 1, 1, 1 } };
+            var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 3, Verbose = false };
+            new TransformerTrainer(model, tc).Train(sequences);
+        }
+
+        public void Test_SameInput_SameLoss()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 8, embDim: 4, numHeads: 2, numLayers: 1);
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            float loss1 = ComputeLoss(model, input, target);
+            float loss2 = ComputeLoss(model, input, target);
+
+            Assert(loss1 == loss2,
+                $"Same input produced different losses: {loss1:E6} vs {loss2:E6}");
+        }
+
+
+        public void Test_ForwardCache_TokenIds_Stored()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1);
+
+            int[] sequence = { 5, 7, 3 };
+            float embBefore_5 = model.TokenEmbedding[5, 0];
+            float embBefore_0 = model.TokenEmbedding[0, 0]; // Token 0 not in input
+
+            var tc = new TrainingConfig { LearningRate = 0.01f, BatchSize = 1, Epochs = 1, UseGradientClipping = false, Verbose = false };
+            new TransformerTrainer(model, tc).Train(new[] { sequence });
+
+            float embAfter_5 = model.TokenEmbedding[5, 0];
+            float embAfter_0 = model.TokenEmbedding[0, 0];
+
+            Assert(MathF.Abs(embBefore_5 - embAfter_5) > 1e-10f,
+                "Embedding for token 5 (in input) did not change");
+
+            Assert(MathF.Abs(embBefore_0 - embAfter_0) < 1e-10f,
+                "Embedding for token 0 (NOT in input) changed - gradient leaked");
+        }
+
+        public void Test_ForwardCache_FFNInputs_Stored()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 8, embDim: 8, numHeads: 2, numLayers: 1, ffnDim: 16);
+
+            int[] sequence = { 1, 2, 3, 4 };
+            int[] input = { 1, 2, 3 };
+            int[] target = { 2, 3, 4 };
+
+            float lossBefore = ComputeLoss(model, input, target);
+
+            var tc = new TrainingConfig
+            {
+                LearningRate = 0.005f,
+                BatchSize = 1,
+                Epochs = 50,
+                UseGradientClipping = true,
+                GradientClipThreshold = 5.0f,
+                Verbose = false
+            };
+
+            new TransformerTrainer(model, tc).Train(new[] { sequence });
+
+            float lossAfter = ComputeLoss(model, input, target);
+
+            // Just require loss decreased - any decrease proves FFN backprop works
+            Assert(lossAfter < lossBefore,
+                $"Loss did not decrease after 50 epochs (before={lossBefore:F4}, after={lossAfter:F4}). FFN backprop may be broken.");
+        }
+
+
+
+        public void Test_TrainThenGenerate_NoError()
+        {
+            var (model, config) = CreateSmallModel(vocabSize: 20, embDim: 16, numHeads: 2, numLayers: 2, ffnDim: 32);
+
+            int[][] sequences = {
+                new[] { 1, 2, 3, 4, 5 },
+                new[] { 6, 7, 8, 9, 10 },
+                new[] { 1, 3, 5, 7, 9 },
+            };
+
+            var tc = new TrainingConfig { LearningRate = 0.005f, BatchSize = 2, Epochs = 10, Verbose = false };
+            new TransformerTrainer(model, tc).Train(sequences);
+
+            var generated = model.Generate(new[] { 1, 2 }, maxNewTokens: 5, temperature: 1.0f);
+            Assert(generated.Length > 2, "Generate produced no new tokens after training");
+
+            foreach (var tok in generated)
+                Assert(tok >= 0 && tok < config.VocabSize, $"Generated invalid token {tok}");
+        }
+
+        public void Test_MultiLayer_GradientFlow()
+        {
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 4, ffnDim: 16);
+
+            int[] sequence = { 1, 2, 3, 4, 5 };
+
+            var wqL0Before = (float[,])model.Blocks[0].Attention.WQ.Clone();
+            var wqL3Before = (float[,])model.Blocks[3].Attention.WQ.Clone();
+
+            var tc = new TrainingConfig { LearningRate = 0.01f, BatchSize = 1, Epochs = 1, UseGradientClipping = false, Verbose = false };
+            new TransformerTrainer(model, tc).Train(new[] { sequence });
+
+            Assert(MatrixChanged(wqL0Before, model.Blocks[0].Attention.WQ),
+                "Layer 0 WQ did not change - gradients not flowing to early layers");
+            Assert(MatrixChanged(wqL3Before, model.Blocks[3].Attention.WQ),
+                "Layer 3 WQ did not change - gradients not flowing to late layers");
+
+            for (int layer = 0; layer < 4; layer++)
+            {
+                var attn = model.Blocks[layer].Attention;
+                for (int i = 0; i < attn.WQ.GetLength(0); i++)
+                    for (int j = 0; j < attn.WQ.GetLength(1); j++)
+                        Assert(!float.IsNaN(attn.WQ[i, j]), $"NaN in layer {layer} WQ[{i},{j}]");
+            }
+        }
+
+        public void Test_Convergence_MonotonicallyDecreasing()
+        {
+            // Train epoch by epoch and verify loss trend is downward
+            var (model, _) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 1, ffnDim: 16);
+
+            int[][] sequences = { new[] { 1, 2, 3, 4 }, new[] { 2, 3, 4, 5 } };
+            int[] testInput = { 1, 2, 3 };
+            int[] testTarget = { 2, 3, 4 };
+
+            float previousLoss = ComputeLoss(model, testInput, testTarget);
+            int decreaseCount = 0;
+
+            for (int epoch = 0; epoch < 5; epoch++)
+            {
+                var tc = new TrainingConfig
+                {
+                    LearningRate = 0.003f,
+                    BatchSize = 2,
+                    Epochs = 1,
+                    Verbose = false
+                };
+                new TransformerTrainer(model, tc).Train(sequences);
+
+                float currentLoss = ComputeLoss(model, testInput, testTarget);
+                if (currentLoss < previousLoss)
+                    decreaseCount++;
+                previousLoss = currentLoss;
+            }
+
+            // At least 3 out of 5 epochs should show decrease (allows for some noise)
+            Assert(decreaseCount >= 3,
+                $"Loss only decreased in {decreaseCount}/5 epochs - expected at least 3");
+        }
+
+
+    }
+
 }

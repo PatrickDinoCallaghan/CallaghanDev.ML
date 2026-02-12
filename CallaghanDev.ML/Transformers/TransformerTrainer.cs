@@ -17,6 +17,10 @@ namespace CallaghanDev.ML.Transformers
         private readonly IAccelerationManager _accel;
         private readonly Random _random;
 
+        // Neuralnetwork gradient storage needs one per layer, created once and zeroed each batch.
+        private readonly List<List<float[,]>> _ffnWeightGrads;
+        private readonly List<List<float[]>> _ffnBiasGrads;
+
         public TransformerTrainer(LanguageModel model, TrainingConfig trainConfig)
         {
             _model = model;
@@ -25,12 +29,93 @@ namespace CallaghanDev.ML.Transformers
             _gradients = new TransformerGradients(_modelConfig.NumLayers, _modelConfig.EmbeddingDim, _modelConfig.VocabSize);
             _accel = model.AccelerationManager;
             _random = new Random();
+
+            _ffnWeightGrads = new List<List<float[,]>>();
+            _ffnBiasGrads = new List<List<float[]>>();
+            for (int i = 0; i < _modelConfig.NumLayers; i++)
+            {
+                var (wGrads, bGrads) = _model.Blocks[i].FeedForwardNetwork.CreateGradientStorage();
+                _ffnWeightGrads.Add(wGrads);
+                _ffnBiasGrads.Add(bGrads);
+            }
         }
 
+        private float[,] ForwardWithCache(int[] tokenIds, ForwardCache cache)
+        {
+            int seqLen = tokenIds.Length;
+
+            var embedded = new float[seqLen, _modelConfig.EmbeddingDim];
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
+                {
+                    embedded[i, j] = _model.TokenEmbedding[tokenIds[i], j] + _model.PositionalEncoding[i, j];
+                }
+            }
+            cache.EmbeddedInput = embedded;
+            cache.TokenIds = tokenIds;
+
+            bool[,] mask = null;
+            if (_modelConfig.UseDecoderOnly)
+            {
+                mask = CreateCausalMask(seqLen);
+            }
+
+            var x = embedded;
+            for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
+            {
+                cache.LayerInputs.Add(x);
+
+                var block = _model.Blocks[layer];
+
+                var attnCache = cache.AttentionCaches[layer];
+                attnCache.Input = x;
+                var attnOutput = AttentionForwardWithCache(block.Attention, x, mask, attnCache);
+
+
+                var attnResidual = _accel.MatrixAdd(x, attnOutput);
+
+                var ln1Cache = cache.LN1Caches[layer];
+                var normed1 = LayerNormForwardWithCache(attnResidual, block.LN1Gamma, block.LN1Beta, ln1Cache);
+
+                var ffnInputRows = new float[seqLen][];
+                var ffOutput = new float[seqLen, _modelConfig.EmbeddingDim];
+                for (int i = 0; i < seqLen; i++)
+                {
+                    var inputRow = new float[_modelConfig.EmbeddingDim];
+                    for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
+                    {
+                        inputRow[j] = normed1[i, j];
+                    }
+                    ffnInputRows[i] = inputRow;
+
+                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
+
+                    for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
+                    {
+                        ffOutput[i, j] = outputRow[j];
+                    }
+                }
+                cache.FFNInputs.Add(ffnInputRows);
+                cache.FFNOutputs.Add(ffOutput);
+
+                var ffResidual = _accel.MatrixAdd(normed1, ffOutput);
+
+                var ln2Cache = cache.LN2Caches[layer];
+                x = LayerNormForwardWithCache(ffResidual, block.LN2Gamma, block.LN2Beta, ln2Cache);
+            }
+
+            cache.FinalHiddenStates = x;
+
+            return ProjectToVocab(x);
+        }
 
         private float[,] AttentionForwardWithCache(MultiHeadAttention attention, float[,] input, bool[,] mask, AttentionCache cache)
         {
             int seqLen = input.GetLength(0);
+            int embeddingDim = _modelConfig.EmbeddingDim;
+            int numHeads = _modelConfig.NumHeads;
+            int headDim = embeddingDim / numHeads;
 
             var Q = MatMulWithBias(input, attention.WQ, attention.BiasQ);
             var K = MatMulWithBias(input, attention.WK, attention.BiasK);
@@ -40,26 +125,43 @@ namespace CallaghanDev.ML.Transformers
             cache.K = K;
             cache.V = V;
 
-            // TODO: Improve this
-            // For simplicities sake, for now I will just compute single-head attention
-            // (Multi-head can be added by splitting and concatenating)
+            var concatenated = new float[seqLen, embeddingDim];
+            float scale = 1.0f / MathF.Sqrt(headDim);
 
-            // Attention scores: Q * K^T / sqrt(d_k)
-            var scores = _accel.MatrixMultiplyTranspose(Q, K);
-            float scale = 1.0f / MathF.Sqrt(_modelConfig.EmbeddingDim);
-            var scaledScores = _accel.MatrixScale(scores, scale);
-            cache.AttentionScores = scaledScores;
+            for (int head = 0; head < numHeads; head++)
+            {
+                int startIdx = head * headDim;
 
-            var attentionWeights = _accel.Softmax(scaledScores, mask);
-            cache.AttentionWeights = attentionWeights;
+                var Q_head = ExtractHead(Q, startIdx, headDim, seqLen);
+                var K_head = ExtractHead(K, startIdx, headDim, seqLen);
+                var V_head = ExtractHead(V, startIdx, headDim, seqLen);
 
-            var attnOut = _accel.MatrixMultiply(attentionWeights, V);
+                var scores = _accel.MatrixMultiplyTranspose(Q_head, K_head);
+                var scaledScores = _accel.MatrixScale(scores, scale);
 
-            var output = MatMulWithBias(attnOut, attention.WO, attention.BiasO);
-            cache.AttentionOutput = output;
+                var attnWeights = _accel.Softmax(scaledScores, mask);
+
+                var headOutput = _accel.MatrixMultiply(attnWeights, V_head);
+
+                for (int i = 0; i < seqLen; i++)
+                {
+                    for (int j = 0; j < headDim; j++)
+                    {
+                        concatenated[i, startIdx + j] = headOutput[i, j];
+                    }
+                }
+            }
+
+            cache.AttentionOutput = concatenated;
+
+            var output = MatMulWithBias(concatenated, attention.WO, attention.BiasO);
+
+            cache.AttentionScores = _accel.MatrixScale(_accel.MatrixMultiplyTranspose(Q, K), 1.0f / MathF.Sqrt(embeddingDim));
+            cache.AttentionWeights = _accel.Softmax(cache.AttentionScores, mask);
 
             return output;
         }
+
 
         private float[,] LayerNormForwardWithCache(float[,] input, float[] gamma, float[] beta, LayerNormCache cache)
         {
@@ -113,25 +215,133 @@ namespace CallaghanDev.ML.Transformers
             return output;
         }
 
+        private float BackwardPass(float[,] logits, int[] targets, ForwardCache cache)
+        {
+            try
+            {
+                int seqLen = logits.GetLength(0);
+                int vocabSize = logits.GetLength(1);
+
+                float loss = 0;
+                var dLogits = new float[seqLen, vocabSize];
+
+                for (int i = 0; i < Math.Min(seqLen, targets.Length); i++)
+                {
+                    float max = float.NegativeInfinity;
+                    for (int j = 0; j < vocabSize; j++)
+                    {
+                        max = Math.Max(max, logits[i, j]);
+                    }
+
+                    float sum = 0;
+                    var probs = new float[vocabSize];
+                    for (int j = 0; j < vocabSize; j++)
+                    {
+                        probs[j] = MathF.Exp(logits[i, j] - max);
+                        sum += probs[j];
+                    }
+
+                    for (int j = 0; j < vocabSize; j++)
+                    {
+                        probs[j] /= sum;
+                    }
+
+                    int targetToken = targets[i];
+                    loss -= MathF.Log(probs[targetToken] + 1e-10f);
+
+                    for (int j = 0; j < vocabSize; j++)
+                    {
+                        dLogits[i, j] = probs[j];
+                        if (j == targetToken)
+                        {
+                            dLogits[i, j] -= 1.0f;
+                        }
+                    }
+                }
+
+                int effectiveLen = Math.Min(seqLen, targets.Length);
+                loss /= effectiveLen;
+
+                float invLen = 1.0f / effectiveLen;
+                for (int i = 0; i < effectiveLen; i++)
+                {
+                    for (int j = 0; j < vocabSize; j++)
+                    {
+                        dLogits[i, j] *= invLen;
+                    }
+                }
+
+                BackpropOutputLayer(dLogits, cache.FinalHiddenStates);
+                var dX = ComputeOutputGradient(dLogits);
+
+                for (int layer = _modelConfig.NumLayers - 1; layer >= 0; layer--)
+                {
+                    dX = BackpropBlock(layer, dX, cache);
+                }
+
+                BackpropEmbeddings(dX, cache.EmbeddedInput, cache.TokenIds);
+
+                return loss;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"!!! EXCEPTION IN BackwardPass !!!");
+                Console.WriteLine($"Message: {ex.Message}");
+                Console.WriteLine($"Stack Trace:\n{ex.StackTrace}");
+                throw;
+            }
+        }
+
         private float[,] BackpropBlock(int layerIdx, float[,] dOut, ForwardCache cache)
         {
             var block = _model.Blocks[layerIdx];
+            int seqLen = dOut.GetLength(0);
+            int embeddingDim = _modelConfig.EmbeddingDim;
 
-            var dLN2 = BackpropLayerNorm(dOut, cache.LN2Caches[layerIdx], block.LN2Gamma, _gradients.LN2Grads[layerIdx]);
+            var dFFResidual = BackpropLayerNorm(dOut, cache.LN2Caches[layerIdx], block.LN2Gamma, _gradients.LN2Grads[layerIdx]);
 
-            var dFFNIn = dLN2;
-            var dFFNOut = dLN2;
+            var dNormed1_from_ffn = BackpropFFN(layerIdx, dFFResidual, cache);
 
-            var dLN1 = BackpropLayerNorm(dFFNIn, cache.LN1Caches[layerIdx], block.LN1Gamma, _gradients.LN1Grads[layerIdx]);
+            var dNormed1 = _accel.MatrixAdd(dFFResidual, dNormed1_from_ffn);
 
-            var dAttnIn = dLN1;
-            var dAttnOut = dLN1;
+            var dAttnResidual = BackpropLayerNorm(dNormed1, cache.LN1Caches[layerIdx], block.LN1Gamma, _gradients.LN1Grads[layerIdx]);
 
-            var dAttnInput = BackpropAttention(layerIdx, dAttnOut, cache.AttentionCaches[layerIdx]);
+            var dX_from_attn = BackpropAttention(layerIdx, dAttnResidual, cache.AttentionCaches[layerIdx]);
 
-            var dInput = _accel.MatrixAdd(dAttnInput, dFFNIn);
+            var dX = _accel.MatrixAdd(dAttnResidual, dX_from_attn);
 
-            return dInput;
+            return dX;
+        }
+
+        private float[,] BackpropFFN(int layerIdx, float[,] dFFOutput, ForwardCache cache)
+        {
+            var block = _model.Blocks[layerIdx];
+            int seqLen = dFFOutput.GetLength(0);
+            int embeddingDim = _modelConfig.EmbeddingDim;
+
+            var dNormed1 = new float[seqLen, embeddingDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+
+                var dOutRow = new float[embeddingDim];
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    dOutRow[j] = dFFOutput[i, j];
+                }
+
+                var inputRow = cache.FFNInputs[layerIdx][i];
+                block.FeedForwardNetwork.ForwardPassOnly(inputRow);
+
+                var dInputRow = block.FeedForwardNetwork.ComputeInputGradient(dOutRow, _ffnWeightGrads[layerIdx], _ffnBiasGrads[layerIdx]);
+
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    dNormed1[i, j] = dInputRow[j];
+                }
+            }
+
+            return dNormed1;
         }
 
         private float[,] BackpropLayerNorm(float[,] dOut, LayerNormCache cache, float[] gamma, LayerNormGradients grads)
@@ -144,7 +354,7 @@ namespace CallaghanDev.ML.Transformers
 
             for (int i = 0; i < batchSize; i++)
             {
-                float stdDev = MathF.Sqrt(cache.Variance[i] + epsilon);
+                float invStd = 1.0f / MathF.Sqrt(cache.Variance[i] + epsilon);
 
                 for (int j = 0; j < features; j++)
                 {
@@ -152,9 +362,33 @@ namespace CallaghanDev.ML.Transformers
                     grads.BetaGrad[j] += dOut[i, j];
                 }
 
+                var dNorm = new float[features];
                 for (int j = 0; j < features; j++)
                 {
-                    dInput[i, j] = dOut[i, j] * gamma[j] / stdDev;
+                    dNorm[j] = dOut[i, j] * gamma[j];
+                }
+
+                float dVar = 0;
+                float invStdCubed = invStd * invStd * invStd;
+                for (int j = 0; j < features; j++)
+                {
+                    float xMinusMean = cache.Input[i, j] - cache.Mean[i];
+                    dVar += dNorm[j] * xMinusMean * (-0.5f) * invStdCubed;
+                }
+
+                float dMean = 0;
+                for (int j = 0; j < features; j++)
+                {
+                    dMean += dNorm[j] * (-invStd);
+                }
+
+                float invN = 1.0f / features;
+                for (int j = 0; j < features; j++)
+                {
+                    float xMinusMean = cache.Input[i, j] - cache.Mean[i];
+                    dInput[i, j] = dNorm[j] * invStd
+                                 + dVar * 2.0f * xMinusMean * invN
+                                 + dMean * invN;
                 }
             }
 
@@ -166,38 +400,284 @@ namespace CallaghanDev.ML.Transformers
             var attention = _model.Blocks[layerIdx].Attention;
             var grads = _gradients.AttentionGrads[layerIdx];
 
-            var dAttnOut = new float[dOut.GetLength(0), dOut.GetLength(1)];
+            int seqLen = dOut.GetLength(0);
+            int embeddingDim = _modelConfig.EmbeddingDim;
+            int numHeads = _modelConfig.NumHeads;
+            int headDim = embeddingDim / numHeads;
 
-            for (int i = 0; i < dOut.GetLength(0); i++)
+            var dConcatenated = new float[seqLen, embeddingDim];
+
+            for (int i = 0; i < seqLen; i++)
             {
-                for (int j = 0; j < dOut.GetLength(1); j++)
+                for (int j = 0; j < embeddingDim; j++)
                 {
-                    for (int k = 0; k < cache.AttentionOutput.GetLength(1); k++)
+                    for (int k = 0; k < embeddingDim; k++)
                     {
                         grads.WO_Grad[k, j] += cache.AttentionOutput[i, k] * dOut[i, j];
                     }
                     grads.BiasO_Grad[j] += dOut[i, j];
 
-                    for (int k = 0; k < attention.WO.GetLength(0); k++)
+                    float sum = 0;
+                    for (int k = 0; k < embeddingDim; k++)
                     {
-                        dAttnOut[i, k] += dOut[i, j] * attention.WO[k, j];
+                        sum += dOut[i, k] * attention.WO[j, k];
+                    }
+                    dConcatenated[i, j] = sum;
+                }
+            }
+
+            var dQ_full = new float[seqLen, embeddingDim];
+            var dK_full = new float[seqLen, embeddingDim];
+            var dV_full = new float[seqLen, embeddingDim];
+
+            float scale = 1.0f / MathF.Sqrt(headDim);
+
+            for (int head = 0; head < numHeads; head++)
+            {
+                int startIdx = head * headDim;
+
+                var Q_head = ExtractHead(cache.Q, startIdx, headDim, seqLen);
+                var K_head = ExtractHead(cache.K, startIdx, headDim, seqLen);
+                var V_head = ExtractHead(cache.V, startIdx, headDim, seqLen);
+                var dHeadOutput = ExtractHead(dConcatenated, startIdx, headDim, seqLen);
+
+                var scores = _accel.MatrixMultiplyTranspose(Q_head, K_head);
+                var scaledScores = _accel.MatrixScale(scores, scale);
+
+                var attnWeights = new float[seqLen, seqLen];
+                for (int i = 0; i < seqLen; i++)
+                {
+                    float max = float.NegativeInfinity;
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        if (_modelConfig.UseDecoderOnly && j > i)
+                        {
+                            continue;
+                        }
+                        max = Math.Max(max, scaledScores[i, j]);
+                    }
+                    float expSum = 0;
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        if (_modelConfig.UseDecoderOnly && j > i)
+                        {
+                            attnWeights[i, j] = 0;
+                            continue;
+                        }
+                        attnWeights[i, j] = MathF.Exp(scaledScores[i, j] - max);
+                        expSum += attnWeights[i, j];
+                    }
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        attnWeights[i, j] /= (expSum + 1e-10f);
+                    }
+                }
+
+                var dAttnWeights = new float[seqLen, seqLen];
+                var dV_head = new float[seqLen, headDim];
+
+                for (int i = 0; i < seqLen; i++)
+                {
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        float sum = 0;
+                        for (int k = 0; k < headDim; k++)
+                        {
+                            sum += dHeadOutput[i, k] * V_head[j, k];
+                        }
+                        dAttnWeights[i, j] = sum;
+                    }
+                }
+
+                for (int i = 0; i < seqLen; i++)
+                {
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        float sum = 0;
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            sum += attnWeights[j, i] * dHeadOutput[j, k];
+                        }
+                        dV_head[i, k] = sum;
+                    }
+                }
+
+                var dScaledScores = new float[seqLen, seqLen];
+                for (int i = 0; i < seqLen; i++)
+                {
+                    float dot = 0;
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        dot += attnWeights[i, j] * dAttnWeights[i, j];
+                    }
+
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        dScaledScores[i, j] = attnWeights[i, j] * (dAttnWeights[i, j] - dot);
+                        if (_modelConfig.UseDecoderOnly && j > i)
+                        {
+                            dScaledScores[i, j] = 0;
+                        }
+                    }
+                }
+
+                var dScores = new float[seqLen, seqLen];
+                for (int i = 0; i < seqLen; i++)
+                {
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        dScores[i, j] = dScaledScores[i, j] * scale;
+                    }
+                }
+
+                var dQ_head = new float[seqLen, headDim];
+                var dK_head = new float[seqLen, headDim];
+
+                for (int i = 0; i < seqLen; i++)
+                {
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        float sum = 0;
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            sum += dScores[i, j] * K_head[j, k];
+                        }
+                        dQ_head[i, k] = sum;
+                    }
+                }
+
+                for (int j = 0; j < seqLen; j++)
+                {
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        float sum = 0;
+                        for (int i = 0; i < seqLen; i++)
+                        {
+                            sum += dScores[i, j] * Q_head[i, k];
+                        }
+                        dK_head[j, k] = sum;
+                    }
+                }
+
+                for (int i = 0; i < seqLen; i++)
+                {
+                    for (int j = 0; j < headDim; j++)
+                    {
+                        dQ_full[i, startIdx + j] += dQ_head[i, j];
+                        dK_full[i, startIdx + j] += dK_head[i, j];
+                        dV_full[i, startIdx + j] += dV_head[i, j];
                     }
                 }
             }
 
-            // TODO: Improve this
-            // again a simplified backprop through attention mechanism
-            // (Full implementation would include V, K, Q gradients)
+            var dInput = new float[seqLen, embeddingDim];
 
-            return dAttnOut;
+            BackpropLinearProjection(cache.Input, dQ_full, attention.WQ, grads.WQ_Grad, grads.BiasQ_Grad, dInput, seqLen, embeddingDim);
+
+            BackpropLinearProjection(cache.Input, dK_full, attention.WK, grads.WK_Grad, grads.BiasK_Grad, dInput, seqLen, embeddingDim);
+
+            BackpropLinearProjection(cache.Input, dV_full, attention.WV, grads.WV_Grad, grads.BiasV_Grad, dInput, seqLen, embeddingDim);
+
+            return dInput;
         }
 
-        private void BackpropEmbeddings(float[,] dX, float[,] embedded)
+        private void BackpropOutputLayer(float[,] dLogits, float[,] input)
         {
-            // TODO: Improve this
-            // Gradient flows to token embeddings
-            // (Positional encodings are fixed, so no gradient)
-            // This is accumulated across the batch
+            int seqLen = dLogits.GetLength(0);
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int v = 0; v < _modelConfig.VocabSize; v++)
+                {
+                    for (int e = 0; e < _modelConfig.EmbeddingDim; e++)
+                    {
+                        _gradients.OutputProjectionGrad[v, e] += input[i, e] * dLogits[i, v];
+                    }
+                }
+
+                for (int v = 0; v < _modelConfig.VocabSize; v++)
+                {
+                    _gradients.OutputBiasGrad[v] += dLogits[i, v];
+                }
+            }
+        }
+
+        private float[,] ComputeOutputGradient(float[,] dLogits)
+        {
+            int seqLen = dLogits.GetLength(0);
+            int vocabSize = dLogits.GetLength(1);
+            var dX = new float[seqLen, _modelConfig.EmbeddingDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int e = 0; e < _modelConfig.EmbeddingDim; e++)
+                {
+                    float grad = 0;
+                    for (int v = 0; v < vocabSize; v++)
+                    {
+                        grad += dLogits[i, v] * _model.OutputProjection[v, e];
+                    }
+                    dX[i, e] = grad;
+                }
+            }
+
+            return dX;
+        }
+
+        private void BackpropEmbeddings(float[,] dX, float[,] embedded, int[] tokenIds)
+        {
+            int seqLen = dX.GetLength(0);
+            int embeddingDim = dX.GetLength(1);
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                int tokenId = tokenIds[i];
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    _gradients.TokenEmbeddingGrad[tokenId, j] += dX[i, j];
+                }
+            }
+        }
+
+        private void BackpropLinearProjection(float[,] input, float[,] dOutput, float[,] weights, float[,] weightGrad, float[] biasGrad, float[,] dInput, int seqLen, int embeddingDim)
+        {
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    float dOutVal = dOutput[i, j];
+
+                    for (int k = 0; k < embeddingDim; k++)
+                    {
+                        weightGrad[k, j] += input[i, k] * dOutVal;
+                    }
+
+                    biasGrad[j] += dOutVal;
+                }
+
+                for (int k = 0; k < embeddingDim; k++)
+                {
+                    float sum = 0;
+                    for (int j = 0; j < embeddingDim; j++)
+                    {
+                        sum += dOutput[i, j] * weights[k, j];
+                    }
+                    dInput[i, k] += sum;
+                }
+            }
+        }
+
+        private float[,] ExtractHead(float[,] matrix, int startIdx, int headDim, int seqLen)
+        {
+            var result = new float[seqLen, headDim];
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j < headDim; j++)
+                {
+                    result[i, j] = matrix[i, startIdx + j];
+                }
+            }
+            return result;
         }
 
         private void UpdateParameters(float learningRate)
@@ -225,6 +705,7 @@ namespace CallaghanDev.ML.Transformers
                 UpdateVector(block.LN2Gamma, ln2Grad.GammaGrad, learningRate);
                 UpdateVector(block.LN2Beta, ln2Grad.BetaGrad, learningRate);
 
+                block.FeedForwardNetwork.ApplyExternalGradients(_ffnWeightGrads[i], _ffnBiasGrads[i], learningRate);
             }
 
             UpdateMatrix(_model.OutputProjection, _gradients.OutputProjectionGrad, learningRate);
@@ -235,7 +716,6 @@ namespace CallaghanDev.ML.Transformers
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
-
             for (int i = 0; i < rows; i++)
             {
                 for (int j = 0; j < cols; j++)
@@ -252,7 +732,6 @@ namespace CallaghanDev.ML.Transformers
                 weights[i] -= lr * gradients[i];
             }
         }
-
         private void ClipGradients(float threshold)
         {
             float totalNorm = ComputeGradientNorm();
@@ -278,6 +757,22 @@ namespace CallaghanDev.ML.Transformers
                 sum += MatrixNorm(g.WK_Grad);
                 sum += MatrixNorm(g.WV_Grad);
                 sum += MatrixNorm(g.WO_Grad);
+                sum += VectorNorm(g.BiasQ_Grad);
+                sum += VectorNorm(g.BiasK_Grad);
+                sum += VectorNorm(g.BiasV_Grad);
+                sum += VectorNorm(g.BiasO_Grad);
+            }
+
+            for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
+            {
+                foreach (var wGrad in _ffnWeightGrads[layer])
+                {
+                    sum += MatrixNorm(wGrad);
+                }
+                foreach (var bGrad in _ffnBiasGrads[layer])
+                {
+                    sum += VectorNorm(bGrad);
+                }
             }
 
             return MathF.Sqrt(sum);
@@ -323,6 +818,18 @@ namespace CallaghanDev.ML.Transformers
                 ScaleVector(g.BiasV_Grad, scale);
                 ScaleVector(g.BiasO_Grad, scale);
             }
+
+            for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
+            {
+                foreach (var wGrad in _ffnWeightGrads[layer])
+                {
+                    ScaleMatrix(wGrad, scale);
+                }
+                foreach (var bGrad in _ffnBiasGrads[layer])
+                {
+                    ScaleVector(bGrad, scale);
+                }
+            }
         }
 
         private void ScaleMatrix(float[,] matrix, float scale)
@@ -343,108 +850,34 @@ namespace CallaghanDev.ML.Transformers
                 vector[i] *= scale;
             }
         }
-
-        public float Validate(int[][] validationSequences)
+        private void ZeroAllGradients()
         {
-            float totalLoss = 0;
-            int count = 0;
+            _gradients.Zero();
 
-            foreach (var sequence in validationSequences)
+            for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
             {
-                if (sequence.Length < 2) continue;
-
-                var input = sequence.Take(sequence.Length - 1).ToArray();
-                var target = sequence.Skip(1).ToArray();
-
-                var logits = _model.Forward(input);
-
-                // Compute loss
-                for (int i = 0; i < Math.Min(logits.GetLength(0), target.Length); i++)
+                foreach (var wGrad in _ffnWeightGrads[layer])
                 {
-                    float max = float.NegativeInfinity;
-                    for (int j = 0; j < _modelConfig.VocabSize; j++)
-                    {
-                        max = Math.Max(max, logits[i, j]);
-                    }
-
-                    float sum = 0;
-                    for (int j = 0; j < _modelConfig.VocabSize; j++)
-                    {
-                        sum += MathF.Exp(logits[i, j] - max);
-                    }
-                    float prob = MathF.Exp(logits[i, target[i]] - max) / sum;
-                    totalLoss -= MathF.Log(prob + 1e-10f);
-                    count++;
+                    ZeroMatrix(wGrad);
+                }
+                foreach (var bGrad in _ffnBiasGrads[layer])
+                {
+                    Array.Clear(bGrad, 0, bGrad.Length);
                 }
             }
-
-            return count > 0 ? totalLoss / count : 0;
         }
 
-        private int[][] ShuffleData(int[][] data)
+        private void ZeroMatrix(float[,] matrix)
         {
-            var indices = Enumerable.Range(0, data.Length).OrderBy(x => _random.Next()).ToArray();
-            return indices.Select(i => data[i]).ToArray();
-        }
-
-        private bool[,] CreateCausalMask(int seqLen)
-        {
-            var mask = new bool[seqLen, seqLen];
-            for (int i = 0; i < seqLen; i++)
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
             {
-                for (int j = 0; j <= i; j++)
+                for (int j = 0; j < cols; j++)
                 {
-                    mask[i, j] = true;
+                    matrix[i, j] = 0;
                 }
             }
-            return mask;
-        }
-
-        private float[,] MatMulWithBias(float[,] input, float[,] weights, float[] bias)
-        {
-            int seqLen = input.GetLength(0);
-            int outputDim = weights.GetLength(1);
-            var result = new float[seqLen, outputDim];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                var inputRow = new float[input.GetLength(1)];
-                for (int k = 0; k < input.GetLength(1); k++)
-                {
-                    inputRow[k] = input[i, k];
-                }
-
-                var outputRow = _accel.CalculateDotProduct(weights, inputRow);
-
-                for (int j = 0; j < outputDim; j++)
-                {
-                    result[i, j] = outputRow[j] + bias[j];
-                }
-            }
-            return result;
-        }
-
-        private float[,] ProjectToVocab(float[,] hidden)
-        {
-            int seqLen = hidden.GetLength(0);
-            var logits = new float[seqLen, _modelConfig.VocabSize];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                var inputRow = new float[_modelConfig.EmbeddingDim];
-                for (int k = 0; k < _modelConfig.EmbeddingDim; k++)
-                {
-                    inputRow[k] = hidden[i, k];
-                }
-
-                var outputRow = _accel.CalculateDotProduct(_model.OutputProjection, inputRow);
-
-                for (int j = 0; j < _modelConfig.VocabSize; j++)
-                {
-                    logits[i, j] = outputRow[j] + _model.OutputBias[j];
-                }
-            }
-            return logits;
         }
 
         public void Train(int[][] sequences, int[][] validationSequences = null)
@@ -523,7 +956,7 @@ namespace CallaghanDev.ML.Transformers
 
         private float TrainBatch(int[][] batch, float learningRate)
         {
-            _gradients.Zero();
+            ZeroAllGradients();
             float totalLoss = 0;
             int validCount = 0;
 
@@ -630,8 +1063,8 @@ namespace CallaghanDev.ML.Transformers
                 Console.WriteLine("WARNING: No valid sequences in batch. Returning zero loss.");
                 return 0f;
             }
-
-            ScaleGradients(1.0f / validCount);
+            float invCount = 1.0f / validCount;
+            ScaleGradients(invCount);
 
             if (_trainConfig.UseGradientClipping)
             {
@@ -643,177 +1076,111 @@ namespace CallaghanDev.ML.Transformers
             return totalLoss / validCount;
         }
 
-        private float[,] ForwardWithCache(int[] tokenIds, ForwardCache cache)
+
+        public float Validate(int[][] validationSequences)
         {
-            int seqLen = tokenIds.Length;
+            float totalLoss = 0;
+            int count = 0;
 
-            var embedded = new float[seqLen, _modelConfig.EmbeddingDim];
-            for (int i = 0; i < seqLen; i++)
+            foreach (var sequence in validationSequences)
             {
-                for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
+                if (sequence.Length < 2)
                 {
-                    embedded[i, j] = _model.TokenEmbedding[tokenIds[i], j] + _model.PositionalEncoding[i, j];
+                    continue;
                 }
-            }
-            cache.EmbeddedInput = embedded;
 
-            bool[,] mask = null;
-            if (_modelConfig.UseDecoderOnly)
-            {
-                mask = CreateCausalMask(seqLen);
-            }
+                var input = sequence.Take(sequence.Length - 1).ToArray();
+                var target = sequence.Skip(1).ToArray();
 
-            var x = embedded;
-            for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
-            {
-                cache.LayerInputs.Add(x);
+                var logits = _model.Forward(input);
 
-                var block = _model.Blocks[layer];
-
-                var attnCache = cache.AttentionCaches[layer];
-                attnCache.Input = x;
-                var attnOutput = AttentionForwardWithCache(block.Attention, x, mask, attnCache);
-                var attnResidual = _accel.MatrixAdd(x, attnOutput);
-
-                var ln1Cache = cache.LN1Caches[layer];
-                var normed1 = LayerNormForwardWithCache(attnResidual, block.LN1Gamma, block.LN1Beta, ln1Cache);
-
-                var ffOutput = new float[seqLen, _modelConfig.EmbeddingDim];
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var inputRow = new float[_modelConfig.EmbeddingDim];
-                    for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
-                    {
-                        inputRow[j] = normed1[i, j];
-                    }
-                    var outputRow = block.FeedForwardNetwork.Predict(inputRow);
-
-                    for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
-                    {
-                        ffOutput[i, j] = outputRow[j];
-                    }
-                }
-                cache.FFNOutputs.Add(ffOutput);
-
-                var ffResidual = _accel.MatrixAdd(normed1, ffOutput);
-
-                var ln2Cache = cache.LN2Caches[layer];
-                x = LayerNormForwardWithCache(ffResidual, block.LN2Gamma, block.LN2Beta, ln2Cache);
-            }
-
-            cache.FinalHiddenStates = x;
-
-            return ProjectToVocab(x);
-        }
-
-        private float BackwardPass(float[,] logits, int[] targets, ForwardCache cache)
-        {
-            try
-            {
-                int seqLen = logits.GetLength(0);
-                int vocabSize = logits.GetLength(1);
-
-                float loss = 0;
-                var dLogits = new float[seqLen, vocabSize];
-
-
-                for (int i = 0; i < Math.Min(seqLen, targets.Length); i++)
+                for (int i = 0; i < Math.Min(logits.GetLength(0), target.Length); i++)
                 {
                     float max = float.NegativeInfinity;
-                    for (int j = 0; j < vocabSize; j++)
+                    for (int j = 0; j < _modelConfig.VocabSize; j++)
                     {
                         max = Math.Max(max, logits[i, j]);
                     }
 
                     float sum = 0;
-                    var probs = new float[vocabSize];
-                    for (int j = 0; j < vocabSize; j++)
+                    for (int j = 0; j < _modelConfig.VocabSize; j++)
                     {
-                        probs[j] = MathF.Exp(logits[i, j] - max);
-                        sum += probs[j];
+                        sum += MathF.Exp(logits[i, j] - max);
                     }
-
-                    for (int j = 0; j < vocabSize; j++)
-                    {
-                        probs[j] /= sum;
-                    }
-
-                    int targetToken = targets[i];
-                    loss -= MathF.Log(probs[targetToken] + 1e-10f);
-
-                    for (int j = 0; j < vocabSize; j++)
-                    {
-                        dLogits[i, j] = probs[j];
-                        if (j == targetToken)
-                        {
-                            dLogits[i, j] -= 1.0f;
-                        }
-                    }
+                    float prob = MathF.Exp(logits[i, target[i]] - max) / sum;
+                    totalLoss -= MathF.Log(prob + 1e-10f);
+                    count++;
                 }
-
-                loss /= Math.Min(seqLen, targets.Length);
-
-                BackpropOutputLayer(dLogits, cache.FinalHiddenStates);
-
-                var dX = ComputeOutputGradient(dLogits);
-
-                for (int layer = _modelConfig.NumLayers - 1; layer >= 0; layer--)
-                {
-                    dX = BackpropBlock(layer, dX, cache);
-                }
-
-                BackpropEmbeddings(dX, cache.EmbeddedInput);
-                return loss;
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"!!! EXCEPTION IN BackwardPass !!!");
-                Console.WriteLine($"Message: {ex.Message}");
-                Console.WriteLine($"Stack Trace:\n{ex.StackTrace}");
-                throw;
-            }
+
+            return count > 0 ? totalLoss / count : 0;
         }
-        private void BackpropOutputLayer(float[,] dLogits, float[,] input)
+
+
+        private int[][] ShuffleData(int[][] data)
         {
-            int seqLen = dLogits.GetLength(0);
+            var indices = Enumerable.Range(0, data.Length).OrderBy(x => _random.Next()).ToArray();
+            return indices.Select(i => data[i]).ToArray();
+        }
+
+        private bool[,] CreateCausalMask(int seqLen)
+        {
+            var mask = new bool[seqLen, seqLen];
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j <= i; j++)
+                {
+                    mask[i, j] = true;
+                }
+            }
+            return mask;
+        }
+
+        private float[,] MatMulWithBias(float[,] input, float[,] weights, float[] bias)
+        {
+            int seqLen = input.GetLength(0);
+            int outputDim = weights.GetLength(1);
+            var result = new float[seqLen, outputDim];
 
             for (int i = 0; i < seqLen; i++)
             {
-                for (int v = 0; v < _modelConfig.VocabSize; v++)
+                var inputRow = new float[input.GetLength(1)];
+                for (int k = 0; k < input.GetLength(1); k++)
                 {
-                    for (int e = 0; e < _modelConfig.EmbeddingDim; e++)
-                    {
-                        _gradients.OutputProjectionGrad[v, e] += input[i, e] * dLogits[i, v];
-                    }
+                    inputRow[k] = input[i, k];
                 }
 
-                for (int v = 0; v < _modelConfig.VocabSize; v++)
+                var outputRow = _accel.CalculateDotProduct(weights, inputRow);
+
+                for (int j = 0; j < outputDim; j++)
                 {
-                    _gradients.OutputBiasGrad[v] += dLogits[i, v];
+                    result[i, j] = outputRow[j] + bias[j];
                 }
             }
+            return result;
         }
 
-        private float[,] ComputeOutputGradient(float[,] dLogits)
+        private float[,] ProjectToVocab(float[,] hidden)
         {
-            int seqLen = dLogits.GetLength(0);
-            int vocabSize = dLogits.GetLength(1);
-            var dX = new float[seqLen, _modelConfig.EmbeddingDim];
+            int seqLen = hidden.GetLength(0);
+            var logits = new float[seqLen, _modelConfig.VocabSize];
 
             for (int i = 0; i < seqLen; i++)
             {
-                for (int e = 0; e < _modelConfig.EmbeddingDim; e++)
+                var inputRow = new float[_modelConfig.EmbeddingDim];
+                for (int k = 0; k < _modelConfig.EmbeddingDim; k++)
                 {
-                    float grad = 0;
-                    for (int v = 0; v < vocabSize; v++)
-                    {
-                        grad += dLogits[i, v] * _model.OutputProjection[v, e];
-                    }
-                    dX[i, e] = grad;
+                    inputRow[k] = hidden[i, k];
+                }
+
+                var outputRow = _accel.CalculateDotProduct(_model.OutputProjection, inputRow);
+
+                for (int j = 0; j < _modelConfig.VocabSize; j++)
+                {
+                    logits[i, j] = outputRow[j] + _model.OutputBias[j];
                 }
             }
-
-            return dX;
+            return logits;
         }
     }
 }

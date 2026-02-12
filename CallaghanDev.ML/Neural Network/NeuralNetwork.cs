@@ -615,5 +615,123 @@ namespace CallaghanDev.ML
 
         #endregion
 
+        #region Logic needed for transformer
+
+        public float[] ForwardPassOnly(float[] input)
+        {
+            SetInputLayer(input);
+            ForwardPropagate();
+            return data.layers[^1].Activations.ToArray();
+        }
+
+        public float[] ComputeInputGradient(float[] dOutput, List<float[,]> weightGradients = null, List<float[]> biasGradients = null)
+        {
+            int L = data.layers.Length - 1;
+
+            var outLayer = data.layers[L];
+            var outDeltas = accelerationManager.CalculateOutputGradients(dOutput, outLayer.Derivatives);
+
+            for (int i = 0; i < outDeltas.Length; i++)
+            {
+                outDeltas[i] = -outDeltas[i]; //TODO: These needs to undo the negation from CalculateOutputGradients. I must look into this bug, its warping my mind
+            }
+
+            if (weightGradients != null && biasGradients != null)
+            {
+                AccumulateGradients(L, outDeltas, data.layers[L - 1].Activations, weightGradients, biasGradients);
+            }
+
+            float[] currentDeltas = outDeltas;
+            for (int i = L - 1; i > 0; i--)
+            {
+                var layerAbove = data.layers[i + 1];
+                var layer = data.layers[i];
+                var hidDeltas = accelerationManager.CalculateHiddenGradients(layerAbove.Weights, currentDeltas, layer.Derivatives);
+
+                if (weightGradients != null && biasGradients != null)
+                {
+                    AccumulateGradients(i, hidDeltas, data.layers[i - 1].Activations, weightGradients, biasGradients);
+                }
+
+                currentDeltas = hidDeltas;
+            }
+
+            var firstHiddenLayer = data.layers[1];
+            int inputSize = data.layers[0].Size;
+            var dInput = new float[inputSize];
+
+            for (int j = 0; j < inputSize; j++)
+            {
+                float sum = 0;
+                for (int i = 0; i < firstHiddenLayer.Size; i++)
+                {
+                    sum += firstHiddenLayer.Weights[i, j] * currentDeltas[i];
+                }
+                dInput[j] = sum;
+            }
+
+            return dInput;
+        }
+
+        public void ApplyExternalGradients(List<float[,]> weightGradients, List<float[]> biasGradients, float learningRate)
+        {
+            for (int idx = 0; idx < weightGradients.Count; idx++)
+            {
+                int layerIdx = idx + 1;
+                var layer = data.layers[layerIdx];
+                var wGrad = weightGradients[idx];
+                var bGrad = biasGradients[idx];
+
+                int rows = layer.Weights.GetLength(0);
+                int cols = layer.Weights.GetLength(1);
+
+                for (int i = 0; i < rows; i++)
+                {
+                    for (int j = 0; j < cols; j++)
+                    {
+                        layer.Weights[i, j] -= learningRate * wGrad[i, j];
+                    }
+                }
+
+                for (int i = 0; i < layer.Biases.Length; i++)
+                {
+                    layer.Biases[i] -= learningRate * bGrad[i];
+                }
+            }
+        }
+
+        public (List<float[,]> weightGrads, List<float[]> biasGrads) CreateGradientStorage()
+        {
+            var wGrads = new List<float[,]>();
+            var bGrads = new List<float[]>();
+
+            for (int l = 1; l < data.layers.Length; l++)
+            {
+                var layer = data.layers[l];
+                wGrads.Add(new float[layer.Size, layer.InputSize]);
+                bGrads.Add(new float[layer.Size]);
+            }
+
+            return (wGrads, bGrads);
+        }
+
+        private void AccumulateGradients(int layerIdx, float[] deltas, float[] prevActivations, List<float[,]> weightGradients, List<float[]> biasGradients)
+        {
+            int gradIdx = layerIdx - 1;
+            var wGrad = weightGradients[gradIdx];
+            var bGrad = biasGradients[gradIdx];
+            int layerSize = data.layers[layerIdx].Size;
+            int prevSize = prevActivations.Length;
+
+            for (int i = 0; i < layerSize; i++)
+            {
+                for (int j = 0; j < prevSize; j++)
+                {
+                    wGrad[i, j] += deltas[i] * prevActivations[j];
+                }
+                bGrad[i] += deltas[i];
+            }
+        }
+        #endregion
     }
 }
