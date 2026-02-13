@@ -248,18 +248,14 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #region Kernel implementations
 
-        private static void BatchKernel(Index2D idx,
-            ArrayView2D<float, Stride2D.DenseX> X,
-            ArrayView2D<float, Stride2D.DenseX> W,
-            ArrayView1D<float, Stride1D.Dense> B,
-            ArrayView2D<float, Stride2D.DenseX> A,
-            ArrayView2D<float, Stride2D.DenseX> D,
-            ActivationType t)
+        private static void BatchKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> X, ArrayView2D<float, Stride2D.DenseX> W, ArrayView1D<float, Stride1D.Dense> B, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> D, ActivationType t)
         {
             int i = idx.X, j = idx.Y;
             float sum = 0;
             for (int k = 0; k < X.Extent.Y; ++k)
+            {
                 sum += X[i, k] * W[j, k];
+            }
             float z = sum + B[j];
 
             float a, d;
