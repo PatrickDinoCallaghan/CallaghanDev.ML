@@ -14,6 +14,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="FailureType.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ILGPU" Version="1.5.1" />
     <PackageReference Include="ILGPU.Algorithms" Version="1.5.1" />
     <PackageReference Include="MathNet.Symbolics" Version="0.25.0" />
