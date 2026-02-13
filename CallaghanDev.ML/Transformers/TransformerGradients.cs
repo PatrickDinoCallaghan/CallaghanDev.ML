@@ -10,6 +10,9 @@ namespace CallaghanDev.ML.Transformers
     {
         public float[,] TokenEmbeddingGrad { get; set; }
 
+        public float[,] InputProjectionGrad { get; set; }
+        public float[] InputProjectionBiasGrad { get; set; }
+
         public List<AttentionGradients> AttentionGrads { get; set; }
         public List<LayerNormGradients> LN1Grads { get; set; }
         public List<LayerNormGradients> LN2Grads { get; set; }
@@ -17,8 +20,41 @@ namespace CallaghanDev.ML.Transformers
         public float[,] OutputProjectionGrad { get; set; }
         public float[] OutputBiasGrad { get; set; }
 
+        private readonly bool _usesDiscreteTokens;
+
+        public TransformerGradients(TransformerConfig config)
+        {
+            _usesDiscreteTokens = config.UsesDiscreteTokens;
+
+            if (_usesDiscreteTokens)
+            {
+                TokenEmbeddingGrad = new float[config.VocabSize, config.EmbeddingDim];
+            }
+            else
+            {
+                InputProjectionGrad = new float[config.EmbeddingDim, config.InputFeatureDim];
+                InputProjectionBiasGrad = new float[config.EmbeddingDim];
+            }
+
+            AttentionGrads = new List<AttentionGradients>();
+            LN1Grads = new List<LayerNormGradients>();
+            LN2Grads = new List<LayerNormGradients>();
+
+            for (int i = 0; i < config.NumLayers; i++)
+            {
+                AttentionGrads.Add(new AttentionGradients(config.EmbeddingDim));
+                LN1Grads.Add(new LayerNormGradients(config.EmbeddingDim));
+                LN2Grads.Add(new LayerNormGradients(config.EmbeddingDim));
+            }
+
+            int outputDim = config.EffectiveOutputDim;
+            OutputProjectionGrad = new float[outputDim, config.EmbeddingDim];
+            OutputBiasGrad = new float[outputDim];
+        }
+
         public TransformerGradients(int numLayers, int embeddingDim, int vocabSize)
         {
+            _usesDiscreteTokens = true;
             TokenEmbeddingGrad = new float[vocabSize, embeddingDim];
 
             AttentionGrads = new List<AttentionGradients>();
@@ -37,17 +73,26 @@ namespace CallaghanDev.ML.Transformers
 
         public void Zero()
         {
-            ZeroMatrix(TokenEmbeddingGrad);
-            foreach (var g in AttentionGrads) 
-            { 
-                g.Zero(); 
+            if (_usesDiscreteTokens)
+            {
+                ZeroMatrix(TokenEmbeddingGrad);
+            }
+            else
+            {
+                ZeroMatrix(InputProjectionGrad);
+                Array.Clear(InputProjectionBiasGrad, 0, InputProjectionBiasGrad.Length);
+            }
+
+            foreach (var g in AttentionGrads)
+            {
+                g.Zero();
             }
             foreach (var g in LN1Grads)
-            { 
-                g.Zero(); 
+            {
+                g.Zero();
             }
             foreach (var g in LN2Grads)
-            { 
+            {
                 g.Zero();
             }
             ZeroMatrix(OutputProjectionGrad);
@@ -62,7 +107,6 @@ namespace CallaghanDev.ML.Transformers
             {
                 for (int j = 0; j < cols; j++)
                 {
-
                     matrix[i, j] = 0;
                 }
             }

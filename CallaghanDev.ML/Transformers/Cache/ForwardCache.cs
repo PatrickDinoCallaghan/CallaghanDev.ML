@@ -18,18 +18,13 @@ namespace CallaghanDev.ML.Transformers.Cache
 
         public List<float[,]> FFNOutputs { get; set; }
 
-        /// <summary>
-        /// Stores the FFN input rows for each layer, needed for FFN backprop.
-        /// FFNInputs[layer][seqPos] = the input vector fed to FFN.Predict()
-        /// </summary>
         public List<float[][]> FFNInputs { get; set; }
 
         public float[,] EmbeddedInput { get; set; }
 
-        /// <summary>
-        /// The token IDs used in the forward pass, needed for embedding backprop.
-        /// </summary>
         public int[] TokenIds { get; set; }
+
+        public float[,] ContinuousInput { get; set; }
 
         public ForwardCache(int numLayers)
         {

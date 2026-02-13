@@ -5,7 +5,7 @@ using MathNet.Symbolics;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
-    public class TestFNN
+    public class NeuralNetworkBooleanLogicTests
     {
         public void NeuralNetworkXorTestPolynomial()
         {

@@ -59,16 +59,19 @@ namespace CallaghanDev.ML
         public override string ToString()
         {
             var sb = new StringBuilder();
+
             sb.AppendLine("Parameters:");
             sb.AppendLine($"  AccelerationType: {AccelerationType}");
             sb.AppendLine($"  ActivationType: {AccelerationType}");
             sb.AppendLine($"  CostFunction: {CostFunction}");
             sb.AppendLine($"  L2RegulationLamda: {L2RegulationLamda}");
             sb.AppendLine($"  GradientClippingThreshold: {GradientClippingThreshold}");
+
             if (CostFunction == CostFunctionType.huberLoss)
             {
                 sb.AppendLine($"  HuberLossDelta: {HuberLossDelta}");
             }
+
             return sb.ToString();
         }
         public Parameters Clone()
@@ -106,7 +109,9 @@ namespace CallaghanDev.ML
         public static Parameters LoadFromFile(string filePath)
         {
             if (!File.Exists(filePath))
+            {
                 throw new FileNotFoundException("Parameters file not found.", filePath);
+            }
 
             var json = File.ReadAllText(filePath);
             return JsonConvert.DeserializeObject<Parameters>(json);

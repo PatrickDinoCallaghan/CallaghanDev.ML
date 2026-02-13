@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML.Transformers
 {   
-    //TODO: I wondered what  else I could use this fore beyond test so created a enum i could use for the following datasets this is usefull for
     public enum TransformerDataType
     {
         /// <summary>

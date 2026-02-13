@@ -127,14 +127,14 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
 
-            Console.WriteLine($"Character vocabulary: {charVocab.Count} characters");
+            //Console.WriteLine($"Character vocabulary: {charVocab.Count} characters");
 
-            Console.WriteLine($"Step 2: Learning BPE merges (target: {vocabSize - nextId} merges)...");
+            //Console.WriteLine($"Step 2: Learning BPE merges (target: {vocabSize - nextId} merges)...");
             LearnBPEMerges(wordFreqs, vocabSize - nextId, minFrequency);
 
-            Console.WriteLine($"Training complete!");
-            Console.WriteLine($"Final vocabulary size: {VocabSize}");
-            Console.WriteLine($"Number of merges: {_merges.Count}");
+            //Console.WriteLine($"Training complete!");
+            //Console.WriteLine($"Final vocabulary size: {VocabSize}");
+            //Console.WriteLine($"Number of merges: {_merges.Count}");
         }
 
         private Dictionary<string, int> GetWordFrequencies(string[] texts)
@@ -253,13 +253,8 @@ namespace CallaghanDev.ML.Transformers
                 }
                 words = newWords;
 
-                if ((mergeIdx + 1) % 100 == 0)
-                {
-                    Console.Write($"\r  Learned {mergeIdx + 1}/{numMerges} merges...");
-                }
             }
 
-            Console.WriteLine($"\r  Learned {_merges.Count} merges       ");
         }
 
         private List<string> ApplyMerge(List<string> word, string left, string right)

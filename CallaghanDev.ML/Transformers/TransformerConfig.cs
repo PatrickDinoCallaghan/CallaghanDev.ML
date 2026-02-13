@@ -18,8 +18,14 @@ namespace CallaghanDev.ML.Transformers
         public int FeedForwardDim { get; set; } = 2048;
         public ActivationType FFNActivationType { get; set; } = ActivationType.Relu;
         public bool UseDecoderOnly { get; set; } = true;
+        public TransformerDataType DataType { get; set; } = TransformerDataType.Text;
+        public int InputFeatureDim { get; set; } = 1;
+        public int OutputDim { get; set; } = 1;
+        public bool UsesDiscreteTokens =>  DataType == TransformerDataType.Text ||  DataType == TransformerDataType.SymbolicSequence;
+        public bool UsesClassificationOutput => DataType != TransformerDataType.TimeSeriesRegression;
+        public int EffectiveOutputDim => UsesDiscreteTokens ? VocabSize : OutputDim;
 
-        //integration with my existing FFNeural network
+        // Using the neural network I have already programed
         public AccelerationType AccelerationType { get; set; } = AccelerationType.CPU;
         public int AccelerationDeviceId { get; set; } = 0;
         public CostFunctionType CostFunction { get; set; } = CostFunctionType.mse;
