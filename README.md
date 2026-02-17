@@ -825,7 +825,315 @@ var nn = new NeuralNetwork(parameters, Logger: logger);
 | `ZeroWeightedMSE` | Imbalanced targets where zero is common |
 
 ---
+## TACAMT (Time-Aware Cross-Attention Multimodal Transformer)
 
+A multimodal transformer for time series prediction that combines textual information (news stories) with numerical price data. A bidirectional both way text encoder produces hidden representations of each news story. A causal price decoder attends to its own past via self-attention and to news context via cross-attention. A content-aware decay network modulates cross-attention weights based on how old each news story is and how relevant its content is to the current price state, with per-head learned decay rates and multi-scale sinusoidal time encoding. Context type embeddings give the model an explicit learned signal to distinguish news entries from price memory entries during cross-attention.
+
+The model supports three training modes: standard batch training, price context training (splits sequences so the decoder learns to use historical price embeddings as additional context), and sequential training (processes samples chronologically with persistent memory accumulation). At inference time, `PredictWithMemory` accumulates news and price context across calls, with attention-based memory pruning to keep the most informative entries.
+
+### Quick Start
+
+```csharp
+var tokenizer = new BPETokenizer();
+tokenizer.Train(corpus, vocabSize: 5000, minFrequency: 2);
+
+var config = new TACAMT.Config
+{
+    TextVocabSize       = tokenizer.VocabSize,
+    TextEmbeddingDim    = 64,
+    TextNumHeads        = 4,
+    TextNumLayers       = 2,
+    TextFeedForwardDim  = 128,
+    PriceInputFeatureDim = 5,
+    PriceEmbeddingDim   = 64,
+    PriceNumHeads       = 4,
+    PriceNumLayers      = 2,
+    PriceFeedForwardDim = 128,
+    OutputDim           = 5
+};
+
+var model = new TACAMT.Model(config, new Random(42));
+model.SetTokenizer(tokenizer);
+
+// Training data: each sample has news stories, price input, and price target
+var stories      = new NewsStory[numSamples][];
+var priceInputs  = new float[numSamples][,];   // [seqLen, inputFeatures]
+var priceTargets = new float[numSamples][,];   // [seqLen, outputDim]
+
+var trainer = new TACAMT.Trainer(model, new MultimodalTrainingConfig
+{
+    LearningRate = 0.001f,
+    BatchSize = 8,
+    Epochs = 50,
+    UseGradientClipping = true,
+    GradientClipThreshold = 1.0f
+});
+trainer.Train(stories, priceInputs, priceTargets);
+
+var (prediction, confidence) = model.PredictNext(stories[0], priceInputs[0]);
+```
+
+### Examples
+
+#### News + Price Prediction
+
+```csharp
+string[] corpus = {
+    "stock market rallied strongly today on positive earnings",
+    "markets fell sharply due to inflation concerns",
+    "tech sector posted record gains driven by AI momentum"
+};
+
+var tokenizer = new BPETokenizer();
+tokenizer.Train(corpus, vocabSize: 200, minFrequency: 1);
+
+var config = new TACAMT.Config
+{
+    TextVocabSize          = tokenizer.VocabSize,
+    TextMaxSequenceLength  = 64,
+    TextEmbeddingDim       = 64,
+    TextNumHeads           = 4,
+    TextNumLayers          = 2,
+    TextFeedForwardDim     = 128,
+    PriceInputFeatureDim   = 5,
+    PriceMaxSequenceLength = 52,
+    PriceEmbeddingDim      = 64,
+    PriceNumHeads          = 4,
+    PriceNumLayers         = 2,
+    PriceFeedForwardDim    = 128,
+    OutputDim              = 5,
+    GradientClippingThreshold = 1.0f
+};
+
+var model = new TACAMT.Model(config, new Random(42));
+model.SetTokenizer(tokenizer);
+
+int numSamples = 100;
+var stories      = new NewsStory[numSamples][];
+var priceInputs  = new float[numSamples][,];
+var priceTargets = new float[numSamples][,];
+
+for (int s = 0; s < numSamples; s++)
+{
+    stories[s] = model.TokenizeStories(
+        new[] { "stock market rallied strongly today on positive earnings" },
+        new[] { 2.0f }  // arrived 2 hours ago
+    );
+    priceInputs[s]  = new float[50, 5];  // 50 timesteps, 5 features (OHLCV)
+    priceTargets[s] = new float[50, 5];
+    // ... populate with normalized data ...
+}
+
+var trainer = new TACAMT.Trainer(model, new MultimodalTrainingConfig
+{
+    LearningRate = 0.001f,
+    BatchSize = 8,
+    Epochs = 50,
+    UseGradientClipping = true,
+    GradientClipThreshold = 1.0f,
+    Verbose = true
+});
+trainer.Train(stories, priceInputs, priceTargets);
+
+float valLoss = trainer.Validate(stories, priceInputs, priceTargets);
+```
+
+#### Multiple News Stories Per Sample
+
+```csharp
+// Each sample can have multiple stories with different arrival times.
+// The decay network learns per-head decay rates so recent stories
+// contribute more than older ones, modulated by content relevance.
+stories[s] = model.TokenizeStories(
+    new[] {
+        "fed raises interest rates by 25 basis points",
+        "tech earnings beat expectations across the board",
+        "oil prices surge on supply concerns"
+    },
+    new[] { 0.5f, 2.0f, 5.0f }  // arrival times
+);
+```
+
+#### Price-Only Mode (No Text)
+
+```csharp
+// Pass null stories to run as a pure causal price decoder
+var stories = new NewsStory[numSamples][];  // all null
+
+var trainer = new TACAMT.Trainer(model, new MultimodalTrainingConfig
+{
+    LearningRate = 0.001f, BatchSize = 8, Epochs = 30
+});
+trainer.Train(stories, priceInputs, priceTargets);
+
+var (prediction, confidence) = model.PredictNext((NewsStory[])null, priceInput);
+```
+
+#### Frozen Text Encoder
+
+```csharp
+// Freeze text encoder weights — only the price decoder, decay network,
+// and context type embeddings train
+var config = new TACAMT.Config
+{
+    FreezeTextEncoder = true,
+    // ...
+};
+```
+
+#### Confidence Head
+
+```csharp
+var config = new TACAMT.Config
+{
+    UseConfidenceHead = true,
+    // ...
+};
+
+var (prediction, confidence) = model.PredictNext(stories, priceInput);
+// prediction: float[OutputDim]
+// confidence: float in [0, 1]
+```
+
+#### Sequential Training with Memory
+
+```csharp
+// Processes samples chronologically, accumulating news and price memory
+// across samples within each epoch. Memory is cleared between epochs.
+var timestamps = new double[numSamples];
+for (int s = 0; s < numSamples; s++)
+    timestamps[s] = s * 3600.0;  // hourly samples
+
+var trainer = new TACAMT.Trainer(model, new MultimodalTrainingConfig
+{
+    LearningRate = 0.001f,
+    BatchSize = 1,
+    Epochs = 10,
+    UseGradientClipping = true,
+    GradientClipThreshold = 1.0f
+});
+
+trainer.TrainSequential(stories, priceInputs, priceTargets, timestamps,
+    maxNewsMemory: 50, maxPriceMemory: 200);
+```
+
+#### Inference with Persistent Memory
+
+```csharp
+// PredictWithMemory accumulates context across calls.
+// News and price hidden states persist between predictions.
+var (pred1, conf1) = model.PredictWithMemory(
+    currentStories, currentPrices, currentTimestamp: 1000.0,
+    maxNewsMemorySize: 50, maxPriceMemorySize: 200);
+
+// Memory from the first call carries forward
+var (pred2, conf2) = model.PredictWithMemory(
+    newStories, newPrices, currentTimestamp: 2000.0,
+    maxNewsMemorySize: 50, maxPriceMemorySize: 200);
+
+// Clear when starting a new session
+model.ClearNewsMemory();
+model.ClearPriceMemory();
+// or: model.ClearAllMemory();
+```
+
+#### Memory Pruning Configuration
+
+```csharp
+model.PruningConfig.UseAttentionBasedPruning = true;
+model.PruningConfig.MinQueryCountForPruning  = 3;      // cold-start protection
+model.PruningConfig.NewEntryReserveFraction  = 0.2f;   // reserve 20% of slots for newest entries
+model.PruningConfig.AttentionScoreAlpha      = 0.1f;   // EMA smoothing factor
+```
+
+#### Save / Load
+
+```csharp
+model.Save("./my_tacamt_model");
+
+var loaded = TACAMT.Model.Load("./my_tacamt_model");
+
+// Continue training from checkpoint
+var trainer = new TACAMT.Trainer(loaded, new MultimodalTrainingConfig { ... });
+trainer.Train(stories, priceInputs, priceTargets);
+```
+
+### Config Reference
+
+#### Text Encoder
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `TextVocabSize` | `int` | 10000 | Token vocabulary size |
+| `TextMaxSequenceLength` | `int` | 512 | Maximum text sequence length |
+| `TextEmbeddingDim` | `int` | 128 | Embedding dimension (must be divisible by `TextNumHeads`) |
+| `TextNumHeads` | `int` | 4 | Attention heads |
+| `TextNumLayers` | `int` | 2 | Transformer layers |
+| `TextFeedForwardDim` | `int` | 256 | FFN hidden dimension |
+| `TextUseDecoderOnly` | `bool` | false | Causal masking (false = bidirectional) |
+| `FreezeTextEncoder` | `bool` | false | Freeze text encoder weights during training |
+
+#### Price Decoder
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `PriceInputFeatureDim` | `int` | 5 | Input features per timestep (e.g. OHLCV) |
+| `PriceMaxSequenceLength` | `int` | 256 | Maximum price sequence length |
+| `PriceEmbeddingDim` | `int` | 128 | Embedding dimension (must be divisible by `PriceNumHeads`) |
+| `PriceNumHeads` | `int` | 4 | Attention heads |
+| `PriceNumLayers` | `int` | 2 | Cross-attention block layers |
+| `PriceFeedForwardDim` | `int` | 256 | FFN hidden dimension |
+| `PriceUseDecoderOnly` | `bool` | true | Causal self-attention masking |
+
+#### Output
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `OutputDim` | `int` | 1 | Prediction output dimension per timestep |
+| `UseConfidenceHead` | `bool` | false | Enable sigmoid confidence score output |
+
+#### Content-Aware Decay Network
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `DecayProjectionDim` | `int` | 8 | Per-head projection dimension for decay gates |
+| `DecayHiddenDim` | `int` | 16 | MLP hidden dimension |
+| `DecayTimeEncodingBases` | `int` | 8 | Sinusoidal frequency bases for multi-scale time encoding |
+| `DecayMemAttnDropout` | `float` | 0.1 | Memory attention dropout (training only) |
+| `DecayMLPDropout` | `float` | 0.1 | MLP hidden layer dropout (training only) |
+| `DecayWeightDecay` | `float` | 0.0 | L2 weight decay for decay network parameters |
+
+#### Price Context Training
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `PriceContextMinHistoryLength` | `int` | 5 | Minimum history length for sequence splitting |
+| `PriceContextMinCurrentLength` | `int` | 5 | Minimum current chunk length for sequence splitting |
+
+#### Regularization & Acceleration
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `L2RegulationLamda` | `float` | 0.01 | L2 regularization strength |
+| `GradientClippingThreshold` | `float` | 1.0 | Max gradient norm for clipping |
+| `FFNActivationType` | `ActivationType` | Relu | FFN activation function |
+| `AccelerationType` | `AccelerationType` | CPU | CPU, MultiThreadCPU, GPU, or CUDA |
+| `AccelerationDeviceId` | `int` | 0 | Device ID for GPU/CUDA |
+
+### MultimodalTrainingConfig
+
+| Property | Type | Description |
+|---|---|---|
+| `LearningRate` | `float` | Step size for parameter updates |
+| `BatchSize` | `int` | Samples per gradient accumulation step |
+| `Epochs` | `int` | Passes through training data |
+| `UseGradientClipping` | `bool` | Enable gradient norm clipping |
+| `GradientClipThreshold` | `float` | Max gradient norm |
+| `UseLearningRateDecay` | `bool` | Multiply LR by decay factor each epoch |
+| `LearningRateDecay` | `float` | Decay multiplier (e.g. 0.95) |
+| `Verbose` | `bool` | Print epoch-by-epoch loss |
+
+---
 
 ### Neural Network Background/Theory
 
