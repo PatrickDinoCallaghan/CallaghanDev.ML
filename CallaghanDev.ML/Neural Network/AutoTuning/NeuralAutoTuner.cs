@@ -1,7 +1,6 @@
 ﻿using CallaghanDev.ML.AutoTuning;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Extensions;
-using CallaghanDev.Utilities;
 using Newtonsoft.Json;
 namespace CallaghanDev.ML
 {

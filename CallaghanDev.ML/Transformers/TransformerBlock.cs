@@ -69,7 +69,7 @@ namespace CallaghanDev.ML.Transformers
             var normed1 = _accel.LayerNorm(attnResidual, LN1Gamma, LN1Beta);
 
             var ffOutput = new float[seqLen, _embeddingDim];
-            for (int i = 0; i < seqLen; i++)
+            /*for (int i = 0; i < seqLen; i++)
             {
                 var inputRow = new float[_embeddingDim];
                 for (int j = 0; j < _embeddingDim; j++)
@@ -83,6 +83,12 @@ namespace CallaghanDev.ML.Transformers
                 {
                     ffOutput[i, j] = outputRow[j];
                 }
+            }*/
+            for (int i = 0; i < seqLen; i++)
+            {
+                var inputRow = _accel.ExtractRow(normed1, i, _embeddingDim);
+                var outputRow = FeedForwardNetwork.Predict(inputRow);
+                _accel.SetRow(ffOutput, i, outputRow, _embeddingDim);
             }
 
             var ffResidual = _accel.MatrixAdd(normed1, ffOutput);

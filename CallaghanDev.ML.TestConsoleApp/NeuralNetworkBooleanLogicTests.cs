@@ -1,6 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Neural_Network.Extensions;
-using CallaghanDev.Utilities;
 using MathNet.Symbolics;
 
 namespace CallaghanDev.ML.TestConsoleApp

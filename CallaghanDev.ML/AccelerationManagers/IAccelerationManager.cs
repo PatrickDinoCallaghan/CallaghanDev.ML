@@ -109,6 +109,102 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// Zero out a matrix (can use SIMD/parallel clearing).
         /// </summary>
         void ZeroMatrix(float[,] matrix);
+
+
+        #region New methods
+
+        /// <summary>
+        /// Adds a bias vector to each row: result[i,j] = matrix[i,j] + bias[j].
+        /// Replaces all inline AddBiasToMatrix / ComputeProjection bias loops.
+        /// </summary>
+        float[,] MatrixAddBias(float[,] matrix, float[] bias);
+
+        /// <summary>
+        /// Token embedding lookup + positional encoding addition.
+        /// result[i,j] = tokenEmbedding[tokenIds[i], j] + positionalEncoding[i, j]
+        /// </summary>
+        float[,] EmbedTokensWithPosition(float[,] tokenEmbedding, int[] tokenIds, float[,] positionalEncoding, int seqLen, int embeddingDim);
+
+        /// <summary>
+        /// Fuses projected + bias + positionalEncoding:
+        /// result[i,j] = projected[i,j] + bias[j] + positionalEncoding[i,j]
+        /// </summary>
+        float[,] AddBiasAndPositionalEncoding(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim);
+
+        /// <summary>
+        /// Fused cross-entropy softmax + loss + gradient computation.
+        /// Returns averaged loss and scaled dLogits ready for backprop.
+        /// </summary>
+        (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen);
+
+        /// <summary>
+        /// Fused MSE loss + gradient computation.
+        /// Returns averaged loss and scaled dOutput ready for backprop.
+        /// </summary>
+        (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int effectiveLen);
+
+        /// <summary>
+        /// Fused output projection backprop: computes weight grads, bias grads, and input gradient.
+        /// Replaces separate BackpropOutputLayer + ComputeOutputGradient.
+        /// </summary>
+        float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights,
+            float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim);
+
+        /// <summary>
+        /// Backprop through input projection (continuous inputs).
+        /// Accumulates into weightGrad and biasGrad.
+        /// </summary>
+        void BackpropInputProjection(float[,] dX, float[,] continuousInput,
+            float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim);
+
+        /// <summary>
+        /// Accumulates embedding gradients: embeddingGrad[tokenIds[i], j] += dX[i, j]
+        /// </summary>
+        void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int seqLen, int embeddingDim);
+
+        /// <summary>
+        /// Element-wise vector accumulation: target[j] += source[j]
+        /// </summary>
+        void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad);
+
+        /// <summary>
+        /// Squared L2 norm of a vector (for gradient clipping).
+        /// </summary>
+        float VectorSquaredNorm(float[] vector);
+
+        /// <summary>
+        /// Extract rows [startRow, endRow) from a matrix.
+        /// </summary>
+        float[,] SliceRows(float[,] matrix, int startRow, int endRow);
+
+        /// <summary>
+        /// Copy one row from a matrix into a new vector.
+        /// </summary>
+        float[] ExtractRow(float[,] matrix, int rowIndex, int cols);
+
+        /// <summary>
+        /// Copy a vector into one row of a matrix.
+        /// </summary>
+        void SetRow(float[,] matrix, int rowIndex, float[] values, int cols);
+
+        /// <summary>
+        /// Create a lower-triangular causal mask: mask[i,j] = (j &lt;= i).
+        /// </summary>
+        bool[,] CreateCausalMask(int seqLen);
+
+        /// <summary>
+        /// In-place element-wise: target[i,j] += source[i,j]
+        /// </summary>
+        void MatrixAccumulate(float[,] target, float[,] source);
+
+        /// <summary>
+        /// Zero out a vector.
+        /// </summary>
+        void ZeroVector(float[] vector);
+
+        void SigmoidInPlace(float[,] matrix);
+        #endregion
+
         void Dispose();
     }
 }

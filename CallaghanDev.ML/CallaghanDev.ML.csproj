@@ -5,6 +5,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,17 +24,11 @@
     <PackageReference Include="MathNet.Symbolics" Version="0.25.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="System.Text.Json" Version="9.0.3" />
+    <PackageReference Include="Terminal.Gui" Version="1.19.0" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="CurveFitting\" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.Common.Math\CallaghanDev.Common.Math.csproj" />
-    <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.Utilities\CallaghanDev.Utilities.csproj" />
-    <ProjectReference Include="..\..\CallaghanDev.Common\CallaghanDev.XML\CallaghanDev.XML.csproj" />
-    <ProjectReference Include="..\..\CallaghanDev.Common\Terminal.Gui\Terminal.Gui\Terminal.Gui.csproj" />
   </ItemGroup>
 
 </Project>

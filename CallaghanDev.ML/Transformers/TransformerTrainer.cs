@@ -300,8 +300,8 @@ namespace CallaghanDev.ML.Transformers
                     continue;
                 }
 
-                var inputSlice = SliceRows(inputSeq, 0, seqLen - 1);
-
+               // var inputSlice = SliceRows(inputSeq, 0, seqLen - 1);
+                var inputSlice = _accel.SliceRows(inputSeq, 0, seqLen - 1);
 
                 try
                 {
@@ -312,7 +312,8 @@ namespace CallaghanDev.ML.Transformers
 
                     if (_modelConfig.DataType == TransformerDataType.TimeSeriesRegression)
                     {
-                        var targetSlice = SliceRows(allRegTargets[idx], 1, seqLen);
+                        //var targetSlice = SliceRows(allRegTargets[idx], 1, seqLen);
+                        var targetSlice = _accel.SliceRows(allRegTargets[idx], 1, seqLen);
                         loss = BackwardPassMSE(output, targetSlice, cache);
                     }
                     else
@@ -354,7 +355,7 @@ namespace CallaghanDev.ML.Transformers
         private float[,] ForwardWithCacheDiscrete(int[] tokenIds, ForwardCache cache)
         {
             int seqLen = tokenIds.Length;
-
+            /*
             var embedded = new float[seqLen, _modelConfig.EmbeddingDim];
 
             for (int i = 0; i < seqLen; i++)
@@ -363,7 +364,8 @@ namespace CallaghanDev.ML.Transformers
                 {
                     embedded[i, j] = _model.TokenEmbedding[tokenIds[i], j] + _model.PositionalEncoding[i, j];
                 }
-            }
+            }*/
+            var embedded = _accel.EmbedTokensWithPosition(_model.TokenEmbedding, tokenIds, _model.PositionalEncoding, seqLen, _modelConfig.EmbeddingDim);
 
             cache.EmbeddedInput = embedded;
             cache.TokenIds = tokenIds;
@@ -375,7 +377,7 @@ namespace CallaghanDev.ML.Transformers
         private float[,] ForwardWithCacheContinuous(float[,] inputSequence, ForwardCache cache)
         {
             int seqLen = inputSequence.GetLength(0);
-
+            /*
             var projected = _accel.BatchDotProduct(_model.InputProjection, inputSequence);
 
             var embedded = new float[seqLen, _modelConfig.EmbeddingDim];
@@ -386,7 +388,9 @@ namespace CallaghanDev.ML.Transformers
                 {
                     embedded[i, j] = projected[i, j] + _model.InputProjectionBias[j] + _model.PositionalEncoding[i, j];
                 }
-            }
+            }*/
+            var projected = _accel.BatchDotProduct(_model.InputProjection, inputSequence);
+            var embedded = _accel.AddBiasAndPositionalEncoding(projected, _model.InputProjectionBias, _model.PositionalEncoding, seqLen, _modelConfig.EmbeddingDim);
 
             cache.EmbeddedInput = embedded;
             cache.TokenIds = null;
@@ -401,11 +405,13 @@ namespace CallaghanDev.ML.Transformers
 
             if (_modelConfig.UseDecoderOnly)
             {
-                mask = CreateCausalMask(seqLen);
+                //mask = CreateCausalMask(seqLen);
+
+                mask = _accel.CreateCausalMask(seqLen);
             }
 
             var x = embedded;
-
+           
             for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
             {
                 cache.LayerInputs.Add(x);
@@ -428,7 +434,7 @@ namespace CallaghanDev.ML.Transformers
                 var ffnInputRows = new float[seqLen][];
                 var ffOutput = new float[seqLen, _modelConfig.EmbeddingDim];
 
-
+                /*
                 for (int i = 0; i < seqLen; i++)
                 {
                     var inputRow = new float[_modelConfig.EmbeddingDim];
@@ -443,7 +449,14 @@ namespace CallaghanDev.ML.Transformers
                         ffOutput[i, j] = outputRow[j];
                     }
                 }
-
+                */
+                for (int i = 0; i < seqLen; i++)
+                {
+                    var inputRow = _accel.ExtractRow(normed1, i, _modelConfig.EmbeddingDim);
+                    ffnInputRows[i] = inputRow;
+                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
+                    _accel.SetRow(ffOutput, i, outputRow, _modelConfig.EmbeddingDim);
+                }
                 cache.FFNInputs.Add(ffnInputRows);
                 cache.FFNOutputs.Add(ffOutput);
 
@@ -459,6 +472,7 @@ namespace CallaghanDev.ML.Transformers
                 x = normed2;
             }
 
+           
             cache.FinalHiddenStates = x;
 
             return ProjectToOutput(x);
@@ -469,11 +483,11 @@ namespace CallaghanDev.ML.Transformers
             int seqLen = logits.GetLength(0);
             int outputDim = logits.GetLength(1);
 
-            float loss = 0;
+            /*float loss = 0;
             var dLogits = new float[seqLen, outputDim];
 
             int effectiveLen = Math.Min(seqLen, targets.Length);
-
+            
             for (int i = 0; i < effectiveLen; i++)
             {
                 float max = float.NegativeInfinity;
@@ -516,10 +530,12 @@ namespace CallaghanDev.ML.Transformers
                 {
                     dLogits[i, j] *= invLen;
                 }
-            }
+            }*/
+
+            int effectiveLen = Math.Min(seqLen, targets.Length);
+            var (loss, dLogits) = _accel.CrossEntropyLossAndGradient(logits, targets, effectiveLen);
 
             BackpropFromOutput(dLogits, cache);
-
             return loss;
         }
 
@@ -528,40 +544,43 @@ namespace CallaghanDev.ML.Transformers
             int seqLen = predictions.GetLength(0);
             int outputDim = predictions.GetLength(1);
 
-            float loss = 0;
+            /* float loss = 0;
             var dOutput = new float[seqLen, outputDim];
 
+           int effectiveLen = Math.Min(seqLen, targets.GetLength(0));
+
+             for (int i = 0; i < effectiveLen; i++)
+             {
+                 for (int j = 0; j < outputDim; j++)
+                 {
+                     float diff = predictions[i, j] - targets[i, j];
+
+                     loss += diff * diff;
+
+                     dOutput[i, j] = 2.0f * diff;
+                 }
+             }
+
+             loss /= (effectiveLen * outputDim);
+
+             float invLen = 1.0f / (effectiveLen * outputDim);
+             for (int i = 0; i < effectiveLen; i++)
+             {
+                 for (int j = 0; j < outputDim; j++)
+                 {
+                     dOutput[i, j] *= invLen;
+                 }
+             }
+
+             BackpropFromOutput(dOutput, cache);*/
             int effectiveLen = Math.Min(seqLen, targets.GetLength(0));
-
-            for (int i = 0; i < effectiveLen; i++)
-            {
-                for (int j = 0; j < outputDim; j++)
-                {
-                    float diff = predictions[i, j] - targets[i, j];
-
-                    loss += diff * diff;
-
-                    dOutput[i, j] = 2.0f * diff;
-                }
-            }
-
-            loss /= (effectiveLen * outputDim);
-
-            float invLen = 1.0f / (effectiveLen * outputDim);
-            for (int i = 0; i < effectiveLen; i++)
-            {
-                for (int j = 0; j < outputDim; j++)
-                {
-                    dOutput[i, j] *= invLen;
-                }
-            }
-
+            var (loss, dOutput) = _accel.MSELossAndGradient(predictions, targets, effectiveLen);
             BackpropFromOutput(dOutput, cache);
 
             return loss;
         }
 
-
+        /*
         private void BackpropFromOutput(float[,] dOutput, ForwardCache cache)
         {
             BackpropOutputLayer(dOutput, cache.FinalHiddenStates);
@@ -573,8 +592,21 @@ namespace CallaghanDev.ML.Transformers
             }
 
             BackpropInput(dX, cache);
-        }
+        }*/
+        private void BackpropFromOutput(float[,] dOutput, ForwardCache cache)
+        {
+            var dX = _accel.BackpropOutputProjection(
+                dOutput, cache.FinalHiddenStates, _model.OutputProjection,
+                _gradients.OutputProjectionGrad, _gradients.OutputBiasGrad,
+                dOutput.GetLength(0), _modelConfig.EffectiveOutputDim, _modelConfig.EmbeddingDim);
 
+            for (int layer = _modelConfig.NumLayers - 1; layer >= 0; layer--)
+            {
+                dX = BackpropBlock(layer, dX, cache);
+            }
+
+            BackpropInput(dX, cache);
+        }
         private void BackpropInput(float[,] dX, ForwardCache cache)
         {
             if (_modelConfig.UsesDiscreteTokens)
@@ -589,9 +621,10 @@ namespace CallaghanDev.ML.Transformers
 
         private void BackpropEmbeddings(float[,] dX, float[,] embedded, int[] tokenIds)
         {
+            
             int seqLen = dX.GetLength(0);
             int embeddingDim = dX.GetLength(1);
-
+            /*
             for (int i = 0; i < seqLen; i++)
             {
                 int tokenId = tokenIds[i];
@@ -600,7 +633,8 @@ namespace CallaghanDev.ML.Transformers
                 {
                     _gradients.TokenEmbeddingGrad[tokenId, j] += dX[i, j];
                 }
-            }
+            }*/
+            _accel.AccumulateTokenEmbeddingGrad(_gradients.TokenEmbeddingGrad, dX, tokenIds, seqLen, embeddingDim);
         }
 
         private void BackpropInputProjection(float[,] dX, float[,] continuousInput)
@@ -608,7 +642,7 @@ namespace CallaghanDev.ML.Transformers
             int seqLen = dX.GetLength(0);
             int embeddingDim = _modelConfig.EmbeddingDim;
             int inputFeatureDim = _modelConfig.InputFeatureDim;
-
+            /*
             for (int i = 0; i < seqLen; i++)
             {
                 for (int e = 0; e < embeddingDim; e++)
@@ -622,7 +656,10 @@ namespace CallaghanDev.ML.Transformers
 
                     _gradients.InputProjectionBiasGrad[e] += dVal;
                 }
-            }
+            }*/
+
+
+            _accel.BackpropInputProjection(dX, continuousInput, _gradients.InputProjectionGrad, _gradients.InputProjectionBiasGrad, seqLen, _modelConfig.EmbeddingDim, _modelConfig.InputFeatureDim);
         }
 
         private void BackpropOutputLayer(float[,] dLogits, float[,] input)
@@ -676,12 +713,15 @@ namespace CallaghanDev.ML.Transformers
             var (dFFResidual, dLN2Gamma, dLN2Beta) = _accel.LayerNormBackward(dOut, ln2Cache.Normalized, block.LN2Gamma, ln2Cache.Input, ln2Cache.Mean, ln2Cache.Variance);
 
             var ln2Grads = _gradients.LN2Grads[layerIdx];
-
+            /*
             for (int j = 0; j < dLN2Gamma.Length; j++)
             {
                 ln2Grads.GammaGrad[j] += dLN2Gamma[j];
                 ln2Grads.BetaGrad[j] += dLN2Beta[j];
-            }
+            }*/
+
+            _accel.AccumulateVectorGradients(ln2Grads.GammaGrad, dLN2Gamma);
+            _accel.AccumulateVectorGradients(ln2Grads.BetaGrad, dLN2Beta);
 
             var dNormed1_from_ffn = BackpropFFN(layerIdx, dFFResidual, cache);
             var dNormed1 = _accel.MatrixAdd(dFFResidual, dNormed1_from_ffn);
@@ -691,12 +731,15 @@ namespace CallaghanDev.ML.Transformers
             var (dAttnResidual, dLN1Gamma, dLN1Beta) = _accel.LayerNormBackward(dNormed1, ln1Cache.Normalized, block.LN1Gamma,ln1Cache.Input, ln1Cache.Mean, ln1Cache.Variance);
 
             var ln1Grads = _gradients.LN1Grads[layerIdx];
-
+            /*
             for (int j = 0; j < dLN1Gamma.Length; j++)
             {
                 ln1Grads.GammaGrad[j] += dLN1Gamma[j];
                 ln1Grads.BetaGrad[j] += dLN1Beta[j];
-            }
+            }*/
+
+            _accel.AccumulateVectorGradients(ln1Grads.GammaGrad, dLN1Gamma);
+            _accel.AccumulateVectorGradients(ln1Grads.BetaGrad, dLN1Beta);
 
             var dX_from_attn = BackpropAttention(layerIdx, dAttnResidual, cache.AttentionCaches[layerIdx]);
 
@@ -715,22 +758,24 @@ namespace CallaghanDev.ML.Transformers
 
             for (int i = 0; i < seqLen; i++)
             {
-                var dOutRow = new float[embeddingDim];
+               /* var dOutRow = new float[embeddingDim];
 
                 for (int j = 0; j < embeddingDim; j++)
                 {
                     dOutRow[j] = dFFOutput[i, j];
-                }
+                }*/
+                var dOutRow = _accel.ExtractRow(dFFOutput, i, embeddingDim);
 
                 var inputRow = cache.FFNInputs[layerIdx][i];
                 block.FeedForwardNetwork.ForwardPassOnly(inputRow);
 
                 var dInputRow = block.FeedForwardNetwork.ComputeInputGradient(dOutRow, _ffnWeightGrads[layerIdx], _ffnBiasGrads[layerIdx]);
-
+                /*
                 for (int j = 0; j < embeddingDim; j++)
                 {
                     dNormed1[i, j] = dInputRow[j];
-                }
+                }*/
+                _accel.SetRow(dNormed1, i, dInputRow, embeddingDim);
             }
 
             return dNormed1;
@@ -773,10 +818,14 @@ namespace CallaghanDev.ML.Transformers
             var Q_noBias = _accel.BatchDotProduct(attention.WQ, input);
             var K_noBias = _accel.BatchDotProduct(attention.WK, input);
             var V_noBias = _accel.BatchDotProduct(attention.WV, input);
-
+            /*
             var Q = AddBiasToMatrix(Q_noBias, attention.BiasQ);
             var K = AddBiasToMatrix(K_noBias, attention.BiasK);
             var V = AddBiasToMatrix(V_noBias, attention.BiasV);
+            */
+            var Q =  _accel.MatrixAddBias(Q_noBias, attention.BiasQ);
+            var K =  _accel.MatrixAddBias(K_noBias, attention.BiasK);
+            var V = _accel.MatrixAddBias(V_noBias, attention.BiasV);
 
             cache.Q = Q;
             cache.K = K;
@@ -789,7 +838,9 @@ namespace CallaghanDev.ML.Transformers
             cache.AttentionOutput = concatenated;
 
             var output_noBias = _accel.BatchDotProduct(attention.WO, concatenated);
-            var output = AddBiasToMatrix(output_noBias, attention.BiasO);
+
+            var output = _accel.MatrixAddBias(output_noBias, attention.BiasO);
+            //var output = AddBiasToMatrix(output_noBias, attention.BiasO);
 
             return output;
         }
@@ -852,14 +903,17 @@ namespace CallaghanDev.ML.Transformers
                     continue;
                 }
 
-                var inputSlice = SliceRows(inputSeq, 0, seqLen - 1);
+                //var inputSlice = SliceRows(inputSeq, 0, seqLen - 1);
+
+                var inputSlice = _accel.SliceRows(inputSeq, 0, seqLen - 1);
                 var output = _model.Forward(inputSlice);
 
                 int effectiveLen = output.GetLength(0);
 
                 if (_modelConfig.DataType == TransformerDataType.TimeSeriesRegression)
                 {
-                    var targetSlice = SliceRows(regressionTargets[idx], 1, seqLen);
+                    //var targetSlice = SliceRows(regressionTargets[idx], 1, seqLen);
+                    var targetSlice = _accel.SliceRows(regressionTargets[idx], 1, seqLen);
                     int outputDim = _modelConfig.OutputDim;
 
                     for (int i = 0; i < effectiveLen; i++)
@@ -963,11 +1017,11 @@ namespace CallaghanDev.ML.Transformers
             else
             {
                 sum += _accel.MatrixSquaredNorm(_gradients.InputProjectionGrad);
-                sum += VectorNorm(_gradients.InputProjectionBiasGrad);
+                sum += _accel.VectorSquaredNorm(_gradients.InputProjectionBiasGrad);// VectorNorm(_gradients.InputProjectionBiasGrad);
             }
 
             sum += _accel.MatrixSquaredNorm(_gradients.OutputProjectionGrad);
-            sum += VectorNorm(_gradients.OutputBiasGrad);
+            sum += _accel.VectorSquaredNorm(_gradients.OutputBiasGrad);//VectorNorm(_gradients.OutputBiasGrad);
 
             foreach (var g in _gradients.AttentionGrads)
             {
@@ -975,21 +1029,21 @@ namespace CallaghanDev.ML.Transformers
                 sum += _accel.MatrixSquaredNorm(g.WK_Grad);
                 sum += _accel.MatrixSquaredNorm(g.WV_Grad);
                 sum += _accel.MatrixSquaredNorm(g.WO_Grad);
-                sum += VectorNorm(g.BiasQ_Grad);
-                sum += VectorNorm(g.BiasK_Grad);
-                sum += VectorNorm(g.BiasV_Grad);
-                sum += VectorNorm(g.BiasO_Grad);
+                sum += _accel.VectorSquaredNorm(g.BiasQ_Grad);//VectorNorm(g.BiasQ_Grad);
+                sum += _accel.VectorSquaredNorm(g.BiasK_Grad);//VectorNorm(g.BiasK_Grad);
+                sum += _accel.VectorSquaredNorm(g.BiasV_Grad);//VectorNorm(g.BiasV_Grad);
+                sum += _accel.VectorSquaredNorm(g.BiasO_Grad);// VectorNorm(g.BiasO_Grad);
             }
 
             foreach (var g in _gradients.LN1Grads)
             {
-                sum += VectorNorm(g.GammaGrad);
-                sum += VectorNorm(g.BetaGrad);
+                sum += _accel.VectorSquaredNorm(g.GammaGrad);// VectorNorm(g.GammaGrad);
+                sum += _accel.VectorSquaredNorm(g.BetaGrad);// VectorNorm(g.BetaGrad);
             }
             foreach (var g in _gradients.LN2Grads)
             {
-                sum += VectorNorm(g.GammaGrad);
-                sum += VectorNorm(g.BetaGrad);
+                sum += _accel.VectorSquaredNorm(g.GammaGrad);//VectorNorm(g.GammaGrad);
+                sum += _accel.VectorSquaredNorm(g.BetaGrad);// VectorNorm(g.BetaGrad);
             }
 
             for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
@@ -1000,7 +1054,7 @@ namespace CallaghanDev.ML.Transformers
                 }
                 foreach (var bGrad in _ffnBiasGrads[layer])
                 {
-                    sum += VectorNorm(bGrad);
+                    sum += _accel.VectorSquaredNorm(_gradients.OutputBiasGrad);// VectorNorm(bGrad);
                 }
             }
 
@@ -1079,10 +1133,10 @@ namespace CallaghanDev.ML.Transformers
         private float[,] ProjectToOutput(float[,] hidden)
         {
             var logits = _accel.BatchDotProduct(_model.OutputProjection, hidden);
-
-            return AddBiasToMatrix(logits, _model.OutputBias);
+            return _accel.MatrixAddBias(logits, _model.OutputBias);
+           // return AddBiasToMatrix(logits, _model.OutputBias);
         }
-
+        /*
         private float[,] AddBiasToMatrix(float[,] matrix, float[] bias)
         {
             int rows = matrix.GetLength(0);
@@ -1098,10 +1152,11 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
             return result;
-        }
+        }*/
 
         private bool[,] CreateCausalMask(int seqLen)
         {
+            /*
             var mask = new bool[seqLen, seqLen];
 
             for (int i = 0; i < seqLen; i++)
@@ -1111,10 +1166,12 @@ namespace CallaghanDev.ML.Transformers
                     mask[i, j] = true;
                 }
             }
+            return mask;*/
 
-            return mask;
+
+            return _accel.CreateCausalMask(seqLen);
         }
-
+        /*
         private float VectorNorm(float[] vector)
         {
             float sum = 0;
@@ -1125,7 +1182,7 @@ namespace CallaghanDev.ML.Transformers
             }
 
             return sum;
-        }
+        }*/
 
         private T[] ShuffleArray<T>(T[] data)
         {
@@ -1133,7 +1190,7 @@ namespace CallaghanDev.ML.Transformers
 
             return indices.Select(i => data[i]).ToArray();
         }
-
+        /*
         private float[,] SliceRows(float[,] matrix, int startRow, int endRow)
         {
             int cols = matrix.GetLength(1);
@@ -1150,6 +1207,6 @@ namespace CallaghanDev.ML.Transformers
             }
 
             return result;
-        }
+        }*/
     }
 }

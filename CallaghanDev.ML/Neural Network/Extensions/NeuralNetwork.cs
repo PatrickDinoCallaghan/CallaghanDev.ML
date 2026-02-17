@@ -12,10 +12,15 @@ namespace CallaghanDev.ML.Extensions
         public static List<Layer> GetLayers(this ML.NeuralNetwork nn) => nn.GetInternalData().layers.ToList();
 
         public static Parameters GetParametersCopy(this ML.NeuralNetwork nn)
-            => JsonConvert.DeserializeObject<Parameters>(JsonConvert.SerializeObject(nn.GetInternalData().parameters));
+        {
+            return JsonConvert.DeserializeObject<Parameters>(JsonConvert.SerializeObject(nn.GetInternalData().parameters));
+        }
 
         public static Data GetDataCopy(this ML.NeuralNetwork nn)
-            => JsonConvert.DeserializeObject<Data>(JsonConvert.SerializeObject(nn.GetInternalData()));
+        {
+            return JsonConvert.DeserializeObject<Data>(JsonConvert.SerializeObject(nn.GetInternalData()));
+        }
+
 
         public static void RestoreState(this ML.NeuralNetwork nn, Data snapshot)
         {
@@ -62,9 +67,17 @@ namespace CallaghanDev.ML.Extensions
 
         public static long CalculateParameterCount(IList<int> layerWidths)
         {
-            if (layerWidths == null) throw new ArgumentNullException(nameof(layerWidths));
-            if (layerWidths.Count < 2) return 0;
+            if (layerWidths == null)
+            {
+                throw new ArgumentNullException(nameof(layerWidths));
+            }
+            if (layerWidths.Count < 2)
+            {
+                return 0;
+            }
+
             long total = 0;
+
             for (int i = 0; i < layerWidths.Count - 1; i++)
             {
                 int n = layerWidths[i];

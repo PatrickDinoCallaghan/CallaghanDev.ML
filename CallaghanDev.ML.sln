@@ -1,10 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.5.33414.496
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11505.172 d18.3
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.ML", "CallaghanDev.ML\CallaghanDev.ML.csproj", "{2D5CC3BC-7AC6-4B1B-96D3-407DC64259F6}"
-EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.ML.TestConsoleApp", "CallaghanDev.ML.TestConsoleApp\CallaghanDev.ML.TestConsoleApp.csproj", "{B20D0E58-CD83-42B5-997D-02AE1E028984}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Dependencies", "Dependencies", "{9E3F7CAF-DCB1-4FF7-9F36-A544C854F540}"
@@ -13,11 +11,13 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.Common.Math", 
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.Utilities", "..\CallaghanDev.Common\CallaghanDev.Utilities\CallaghanDev.Utilities.csproj", "{389B7C83-14AE-48D8-82F8-7875CC06523B}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CallaghanDev.XML", "..\CallaghanDev.Common\CallaghanDev.XML\CallaghanDev.XML.csproj", "{BC5BD0A2-B150-43DA-9FA2-02F8618E2827}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CallaghanDev.ML.LLMChat", "CallaghanDev.ML.LLMChat\CallaghanDev.ML.LLMChat.csproj", "{9E12A403-92D9-49E7-995E-1D17444A31E1}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Terminal.Gui", "..\CallaghanDev.Common\Terminal.Gui\Terminal.Gui\Terminal.Gui.csproj", "{781A4685-0ABB-4811-A266-745F9AB1E9A4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CallaghanDev.XML", "..\CallaghanDev.Common\CallaghanDev.XML\CallaghanDev.XML.csproj", "{FA9C9A80-E670-D898-C8BD-6782EDBA442A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CallaghanDev.ML.ThirdParty", "CallaghanDev.ML.ThirdParty\CallaghanDev.ML.ThirdParty.csproj", "{0FD92A58-1846-93F2-C5D7-48D7097EDEB5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CallaghanDev.ML", "CallaghanDev.ML\CallaghanDev.ML.csproj", "{79CBEB2D-61C5-415D-097C-B0AD7B1474C5}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -25,10 +25,6 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{2D5CC3BC-7AC6-4B1B-96D3-407DC64259F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{2D5CC3BC-7AC6-4B1B-96D3-407DC64259F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{2D5CC3BC-7AC6-4B1B-96D3-407DC64259F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{2D5CC3BC-7AC6-4B1B-96D3-407DC64259F6}.Release|Any CPU.Build.0 = Release|Any CPU
 		{B20D0E58-CD83-42B5-997D-02AE1E028984}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{B20D0E58-CD83-42B5-997D-02AE1E028984}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B20D0E58-CD83-42B5-997D-02AE1E028984}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -41,18 +37,22 @@ Global
 		{389B7C83-14AE-48D8-82F8-7875CC06523B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{389B7C83-14AE-48D8-82F8-7875CC06523B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{389B7C83-14AE-48D8-82F8-7875CC06523B}.Release|Any CPU.Build.0 = Release|Any CPU
-		{BC5BD0A2-B150-43DA-9FA2-02F8618E2827}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{BC5BD0A2-B150-43DA-9FA2-02F8618E2827}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{BC5BD0A2-B150-43DA-9FA2-02F8618E2827}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{BC5BD0A2-B150-43DA-9FA2-02F8618E2827}.Release|Any CPU.Build.0 = Release|Any CPU
-		{9E12A403-92D9-49E7-995E-1D17444A31E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{9E12A403-92D9-49E7-995E-1D17444A31E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{9E12A403-92D9-49E7-995E-1D17444A31E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{9E12A403-92D9-49E7-995E-1D17444A31E1}.Release|Any CPU.Build.0 = Release|Any CPU
 		{781A4685-0ABB-4811-A266-745F9AB1E9A4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{781A4685-0ABB-4811-A266-745F9AB1E9A4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{781A4685-0ABB-4811-A266-745F9AB1E9A4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{781A4685-0ABB-4811-A266-745F9AB1E9A4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FA9C9A80-E670-D898-C8BD-6782EDBA442A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FA9C9A80-E670-D898-C8BD-6782EDBA442A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FA9C9A80-E670-D898-C8BD-6782EDBA442A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FA9C9A80-E670-D898-C8BD-6782EDBA442A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0FD92A58-1846-93F2-C5D7-48D7097EDEB5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0FD92A58-1846-93F2-C5D7-48D7097EDEB5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0FD92A58-1846-93F2-C5D7-48D7097EDEB5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0FD92A58-1846-93F2-C5D7-48D7097EDEB5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{79CBEB2D-61C5-415D-097C-B0AD7B1474C5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{79CBEB2D-61C5-415D-097C-B0AD7B1474C5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{79CBEB2D-61C5-415D-097C-B0AD7B1474C5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{79CBEB2D-61C5-415D-097C-B0AD7B1474C5}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -60,8 +60,8 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{81D243BC-16EC-433F-ABE4-53532832BC91} = {9E3F7CAF-DCB1-4FF7-9F36-A544C854F540}
 		{389B7C83-14AE-48D8-82F8-7875CC06523B} = {9E3F7CAF-DCB1-4FF7-9F36-A544C854F540}
-		{BC5BD0A2-B150-43DA-9FA2-02F8618E2827} = {9E3F7CAF-DCB1-4FF7-9F36-A544C854F540}
 		{781A4685-0ABB-4811-A266-745F9AB1E9A4} = {9E3F7CAF-DCB1-4FF7-9F36-A544C854F540}
+		{FA9C9A80-E670-D898-C8BD-6782EDBA442A} = {9E3F7CAF-DCB1-4FF7-9F36-A544C854F540}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {F304C15B-5DBA-4C8F-99DB-814640C77A03}

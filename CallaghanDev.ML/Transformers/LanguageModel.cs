@@ -147,7 +147,7 @@ namespace CallaghanDev.ML.Transformers
             }
 
             int seqLen = tokenIds.Length;
-
+            /*
             var embedded = new float[seqLen, _config.EmbeddingDim];
             for (int i = 0; i < seqLen; i++)
             {
@@ -155,7 +155,9 @@ namespace CallaghanDev.ML.Transformers
                 {
                     embedded[i, j] = TokenEmbedding[tokenIds[i], j] + PositionalEncoding[i, j];
                 }
-            }
+            }*/
+            
+            var embedded = _accel.EmbedTokensWithPosition(TokenEmbedding, tokenIds, PositionalEncoding, seqLen, _config.EmbeddingDim);
 
             return ForwardFromEmbedding(embedded, seqLen);
         }
@@ -168,17 +170,20 @@ namespace CallaghanDev.ML.Transformers
             }
 
             int seqLen = inputSequence.GetLength(0);
-
+            /*
             var projected = _accel.BatchDotProduct(InputProjection, inputSequence);
-
             var embedded = new float[seqLen, _config.EmbeddingDim];
+            
             for (int i = 0; i < seqLen; i++)
             {
                 for (int j = 0; j < _config.EmbeddingDim; j++)
                 {
                     embedded[i, j] = projected[i, j] + InputProjectionBias[j] + PositionalEncoding[i, j];
                 }
-            }
+            }*/
+
+            var projected = _accel.BatchDotProduct(InputProjection, inputSequence);
+            var embedded = _accel.AddBiasAndPositionalEncoding(projected, InputProjectionBias, PositionalEncoding, seqLen, _config.EmbeddingDim);
 
             return ForwardFromEmbedding(embedded, seqLen);
         }
@@ -206,22 +211,24 @@ namespace CallaghanDev.ML.Transformers
         private bool[,] CreateCausalMask(int seqLen)
         {
             var mask = new bool[seqLen, seqLen];
-
+            /*
             for (int i = 0; i < seqLen; i++)
             {
                 for (int j = 0; j <= i; j++)
                 {
                     mask[i, j] = true;
                 }
-            }
-            return mask;
+            }*/
+
+
+            return _accel.CreateCausalMask(seqLen);
         }
 
         private float[,] ProjectToOutput(float[,] hidden)
         {
             int seqLen = hidden.GetLength(0);
             int outputDim = _config.EffectiveOutputDim;
-            var logits = new float[seqLen, outputDim];
+           /* var logits = new float[seqLen, outputDim];
 
             for (int i = 0; i < seqLen; i++)
             {
@@ -239,6 +246,10 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
             return logits;
+            */
+
+            var logits = _accel.BatchDotProduct(OutputProjection, hidden);
+            return _accel.MatrixAddBias(logits, OutputBias);
         }
 
         public int[] Generate(int[] promptTokens, int maxNewTokens, float temperature = 1.0f)
@@ -322,15 +333,7 @@ namespace CallaghanDev.ML.Transformers
             return probs.Length - 1;
         }
 
-        public NeuralNetwork GetFeedForwardNetwork(int blockIndex)
-        {
-            if (blockIndex < 0 || blockIndex >= Blocks.Length)
-            {
-                throw new ArgumentException($"Block index out of range");
-            }
-
-            return Blocks[blockIndex].FeedForwardNetwork;
-        }
+        #region Save Load
 
         public void SaveFeedForwardNetworks(string directory)
         {
@@ -351,5 +354,232 @@ namespace CallaghanDev.ML.Transformers
                 Blocks[i].FeedForwardNetwork = NeuralNetwork.Load(path, _config.AccelerationType, _config.AccelerationDeviceId);
             }
         }
+
+
+        public void Save(string directory)
+        {
+            if (!System.IO.Directory.Exists(directory))
+            {
+                System.IO.Directory.CreateDirectory(directory);
+            }
+
+            var configPath = System.IO.Path.Combine(directory, "config.json");
+            var configDict = new Dictionary<string, object>
+            {
+                ["VocabSize"] = _config.VocabSize,
+                ["MaxSequenceLength"] = _config.MaxSequenceLength,
+                ["EmbeddingDim"] = _config.EmbeddingDim,
+                ["NumHeads"] = _config.NumHeads,
+                ["NumLayers"] = _config.NumLayers,
+                ["FeedForwardDim"] = _config.FeedForwardDim,
+                ["UseDecoderOnly"] = _config.UseDecoderOnly,
+                ["FFNActivationType"] = (int)_config.FFNActivationType,
+                ["AccelerationType"] = (int)_config.AccelerationType,
+                ["AccelerationDeviceId"] = _config.AccelerationDeviceId,
+                ["L2RegulationLamda"] = _config.L2RegulationLamda,
+                ["DataType"] = (int)_config.DataType,
+                ["InputFeatureDim"] = _config.InputFeatureDim,
+                ["OutputDim"] = _config.OutputDim,
+                ["CostFunction"] = (int)_config.CostFunction,
+                ["ActivationDistribution"] = (int)_config.ActivationDistribution,
+                ["GradientClippingThreshold"] = _config.GradientClippingThreshold
+            };
+            var configJson = System.Text.Json.JsonSerializer.Serialize(configDict, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+
+            System.IO.File.WriteAllText(configPath, configJson);
+
+            var weightsPath = System.IO.Path.Combine(directory, "weights.bin");
+            using (var stream = new System.IO.FileStream(weightsPath, System.IO.FileMode.Create))
+            using (var writer = new System.IO.BinaryWriter(stream))
+            {
+                writer.Write(_config.UsesDiscreteTokens);
+
+                if (_config.UsesDiscreteTokens)
+                {
+                    WriteMatrix(writer, TokenEmbedding);
+                }
+                else
+                {
+                    WriteMatrix(writer, InputProjection);
+                    WriteVector(writer, InputProjectionBias);
+                }
+
+                for (int layer = 0; layer < _config.NumLayers; layer++)
+                {
+                    var block = Blocks[layer];
+
+                    WriteAttention(writer, block.Attention);
+
+                    WriteVector(writer, block.LN1Gamma);
+                    WriteVector(writer, block.LN1Beta);
+                    WriteVector(writer, block.LN2Gamma);
+                    WriteVector(writer, block.LN2Beta);
+                }
+
+                WriteMatrix(writer, OutputProjection);
+                WriteVector(writer, OutputBias);
+            }
+
+            var ffnDir = System.IO.Path.Combine(directory, "ffn");
+            System.IO.Directory.CreateDirectory(ffnDir);
+
+            for (int layer = 0; layer < _config.NumLayers; layer++)
+            {
+                var ffnPath = System.IO.Path.Combine(ffnDir, $"ffn_layer_{layer}");
+                Blocks[layer].FeedForwardNetwork.Save(ffnPath);
+            }
+        }
+
+        public static LanguageModel Load(string directory)
+        {
+            var configPath = System.IO.Path.Combine(directory, "config.json");
+            var configJson = System.IO.File.ReadAllText(configPath);
+
+            var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(configJson);
+
+            var config = new TransformerConfig
+            {
+                VocabSize = dict["VocabSize"].GetInt32(),
+                MaxSequenceLength = dict["MaxSequenceLength"].GetInt32(),
+                EmbeddingDim = dict["EmbeddingDim"].GetInt32(),
+                NumHeads = dict["NumHeads"].GetInt32(),
+                NumLayers = dict["NumLayers"].GetInt32(),
+                FeedForwardDim = dict["FeedForwardDim"].GetInt32(),
+                UseDecoderOnly = dict["UseDecoderOnly"].GetBoolean(),
+                FFNActivationType = (ActivationType)dict["FFNActivationType"].GetInt32(),
+                AccelerationType = (AccelerationType)dict["AccelerationType"].GetInt32(),
+                AccelerationDeviceId = dict["AccelerationDeviceId"].GetInt32(),
+                L2RegulationLamda = dict["L2RegulationLamda"].GetSingle(),
+                DataType = (TransformerDataType)dict["DataType"].GetInt32(),
+                InputFeatureDim = dict["InputFeatureDim"].GetInt32(),
+                OutputDim = dict["OutputDim"].GetInt32(),
+                CostFunction = (CostFunctionType)dict["CostFunction"].GetInt32(),
+                ActivationDistribution = (ActivationDistribution)dict["ActivationDistribution"].GetInt32(),
+                GradientClippingThreshold = dict["GradientClippingThreshold"].GetSingle()
+            };
+
+            var model = new LanguageModel(config);
+
+            var weightsPath = System.IO.Path.Combine(directory, "weights.bin");
+            using (var stream = new System.IO.FileStream(weightsPath, System.IO.FileMode.Open))
+            using (var reader = new System.IO.BinaryReader(stream))
+            {
+                bool savedAsDiscrete = reader.ReadBoolean();
+
+                if (savedAsDiscrete)
+                {
+                    ReadMatrixInto(reader, model.TokenEmbedding);
+                }
+                else
+                {
+                    ReadMatrixInto(reader, model.InputProjection);
+                    ReadVectorInto(reader, model.InputProjectionBias);
+                }
+
+                for (int layer = 0; layer < config.NumLayers; layer++)
+                {
+                    var block = model.Blocks[layer];
+
+                    ReadAttentionInto(reader, block.Attention);
+
+                    ReadVectorInto(reader, block.LN1Gamma);
+                    ReadVectorInto(reader, block.LN1Beta);
+                    ReadVectorInto(reader, block.LN2Gamma);
+                    ReadVectorInto(reader, block.LN2Beta);
+                }
+
+                ReadMatrixInto(reader, model.OutputProjection);
+                ReadVectorInto(reader, model.OutputBias);
+            }
+
+            var ffnDir = System.IO.Path.Combine(directory, "ffn");
+
+            for (int layer = 0; layer < config.NumLayers; layer++)
+            {
+                var ffnPath = System.IO.Path.Combine(ffnDir, $"ffn_layer_{layer}");
+
+                model.Blocks[layer].FeedForwardNetwork = NeuralNetwork.Load(ffnPath, config.AccelerationType, config.AccelerationDeviceId);
+            }
+
+            return model;
+        }
+
+        private static void WriteMatrix(System.IO.BinaryWriter writer, float[,] matrix)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            writer.Write(rows);
+            writer.Write(cols);
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    writer.Write(matrix[i, j]);
+                }
+            }
+        }
+
+        private static void WriteVector(System.IO.BinaryWriter writer, float[] vector)
+        {
+            writer.Write(vector.Length);
+
+            for (int i = 0; i < vector.Length; i++)
+            {
+                writer.Write(vector[i]);
+            }
+        }
+
+        private static void WriteAttention(System.IO.BinaryWriter writer, MultiHeadAttention attn)
+        {
+            WriteMatrix(writer, attn.WQ);
+            WriteMatrix(writer, attn.WK);
+            WriteMatrix(writer, attn.WV);
+            WriteMatrix(writer, attn.WO);
+            WriteVector(writer, attn.BiasQ);
+            WriteVector(writer, attn.BiasK);
+            WriteVector(writer, attn.BiasV);
+            WriteVector(writer, attn.BiasO);
+        }
+
+        private static void ReadMatrixInto(System.IO.BinaryReader reader, float[,] matrix)
+        {
+            int rows = reader.ReadInt32();
+            int cols = reader.ReadInt32();
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    matrix[i, j] = reader.ReadSingle();
+                }
+            }
+        }
+
+        private static void ReadVectorInto(System.IO.BinaryReader reader, float[] vector)
+        {
+            int len = reader.ReadInt32();
+
+            for (int i = 0; i < len; i++)
+            {
+                vector[i] = reader.ReadSingle();
+            }
+        }
+
+        private static void ReadAttentionInto(System.IO.BinaryReader reader, MultiHeadAttention attn)
+        {
+            ReadMatrixInto(reader, attn.WQ);
+            ReadMatrixInto(reader, attn.WK);
+            ReadMatrixInto(reader, attn.WV);
+            ReadMatrixInto(reader, attn.WO);
+            ReadVectorInto(reader, attn.BiasQ);
+            ReadVectorInto(reader, attn.BiasK);
+            ReadVectorInto(reader, attn.BiasV);
+            ReadVectorInto(reader, attn.BiasO);
+        }
+
+
+        #endregion
+
     }
 }

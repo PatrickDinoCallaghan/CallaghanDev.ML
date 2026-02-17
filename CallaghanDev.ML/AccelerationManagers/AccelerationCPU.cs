@@ -6,6 +6,7 @@ using ILGPU.Algorithms;
 using CallaghanDev.ML.Enums;
 using System;
 using static CallaghanDev.ML.Functions;
+using System.Numerics;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
@@ -297,27 +298,37 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
+        #region Multi-head attention
+
         public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
         {
-            int seqLen = Q.GetLength(0);
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);  // K and V have the same seq length
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
 
-            var concatenated = new float[seqLen, embeddingDim];
+            var concatenated = new float[seqLenQ, embeddingDim];
 
             for (int head = 0; head < numHeads; head++)
             {
                 int startIdx = head * headDim;
 
-                var Q_head = new float[seqLen, headDim];
-                var K_head = new float[seqLen, headDim];
-                var V_head = new float[seqLen, headDim];
+                var Q_head = new float[seqLenQ, headDim];
+                var K_head = new float[seqLenK, headDim];
+                var V_head = new float[seqLenK, headDim];
 
-                for (int i = 0; i < seqLen; i++)
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     for (int j = 0; j < headDim; j++)
                     {
                         Q_head[i, j] = Q[i, startIdx + j];
+                    }
+                }
+
+                for (int i = 0; i < seqLenK; i++)
+                {
+                    for (int j = 0; j < headDim; j++)
+                    {
                         K_head[i, j] = K[i, startIdx + j];
                         V_head[i, j] = V[i, startIdx + j];
                     }
@@ -326,9 +337,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                 var scores = MatrixMultiplyTranspose(Q_head, K_head);
                 var scaledScores = MatrixScale(scores, scale);
                 var attnWeights = Softmax(scaledScores, mask);
+
                 var headOutput = MatrixMultiply(attnWeights, V_head);
 
-                for (int i = 0; i < seqLen; i++)
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     for (int j = 0; j < headDim; j++)
                     {
@@ -342,49 +354,61 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {
-            int seqLen = Q.GetLength(0);
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
 
-            var dQ_full = new float[seqLen, embeddingDim];
-            var dK_full = new float[seqLen, embeddingDim];
-            var dV_full = new float[seqLen, embeddingDim];
+            var dQ_full = new float[seqLenQ, embeddingDim];
+            var dK_full = new float[seqLenK, embeddingDim];
+            var dV_full = new float[seqLenK, embeddingDim];
 
             for (int head = 0; head < numHeads; head++)
             {
                 int startIdx = head * headDim;
 
-                var Q_head = new float[seqLen, headDim];
-                var K_head = new float[seqLen, headDim];
-                var V_head = new float[seqLen, headDim];
-                var dHeadOutput = new float[seqLen, headDim];
+                var Q_head = new float[seqLenQ, headDim];
+                var dHeadOutput = new float[seqLenQ, headDim];
 
-                for (int i = 0; i < seqLen; i++)
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     for (int j = 0; j < headDim; j++)
                     {
                         Q_head[i, j] = Q[i, startIdx + j];
-                        K_head[i, j] = K[i, startIdx + j];
-                        V_head[i, j] = V[i, startIdx + j];
                         dHeadOutput[i, j] = dConcatenated[i, startIdx + j];
                     }
                 }
 
-                // Recompute attention weights for this head
+                var K_head = new float[seqLenK, headDim];
+                var V_head = new float[seqLenK, headDim];
+
+                for (int i = 0; i < seqLenK; i++)
+                {
+                    for (int j = 0; j < headDim; j++)
+                    {
+                        K_head[i, j] = K[i, startIdx + j];
+                        V_head[i, j] = V[i, startIdx + j];
+                    }
+                }
+
+                // Recompute attention weights: scores [seqLenQ, seqLenK]
                 var scores = MatrixMultiplyTranspose(Q_head, K_head);
+
                 var scaledScores = MatrixScale(scores, scale);
 
-                var attnWeights = new float[seqLen, seqLen];
-                for (int i = 0; i < seqLen; i++)
+                // Softmax with optional causal mask: attnWeights [seqLenQ, seqLenK]
+                var attnWeights = new float[seqLenQ, seqLenK];
+
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     float max = float.NegativeInfinity;
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         if (useDecoderMask && j > i) continue;
                         max = Math.Max(max, scaledScores[i, j]);
                     }
                     float expSum = 0;
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         if (useDecoderMask && j > i)
                         {
@@ -394,17 +418,19 @@ namespace CallaghanDev.ML.AccelerationManagers
                         attnWeights[i, j] = MathF.Exp(scaledScores[i, j] - max);
                         expSum += attnWeights[i, j];
                     }
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         attnWeights[i, j] /= (expSum + 1e-10f);
                     }
                 }
 
                 // dAttnWeights[i,j] = sum_k dHeadOutput[i,k] * V_head[j,k]
-                var dAttnWeights = new float[seqLen, seqLen];
-                for (int i = 0; i < seqLen; i++)
+                // Shape: [seqLenQ, seqLenK]
+                var dAttnWeights = new float[seqLenQ, seqLenK];
+
+                for (int i = 0; i < seqLenQ; i++)
                 {
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         float sum = 0;
                         for (int k = 0; k < headDim; k++)
@@ -415,31 +441,34 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
 
-                // dV_head[i,k] = sum_j attnWeights[j,i] * dHeadOutput[j,k]
-                var dV_head = new float[seqLen, headDim];
-                for (int i = 0; i < seqLen; i++)
+                // dV_head[j,k] = sum_i attnWeights[i,j] * dHeadOutput[i,k]
+                // Shape: [seqLenK, headDim]
+                var dV_head = new float[seqLenK, headDim];
+
+                for (int j = 0; j < seqLenK; j++)
                 {
                     for (int k = 0; k < headDim; k++)
                     {
                         float sum = 0;
-                        for (int j = 0; j < seqLen; j++)
+                        for (int i = 0; i < seqLenQ; i++)
                         {
-                            sum += attnWeights[j, i] * dHeadOutput[j, k];
+                            sum += attnWeights[i, j] * dHeadOutput[i, k];
                         }
-                        dV_head[i, k] = sum;
+                        dV_head[j, k] = sum;
                     }
                 }
 
-                // Softmax backward
-                var dScaledScores = new float[seqLen, seqLen];
-                for (int i = 0; i < seqLen; i++)
+                // Softmax backward: dScaledScores [seqLenQ, seqLenK]
+                var dScaledScores = new float[seqLenQ, seqLenK];
+
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     float dot = 0;
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         dot += attnWeights[i, j] * dAttnWeights[i, j];
                     }
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         dScaledScores[i, j] = attnWeights[i, j] * (dAttnWeights[i, j] - dot);
                         if (useDecoderMask && j > i)
@@ -449,24 +478,25 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
 
-                // Scale backward
-                var dScores = new float[seqLen, seqLen];
-                for (int i = 0; i < seqLen; i++)
+                var dScores = new float[seqLenQ, seqLenK];
+
+                for (int i = 0; i < seqLenQ; i++)
                 {
-                    for (int j = 0; j < seqLen; j++)
+                    for (int j = 0; j < seqLenK; j++)
                     {
                         dScores[i, j] = dScaledScores[i, j] * scale;
                     }
                 }
 
-                // dQ_head = dScores * K_head
-                var dQ_head = new float[seqLen, headDim];
-                for (int i = 0; i < seqLen; i++)
+                // dQ_head[i,k] = sum_j dScores[i,j] * K_head[j,k]
+                // Shape: [seqLenQ, headDim]
+                var dQ_head = new float[seqLenQ, headDim];
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     for (int k = 0; k < headDim; k++)
                     {
                         float sum = 0;
-                        for (int j = 0; j < seqLen; j++)
+                        for (int j = 0; j < seqLenK; j++)
                         {
                             sum += dScores[i, j] * K_head[j, k];
                         }
@@ -474,14 +504,15 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
 
-                // dK_head = dScores^T * Q_head
-                var dK_head = new float[seqLen, headDim];
-                for (int j = 0; j < seqLen; j++)
+                // dK_head[j,k] = sum_i dScores[i,j] * Q_head[i,k]
+                // Shape: [seqLenK, headDim]
+                var dK_head = new float[seqLenK, headDim];
+                for (int j = 0; j < seqLenK; j++)
                 {
                     for (int k = 0; k < headDim; k++)
                     {
                         float sum = 0;
-                        for (int i = 0; i < seqLen; i++)
+                        for (int i = 0; i < seqLenQ; i++)
                         {
                             sum += dScores[i, j] * Q_head[i, k];
                         }
@@ -489,20 +520,26 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
 
-                // Scatter back to full arrays
-                for (int i = 0; i < seqLen; i++)
+                for (int i = 0; i < seqLenQ; i++)
                 {
                     for (int j = 0; j < headDim; j++)
                     {
                         dQ_full[i, startIdx + j] += dQ_head[i, j];
+                    }
+                }
+
+                for (int i = 0; i < seqLenK; i++)
+                    for (int j = 0; j < headDim; j++)
+                    {
                         dK_full[i, startIdx + j] += dK_head[i, j];
                         dV_full[i, startIdx + j] += dV_head[i, j];
                     }
-                }
             }
 
             return (dQ_full, dK_full, dV_full);
         }
+
+        #endregion
 
         public void BackpropLinearProjection(float[,] input, float[,] dOutput, float[,] weights, float[,] weightGrad, float[] biasGrad, float[,] dInput)
         {
@@ -696,6 +733,277 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
 
+
+        //new
+        public float[,] MatrixAddBias(float[,] matrix, float[] bias)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            var result = new float[rows, cols];
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    result[i, j] = matrix[i, j] + bias[j];
+                }
+            }
+            return result;
+        }
+
+        public float[,] EmbedTokensWithPosition(float[,] tokenEmbedding, int[] tokenIds, float[,] positionalEncoding, int seqLen, int embeddingDim)
+        {
+            var result = new float[seqLen, embeddingDim];
+            for (int i = 0; i < seqLen; i++)
+            {
+                int tokenId = tokenIds[i];
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    result[i, j] = tokenEmbedding[tokenId, j] + positionalEncoding[i, j];
+                }
+            }
+            return result;
+        }
+
+        public float[,] AddBiasAndPositionalEncoding(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
+        {
+            var result = new float[seqLen, embeddingDim];
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    result[i, j] = projected[i, j] + bias[j] + positionalEncoding[i, j];
+                }
+            }
+            return result;
+        }
+
+        public (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen)
+        {
+            int outputDim = logits.GetLength(1);
+            float loss = 0;
+            var dLogits = new float[logits.GetLength(0), outputDim];
+            float invLen = 1.0f / effectiveLen;
+
+            for (int i = 0; i < effectiveLen; i++)
+            {
+                float max = float.NegativeInfinity;
+                for (int j = 0; j < outputDim; j++)
+                {
+                    max = Math.Max(max, logits[i, j]);
+                }
+
+                float sum = 0;
+                var probs = new float[outputDim];
+                for (int j = 0; j < outputDim; j++)
+                {
+                    probs[j] = MathF.Exp(logits[i, j] - max);
+                    sum += probs[j];
+                }
+                for (int j = 0; j < outputDim; j++)
+                {
+                    probs[j] /= sum;
+                }
+
+                int targetToken = targets[i];
+                loss -= MathF.Log(probs[targetToken] + 1e-10f);
+
+                for (int j = 0; j < outputDim; j++)
+                {
+                    dLogits[i, j] = probs[j] * invLen;
+                    if (j == targetToken)
+                    {
+                        dLogits[i, j] -= invLen;
+                    }
+                }
+            }
+
+            loss /= effectiveLen;
+            return (loss, dLogits);
+        }
+
+        public (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int effectiveLen)
+        {
+            int outputDim = predictions.GetLength(1);
+            float loss = 0;
+            var dOutput = new float[predictions.GetLength(0), outputDim];
+            float invLen = 1.0f / (effectiveLen * outputDim);
+
+            for (int i = 0; i < effectiveLen; i++)
+            {
+                for (int j = 0; j < outputDim; j++)
+                {
+                    float diff = predictions[i, j] - targets[i, j];
+                    loss += diff * diff;
+                    dOutput[i, j] = 2.0f * diff * invLen;
+                }
+            }
+
+            loss /= (effectiveLen * outputDim);
+            return (loss, dOutput);
+        }
+
+        public float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights, float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim)
+        {
+            var dX = new float[seqLen, embeddingDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int v = 0; v < outputDim; v++)
+                {
+                    float dVal = dLogits[i, v];
+                    for (int e = 0; e < embeddingDim; e++)
+                    {
+                        weightGrad[v, e] += input[i, e] * dVal;
+                    }
+                    biasGrad[v] += dVal;
+                }
+
+                for (int e = 0; e < embeddingDim; e++)
+                {
+                    float grad = 0;
+                    for (int v = 0; v < outputDim; v++)
+                    {
+                        grad += dLogits[i, v] * weights[v, e];
+                    }
+                    dX[i, e] = grad;
+                }
+            }
+
+            return dX;
+        }
+
+        public void BackpropInputProjection(float[,] dX, float[,] continuousInput, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim)
+        {
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int e = 0; e < embeddingDim; e++)
+                {
+                    float dVal = dX[i, e];
+                    for (int f = 0; f < inputFeatureDim; f++)
+                    {
+                        weightGrad[e, f] += dVal * continuousInput[i, f];
+                    }
+                    biasGrad[e] += dVal;
+                }
+            }
+        }
+
+        public void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int seqLen, int embeddingDim)
+        {
+            for (int i = 0; i < seqLen; i++)
+            {
+                int tokenId = tokenIds[i];
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    embeddingGrad[tokenId, j] += dX[i, j];
+                }
+            }
+        }
+
+        public void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad)
+        {
+            for (int j = 0; j < targetGrad.Length; j++)
+            {
+                targetGrad[j] += sourceGrad[j];
+            }
+        }
+
+        public float VectorSquaredNorm(float[] vector)
+        {
+            float sum = 0;
+            for (int i = 0; i < vector.Length; i++)
+            {
+                sum += vector[i] * vector[i];
+            }
+            return sum;
+        }
+
+        public float[,] SliceRows(float[,] matrix, int startRow, int endRow)
+        {
+            int cols = matrix.GetLength(1);
+            int numRows = endRow - startRow;
+            var result = new float[numRows, cols];
+            for (int i = 0; i < numRows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    result[i, j] = matrix[startRow + i, j];
+                }
+            }
+            return result;
+        }
+
+        public float[] ExtractRow(float[,] matrix, int rowIndex, int cols)
+        {
+            var result = new float[cols];
+            for (int j = 0; j < cols; j++)
+            {
+                result[j] = matrix[rowIndex, j];
+            }
+            return result;
+        }
+
+        public void SetRow(float[,] matrix, int rowIndex, float[] values, int cols)
+        {
+            for (int j = 0; j < cols; j++)
+            {
+                matrix[rowIndex, j] = values[j];
+            }
+        }
+
+        public bool[,] CreateCausalMask(int seqLen)
+        {
+            var mask = new bool[seqLen, seqLen];
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j <= i; j++)
+                {
+                    mask[i, j] = true;
+                }
+            }
+            return mask;
+        }
+
+        public void MatrixAccumulate(float[,] target, float[,] source)
+        {
+            int rows = target.GetLength(0);
+            int cols = target.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    target[i, j] += source[i, j];
+                }
+            }
+        }
+
+        public void ZeroVector(float[] vector)
+        {
+            Array.Clear(vector, 0, vector.Length);
+        }
+
+        public void SigmoidInPlace(float[,] matrix)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    float x = matrix[i, j];
+                    if (x >= 0)
+                    {
+                        float ex = MathF.Exp(-x);
+                        matrix[i, j] = 1.0f / (1.0f + ex);
+                    }
+                    else
+                    {
+                        float ex = MathF.Exp(x);
+                        matrix[i, j] = ex / (1.0f + ex);
+                    }
+                }
+            }
+        }
         public void Dispose() { }
 
     }

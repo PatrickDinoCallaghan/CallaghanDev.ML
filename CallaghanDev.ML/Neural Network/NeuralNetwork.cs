@@ -1,10 +1,6 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
-using CallaghanDev.Utilities;
-using CallaghanDev.Utilities.Utilities.Diagnostics;
-using DocumentFormat.OpenXml.Spreadsheet;
-using log4net.Repository.Hierarchy;
-using Terminal.Gui.Helpers;
+using CallaghanDev.ML.Helpers;
 
 namespace CallaghanDev.ML
 {
@@ -75,7 +71,6 @@ namespace CallaghanDev.ML
         /// <param name="silent">Shows updates in bar on console window</param>
         public void Train(IList<float[]> inputs, IList<float[]> expected, float learningRate, int epochs, bool silent = false)
         {
-            // Build a *fixed* min/max from the entire training set:
             CalibrateInputs(inputs);
 
             long total = (long)inputs.Count * epochs;
@@ -90,7 +85,7 @@ namespace CallaghanDev.ML
                     count++;
                     if (!silent)
                     {
-                        Terminal.Gui.Helpers.ProgressBarHelper.DisplayProgressBar(count, total, "Progress");
+                        ProgressBarHelper.DisplayProgressBar(count, total, "Progress");
                     }
                 }
             }

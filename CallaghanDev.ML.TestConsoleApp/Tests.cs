@@ -1,21 +1,20 @@
-﻿using CallaghanDev.ML.Enums;
+﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
-using CallaghanDev.ML.Transformers.Cache;
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
 
 namespace CallaghanDev.ML
 {
     public class Tests
     {
         private const float EPSILON = 1e-3f;
-        private const float TOLERANCE = 0.05f;
-        private const float ABS_TOLERANCE = 1e-4f;
+        // private const float TOLERANCE = 0.05f;
+        // private const float ABS_TOLERANCE = 1e-4f;
 
         private int _passed = 0;
         private int _failed = 0;
         private List<string> _failures = new List<string>();
+
 
         public void RunAllTests()
         {
@@ -98,6 +97,71 @@ namespace CallaghanDev.ML
                 (Test_Example_SymbolicSequence, "Example: Symbolic Sequence (DNA)"),
                 (Test_Example_TimeSeriesRegression, "Example: Time Series Regression"),
                 (Test_Example_TimeSeriesClassification, "Example: Time Series Classification"),
+
+                // Cross attention multimodal tests (all sorts)
+                (Test_CrossAttention_BasicExample, "CrossAttention: Basic Example"),
+                (Test_CrossAttention_FrozenTextEncoder, "CrossAttention: Frozen Text Encoder"),
+                (Test_CrossAttention_ModelConstruction_NoError, "CrossAttention: Model Construction"),
+                (Test_CrossAttention_ForwardPass_OutputShape, "CrossAttention: Forward Output Shape"),
+                (Test_CrossAttention_ForwardPass_NoNaN, "CrossAttention: Forward No NaN"),
+                (Test_CrossAttention_PredictNext_OutputShape, "CrossAttention: PredictNext Shape"),
+                (Test_CrossAttention_ConfidenceHead_SigmoidRange, "CrossAttention: Confidence In [0,1]"),
+                (Test_CrossAttention_NoConfidenceHead, "CrossAttention: No Confidence Head"),
+                (Test_CrossAttention_LossDecreases, "CrossAttention: Loss Decreases"),
+                (Test_CrossAttention_ValidationLoss_Computable, "CrossAttention: Validation Computable"),
+                (Test_CrossAttention_DifferentTextLengths_NoError, "CrossAttention: Varying Text Lengths"),
+                (Test_CrossAttention_TextLongerThanPrice_NoError, "CrossAttention: Text > Price SeqLen"),
+                (Test_CrossAttention_TextShorterThanPrice_NoError, "CrossAttention: Text < Price SeqLen"),
+                (Test_CrossAttention_FrozenEncoder_WeightsUnchanged, "CrossAttention: Frozen Weights Unchanged"),
+                (Test_CrossAttention_UnfrozenEncoder_WeightsChange, "CrossAttention: Unfrozen Weights Change"),
+                (Test_CrossAttention_AllPriceParams_ReceiveGradients, "CrossAttention: Price Params Get Gradients"),
+                (Test_CrossAttention_GradientClipping_NoNaN, "CrossAttention: Clipping Prevents NaN"),
+                (Test_CrossAttention_DeterministicForward, "CrossAttention: Deterministic Forward"),
+                (Test_CrossAttention_LearningRateDecay, "CrossAttention: LR Decay"),
+                (Test_CrossAttention_SingleSampleOverfit, "CrossAttention: Single Sample Overfit"),
+                (Test_CrossAttention_EmbDimMismatch_Throws, "CrossAttention: EmbDim Mismatch Throws"),
+                (Test_CrossAttention_MinimalConfig, "CrossAttention: Minimal (1 layer 1 head)"),
+
+
+                //Accelleration tests for transformer
+                (Test_Std_CPU_TrainGenerate, "Std Transformer CPU: Train+Generate"),
+                (Test_Std_MultiThread_TrainGenerate, "Std Transformer MultiThread: Train+Generate"),
+                (Test_Std_CPU_LossDecreases, "Std Transformer CPU: Loss Decreases"),
+                (Test_Std_MultiThread_LossDecreases, "Std Transformer MultiThread: Loss Decreases"),
+                (Test_Std_CPU_Regression, "Std Transformer CPU: Regression"),
+                (Test_Std_MultiThread_Regression, "Std Transformer MultiThread: Regression"),
+
+                // Accelleration backend tests for cross attention multimodal
+                (Test_CrossAttn_CPU_TrainPredict, "CrossAttention CPU: Train+Predict"),
+                (Test_CrossAttn_MultiThread_TrainPredict, "CrossAttention MultiThread: Train+Predict"),
+                (Test_CrossAttn_CPU_LossDecreases, "CrossAttention CPU: Loss Decreases"),
+                (Test_CrossAttn_MultiThread_LossDecreases, "CrossAttention MultiThread: Loss Decreases"),
+
+                // Cross backend consistancy tests
+                (Test_MHA_Forward_CPUvsMultiThread, "MHA Forward: CPU vs MultiThread Consistency"),
+                (Test_MHA_Backward_CPUvsMultiThread, "MHA Backward: CPU vs MultiThread Consistency"),
+                (Test_CrossAttn_Forward_CPUvsMultiThread, "CrossAttn Forward: CPU vs MultiThread Consistency"),
+
+
+                // Save and Load all models
+                (Test_SaveLoad_Text_ExactWeightsAndForward, "SaveLoad: Text (discrete tokens)"),
+                (Test_SaveLoad_SymbolicSequence_ExactWeightsAndForward, "SaveLoad: SymbolicSequence (DNA)"),
+                (Test_SaveLoad_TimeSeriesRegression_ExactWeightsAndForward, "SaveLoad: TimeSeries Regression"),
+                (Test_SaveLoad_TimeSeriesClassification_ExactWeightsAndForward, "SaveLoad: TimeSeries Classification"),
+                (Test_SaveLoad_CrossAttentionMultimodal_ExactWeightsAndForward, "SaveLoad: CrossAttention Multimodal"),
+                (Test_SaveLoad_CrossAttention_NoConfidenceHead, "SaveLoad: CrossAttention No Confidence"),
+                (Test_SaveLoad_DoubleSaveLoad_RoundTrip, "SaveLoad: Double Round-Trip"),
+
+                // Testing cross attention where text is optional
+                (Test_CrossAttention_PriceOnly_ForwardNoError, "CrossAttention: Price-Only Forward"),
+                (Test_CrossAttention_PriceOnly_PredictNext, "CrossAttention: Price-Only PredictNext"),
+                (Test_CrossAttention_PriceOnly_TrainAndLossDecreases, "CrossAttention: Price-Only Loss Decreases"),
+                (Test_CrossAttention_MixedBatch_SomeTextSomeNull, "CrossAttention: Mixed Batch Text+Null"),
+                (Test_CrossAttention_EmptyTextArray_TreatedAsNull, "CrossAttention: Empty Text = Null"),
+                (Test_CrossAttention_TextVsNoText_DifferentOutputs, "CrossAttention: Text vs NoText Differ"),
+                (Test_CrossAttention_PriceOnly_Deterministic, "CrossAttention: Price-Only Deterministic"),
+                (Test_CrossAttention_PriceOnly_SingleSampleOverfit, "CrossAttention: Price-Only Overfit"),
+
             };
 
             for (int i = 0; i < tests.Length; i++)
@@ -1631,5 +1695,1326 @@ namespace CallaghanDev.ML
 
             Assert(output.GetLength(1) == 3, $"Classification example: wrong output dim {output.GetLength(1)}");
         }
+
+
+        private (BPETokenizer tokenizer, int[][] textSeqs, float[][,] priceInputs, float[][,] priceTargets) CreateCrossAttentionTestData(int numSamples = 10, int priceSeqLen = 8, int inputFeatures = 5, int outputDim = 5, int seed = 42)
+        {
+            var random = new Random(seed);
+
+            string[] corpus = new[]
+            {
+                "stock price rose sharply today",
+                "market crashed due to earnings miss",
+                "bullish sentiment on tech sector",
+                "bearish outlook for energy stocks",
+                "neutral trading day with low volume"
+            };
+            var tokenizer = new BPETokenizer();
+
+            tokenizer.Train(corpus, vocabSize: 200, minFrequency: 1);
+
+            var textSeqs = new int[numSamples][];
+            var priceInputs = new float[numSamples][,];
+            var priceTargets = new float[numSamples][,];
+
+            for (int s = 0; s < numSamples; s++)
+            {
+
+                textSeqs[s] = tokenizer.Encode(corpus[random.Next(corpus.Length)], addSpecialTokens: true);
+                priceInputs[s] = new float[priceSeqLen, inputFeatures];
+                priceTargets[s] = new float[priceSeqLen, outputDim];
+                float basePrice = 100f + (float)(random.NextDouble() * 50);
+
+                for (int t = 0; t < priceSeqLen; t++)
+                {
+                    for (int f = 0; f < inputFeatures; f++)
+                    {
+                        priceInputs[s][t, f] = (basePrice + (float)(random.NextDouble() - 0.5) * 10f) / 200f;
+                    }
+                    for (int f = 0; f < outputDim; f++)
+                    {
+                        priceTargets[s][t, f] = (basePrice + (float)(random.NextDouble() - 0.5) * 10f) / 200f;
+                    }
+                    basePrice += (float)(random.NextDouble() - 0.48) * 2f;
+                }
+            }
+            return (tokenizer, textSeqs, priceInputs, priceTargets);
+        }
+
+        private Config CreateSmallCrossAttentionConfig(int textVocabSize, AccelerationType accelType = AccelerationType.CPU, int embDim = 16, int numHeads = 2, int numLayers = 1, int ffnDim = 32, int inputFeatures = 5, int outputDim = 5, int priceSeqLen = 10, bool useConfidence = true, bool freezeTextEncoder = false)
+        {
+            return new Config
+            {
+                TextVocabSize = textVocabSize,
+                TextMaxSequenceLength = 32,
+                TextEmbeddingDim = embDim,
+                TextNumHeads = numHeads,
+                TextNumLayers = numLayers,
+                TextFeedForwardDim = ffnDim,
+                TextUseDecoderOnly = false,
+                PriceInputFeatureDim = inputFeatures,
+                PriceMaxSequenceLength = priceSeqLen + 2,
+                PriceEmbeddingDim = embDim,
+                PriceNumHeads = numHeads,
+                PriceNumLayers = numLayers,
+                PriceFeedForwardDim = ffnDim,
+                PriceUseDecoderOnly = true,
+                OutputDim = outputDim,
+                UseConfidenceHead = useConfidence,
+                FreezeTextEncoder = freezeTextEncoder,
+                FFNActivationType = ActivationType.Relu,
+                AccelerationType = accelType,
+                L2RegulationLamda = 0f,
+                GradientClippingThreshold = 1.0f
+            };
+        }
+
+        private bool MatricesApproxEqual(float[,] a, float[,] b, float tol = 1e-4f)
+        {
+            if (a.GetLength(0) != b.GetLength(0) || a.GetLength(1) != b.GetLength(1))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < a.GetLength(0); i++)
+            {
+                for (int j = 0; j < a.GetLength(1); j++)
+                {
+
+                    if (MathF.Abs(a[i, j] - b[i, j]) > tol)
+                    {
+                        return false;
+                    }
+                }
+            }
+       
+            return true;
+        }
+
+        public void Test_CrossAttention_BasicExample()
+        {
+
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 20, priceSeqLen: 10);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 32, numHeads: 2, numLayers: 2, ffnDim: 64, priceSeqLen: 10);
+
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainConfig = new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 4, Epochs = 10, UseGradientClipping = true, GradientClipThreshold = 1.0f, ConfidenceLossWeight = 0.1f, Verbose = false };
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, trainConfig);
+
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            float valLoss = trainer.Validate(textSeqs, priceInputs, priceTargets);
+
+            Assert(!float.IsNaN(valLoss) && valLoss >= 0, $"BasicExample validation loss invalid: {valLoss}");
+
+            var (prediction, confidence) = model.PredictNext(textSeqs[0], priceInputs[0]);
+
+
+            Assert(prediction.Length == 5, $"Prediction dim wrong: {prediction.Length}");
+            Assert(!float.IsNaN(confidence) && confidence >= 0f && confidence <= 1f, $"Confidence invalid: {confidence}");
+        }
+
+        public void Test_CrossAttention_FrozenTextEncoder()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 6, inputFeatures: 3, outputDim: 3);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32,inputFeatures: 3, outputDim: 3, priceSeqLen: 6, useConfidence: false, freezeTextEncoder: true);
+            
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            float textEmbBefore = model.TextTokenEmbedding[1, 0];
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 10, Verbose = false });
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            float textEmbAfter = model.TextTokenEmbedding[1, 0];
+            Assert(textEmbBefore == textEmbAfter, $"Text encoder changed despite being frozen: {textEmbBefore} vs {textEmbAfter}");
+
+            float valLoss = trainer.Validate(textSeqs, priceInputs, priceTargets);
+            Assert(!float.IsNaN(valLoss), $"Validation loss NaN after frozen encoder training");
+        }
+
+        public void Test_CrossAttention_ModelConstruction_NoError()
+        {
+            var config = CreateSmallCrossAttentionConfig(textVocabSize: 50);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            Assert(model.TextBlocks.Length == 1, $"Wrong text blocks: {model.TextBlocks.Length}");
+            Assert(model.PriceBlocks.Length == 1, $"Wrong price blocks: {model.PriceBlocks.Length}");
+            Assert(model.OutputProjection.GetLength(0) == 5, $"Wrong output rows: {model.OutputProjection.GetLength(0)}");
+        }
+
+        public void Test_CrossAttention_ForwardPass_OutputShape()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 8);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 8);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var (predictions, confidence) = model.Forward(textSeqs[0], priceInputs[0]);
+
+            Assert(predictions.GetLength(0) == 8, $"Prediction seqLen: {predictions.GetLength(0)} expected 8");
+            Assert(predictions.GetLength(1) == 5, $"Prediction dim: {predictions.GetLength(1)} expected 5");
+            Assert(confidence != null && confidence.GetLength(0) == 8, "Confidence shape wrong");
+            Assert(confidence.GetLength(1) == 1, $"Confidence cols: {confidence.GetLength(1)} expected 1");
+        }
+
+        public void Test_CrossAttention_ForwardPass_NoNaN()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var (predictions, confidence) = model.Forward(textSeqs[0], priceInputs[0]);
+
+            for (int i = 0; i < predictions.GetLength(0); i++)
+            {
+                for (int j = 0; j < predictions.GetLength(1); j++)
+                {
+                    Assert(!float.IsNaN(predictions[i, j]) && !float.IsInfinity(predictions[i, j]), $"NaN/Inf at predictions[{i},{j}]");
+                }
+            }
+            for (int i = 0; i < confidence.GetLength(0); i++)
+            {
+                Assert(!float.IsNaN(confidence[i, 0]) && !float.IsInfinity(confidence[i, 0]), $"NaN/Inf at confidence[{i}]");
+            }
+        }
+
+        public void Test_CrossAttention_PredictNext_OutputShape()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var (prediction, confidence) = model.PredictNext(textSeqs[0], priceInputs[0]);
+            Assert(prediction.Length == 5, $"PredictNext dim: {prediction.Length}");
+            foreach (var v in prediction)
+                Assert(!float.IsNaN(v), "PredictNext has NaN value");
+        }
+
+        public void Test_CrossAttention_ConfidenceHead_SigmoidRange()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 3, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6, useConfidence: true);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            for (int s = 0; s < 3; s++)
+            {
+                var (_, conf) = model.Forward(textSeqs[s], priceInputs[s]);
+                for (int i = 0; i < conf.GetLength(0); i++)
+                    Assert(conf[i, 0] >= 0f && conf[i, 0] <= 1f, $"Confidence {conf[i, 0]} outside [0,1]");
+            }
+        }
+
+        public void Test_CrossAttention_NoConfidenceHead()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6, useConfidence: false);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var (predictions, confidence) = model.Forward(textSeqs[0], priceInputs[0]);
+            Assert(confidence == null, "Confidence should be null when UseConfidenceHead=false");
+            Assert(predictions.GetLength(1) == 5, "Predictions dim wrong");
+        }
+
+        public void Test_CrossAttention_LossDecreases()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 8);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 16, priceSeqLen: 8);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+            float lossBefore = trainer.Validate(textSeqs, priceInputs, priceTargets);
+            trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+            float lossAfter = trainer.Validate(textSeqs, priceInputs, priceTargets);
+            Assert(lossAfter < lossBefore, $"Loss did not decrease: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        public void Test_CrossAttention_ValidationLoss_Computable()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { Verbose = false });
+            float valLoss = trainer.Validate(textSeqs, priceInputs, priceTargets);
+            Assert(!float.IsNaN(valLoss) && !float.IsInfinity(valLoss) && valLoss >= 0, $"Validation loss invalid: {valLoss}");
+        }
+
+        public void Test_CrossAttention_DifferentTextLengths_NoError()
+        {
+            string[] corpus = { "hi", "stock price rose sharply today because of earnings", "bullish", "market crashed due to bad earnings miss report" };
+
+            var tokenizer = new BPETokenizer();
+
+            tokenizer.Train(corpus, vocabSize: 200, minFrequency: 1);
+
+            var textSeqs = corpus.Select(t => tokenizer.Encode(t, addSpecialTokens: true)).ToArray();
+            var random = new Random(42);
+
+            var priceInputs = new float[4][,];
+            var priceTargets = new float[4][,];
+
+            for (int i = 0; i < 4; i++)
+            {
+                priceInputs[i] = new float[6, 5];
+                priceTargets[i] = new float[6, 5];
+
+                for (int t = 0; t < 6; t++)
+                {
+                    for (int f = 0; f < 5; f++)
+                    {
+                        { priceInputs[i][t, f] = (float)random.NextDouble(); priceTargets[i][t, f] = (float)random.NextDouble(); }
+                    }
+                }
+            }
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 2, Epochs = 3, Verbose = false });
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+        }
+
+        public void Test_CrossAttention_TextLongerThanPrice_NoError()
+        {
+            // Text ~15 tokens, Price 4 timesteps — cross-attention Q(4) x K/V(~15)
+            string[] corpus = { "this is a much longer text sequence that has many more tokens than the price sequence" };
+            var tokenizer = new BPETokenizer();
+            tokenizer.Train(corpus, vocabSize: 200, minFrequency: 1);
+            var textSeqs = new int[][] { tokenizer.Encode(corpus[0], addSpecialTokens: true) };
+            var random = new Random(42);
+            var priceInputs = new float[1][,] { new float[4, 5] };
+            for (int t = 0; t < 4; t++) for (int f = 0; f < 5; f++) priceInputs[0][t, f] = (float)random.NextDouble();
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var (predictions, _) = model.Forward(textSeqs[0], priceInputs[0]);
+            Assert(predictions.GetLength(0) == 4, $"Output should have 4 rows, got {predictions.GetLength(0)}");
+        }
+
+        public void Test_CrossAttention_TextShorterThanPrice_NoError()
+        {
+            string[] corpus = { "hi" };
+            var tokenizer = new BPETokenizer();
+            tokenizer.Train(corpus, vocabSize: 50, minFrequency: 1);
+            var textSeqs = new int[][] { tokenizer.Encode("hi", addSpecialTokens: true) };
+            var random = new Random(42);
+            var priceInputs = new float[1][,] { new float[10, 5] };
+            for (int t = 0; t < 10; t++) for (int f = 0; f < 5; f++) priceInputs[0][t, f] = (float)random.NextDouble();
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 12);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var (predictions, _) = model.Forward(textSeqs[0], priceInputs[0]);
+            Assert(predictions.GetLength(0) == 10, $"Output should have 10 rows, got {predictions.GetLength(0)}");
+        }
+
+        public void Test_CrossAttention_FrozenEncoder_WeightsUnchanged()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6, freezeTextEncoder: true);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var embBefore = (float[,])model.TextTokenEmbedding.Clone();
+            var wqBefore = (float[,])model.TextBlocks[0].Attention.WQ.Clone();
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false });
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+            Assert(!MatrixChanged(embBefore, model.TextTokenEmbedding), "Frozen text embedding changed");
+            Assert(!MatrixChanged(wqBefore, model.TextBlocks[0].Attention.WQ), "Frozen text WQ changed");
+        }
+
+        public void Test_CrossAttention_UnfrozenEncoder_WeightsChange()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6, freezeTextEncoder: false);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var embBefore = (float[,])model.TextTokenEmbedding.Clone();
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, UseGradientClipping = false, Verbose = false });
+            
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+            
+            Assert(MatrixChanged(embBefore, model.TextTokenEmbedding), "Unfrozen text embedding did not change");
+        }
+
+        public void Test_CrossAttention_AllPriceParams_ReceiveGradients()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var projBefore = (float[,])model.PriceInputProjection.Clone();
+            var outProjBefore = (float[,])model.OutputProjection.Clone();
+            var selfWqBefore = (float[,])model.PriceBlocks[0].SelfAttention.WQ.Clone();
+            var crossWqBefore = (float[,])model.PriceBlocks[0].CrossAttention.WQ.Clone();
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, UseGradientClipping = false, Verbose = false });
+            
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            Assert(MatrixChanged(projBefore, model.PriceInputProjection), "PriceInputProjection did not change");
+            Assert(MatrixChanged(outProjBefore, model.OutputProjection), "OutputProjection did not change");
+            Assert(MatrixChanged(selfWqBefore, model.PriceBlocks[0].SelfAttention.WQ), "Self-attention WQ did not change");
+            Assert(MatrixChanged(crossWqBefore, model.PriceBlocks[0].CrossAttention.WQ), "Cross-attention WQ did not change");
+        }
+
+        public void Test_CrossAttention_GradientClipping_NoNaN()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.1f, BatchSize = 5, Epochs = 5, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
+            
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            var (predictions, _) = model.Forward(textSeqs[0], priceInputs[0]);
+
+            for (int i = 0; i < predictions.GetLength(0); i++)
+            {
+                for (int j = 0; j < predictions.GetLength(1); j++)
+                {
+                    Assert(!float.IsNaN(predictions[i, j]) && !float.IsInfinity(predictions[i, j]), $"NaN/Inf at [{i},{j}] after high-LR training with clipping");
+                }
+            }
+        }
+
+        public void Test_CrossAttention_DeterministicForward()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var (pred1, _) = model.Forward(textSeqs[0], priceInputs[0]);
+            var (pred2, _) = model.Forward(textSeqs[0], priceInputs[0]);
+
+            for (int i = 0; i < pred1.GetLength(0); i++)
+            {
+                for (int j = 0; j < pred1.GetLength(1); j++)
+                {
+                    Assert(pred1[i, j] == pred2[i, j], $"Non-deterministic at [{i},{j}]: {pred1[i, j]} vs {pred2[i, j]}");
+                }
+            }
+        }
+
+        public void Test_CrossAttention_LearningRateDecay()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, UseLearningRateDecay = true, LearningRateDecay = 0.5f, Verbose = false });
+            
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            var (predictions, _) = model.Forward(textSeqs[0], priceInputs[0]);
+
+            for (int i = 0; i < predictions.GetLength(0); i++)
+            {
+                for (int j = 0; j < predictions.GetLength(1); j++)
+                {
+                    Assert(!float.IsNaN(predictions[i, j]), $"NaN after LR decay training at [{i},{j}]");
+                }
+            }
+        }
+
+        public void Test_CrossAttention_SingleSampleOverfit()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 32, numHeads: 2, numLayers: 2, ffnDim: 64, priceSeqLen: 6, useConfidence: false);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.005f, BatchSize = 1, Epochs = 100, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
+            
+            float lossBefore = trainer.Validate(textSeqs, priceInputs, priceTargets);
+
+
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+
+
+            float lossAfter = trainer.Validate(textSeqs, priceInputs, priceTargets);
+
+
+            Assert(lossAfter < lossBefore * 0.5f, $"Failed to significantly overfit single sample: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        public void Test_CrossAttention_EmbDimMismatch_Throws()
+        {
+            bool threw = false;
+            try
+            {
+                var config = new Config
+                {
+                    TextVocabSize = 50,
+                    TextEmbeddingDim = 16,
+                    TextNumHeads = 2,
+                    TextNumLayers = 1,
+                    TextFeedForwardDim = 32,
+                    PriceInputFeatureDim = 5,
+                    PriceEmbeddingDim = 32, // Mismatch!
+                    PriceNumHeads = 2,
+                    PriceNumLayers = 1,
+                    PriceFeedForwardDim = 32,
+                    OutputDim = 5,
+                    AccelerationType = AccelerationType.CPU
+                };
+                new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            }
+            catch (ArgumentException) { threw = true; }
+            Assert(threw, "Expected ArgumentException when TextEmbeddingDim != PriceEmbeddingDim");
+        }
+
+        public void Test_CrossAttention_MinimalConfig()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 3, priceSeqLen: 4, inputFeatures: 2, outputDim: 2);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 4, numHeads: 1, numLayers: 1, ffnDim: 8, inputFeatures: 2, outputDim: 2, priceSeqLen: 4, useConfidence: false);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 5, Verbose = false });
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            float valLoss = trainer.Validate(textSeqs, priceInputs, priceTargets);
+
+            Assert(!float.IsNaN(valLoss), $"Minimal config produced NaN loss: {valLoss}");
+        }
+
+
+
+        private void RunStdTransformerTrainGenerate(AccelerationType accelType)
+        {
+            var trainingTexts = new[] { "the cat sat on the mat", "the dog ran in the park", "a bird flew over the tree" };
+            var tokenizer = new BPETokenizer();
+            tokenizer.Train(trainingTexts, vocabSize: 500, minFrequency: 1);
+            var sequences = trainingTexts.Select(t => tokenizer.Encode(t, addSpecialTokens: true)).ToArray();
+            var config = new TransformerConfig { VocabSize = tokenizer.VocabSize, MaxSequenceLength = 32, EmbeddingDim = 32, NumHeads = 2, NumLayers = 2, FeedForwardDim = 64, AccelerationType = accelType };
+            var model = new LanguageModel(config, new Random(42));
+            var trainConfig = new TrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 5, Verbose = false };
+            new TransformerTrainer(model, trainConfig).Train(sequences);
+            var prompt = tokenizer.Encode("the cat", addSpecialTokens: false);
+            var generated = model.Generate(prompt, maxNewTokens: 5, temperature: 1.0f);
+            Assert(generated.Length > prompt.Length, $"No tokens generated with {accelType}");
+        }
+
+        public void Test_Std_CPU_TrainGenerate() => RunStdTransformerTrainGenerate(AccelerationType.CPU);
+        public void Test_Std_MultiThread_TrainGenerate() => RunStdTransformerTrainGenerate(AccelerationType.MultiThreadCPU);
+
+        private void RunStdTransformerLossDecreases(AccelerationType accelType)
+        {
+            var config = new TransformerConfig { DataType = TransformerDataType.Text, VocabSize = 10, MaxSequenceLength = 16, EmbeddingDim = 8, NumHeads = 2, NumLayers = 1, FeedForwardDim = 16, AccelerationType = accelType, UseDecoderOnly = true, L2RegulationLamda = 0f };
+            var model = new LanguageModel(config, new Random(42));
+            int[] sequence = { 1, 2, 3, 4, 5 };
+            int[] input = { 1, 2, 3, 4 }; int[] target = { 2, 3, 4, 5 };
+
+            // ComputeLoss needs CPU model for logits; compute manually
+            var logitsBefore = model.Forward(input);
+            float lossBefore = ComputeCELoss(logitsBefore, target, config.VocabSize);
+
+            var tc = new TrainingConfig { LearningRate = 0.005f, BatchSize = 1, Epochs = 10, UseGradientClipping = true, GradientClipThreshold = 5.0f, Verbose = false };
+            new TransformerTrainer(model, tc).Train(new[] { sequence });
+
+            var logitsAfter = model.Forward(input);
+            float lossAfter = ComputeCELoss(logitsAfter, target, config.VocabSize);
+            Assert(lossAfter < lossBefore, $"Loss did not decrease with {accelType}: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        private float ComputeCELoss(float[,] logits, int[] target, int vocabSize)
+        {
+            float loss = 0;
+            for (int i = 0; i < Math.Min(logits.GetLength(0), target.Length); i++)
+            {
+                float max = float.NegativeInfinity;
+                for (int j = 0; j < vocabSize; j++) max = Math.Max(max, logits[i, j]);
+                float sum = 0;
+                for (int j = 0; j < vocabSize; j++) sum += MathF.Exp(logits[i, j] - max);
+                float prob = MathF.Exp(logits[i, target[i]] - max) / sum;
+                loss -= MathF.Log(prob + 1e-10f);
+            }
+            return loss / Math.Min(logits.GetLength(0), target.Length);
+        }
+
+        public void Test_Std_CPU_LossDecreases() => RunStdTransformerLossDecreases(AccelerationType.CPU);
+        public void Test_Std_MultiThread_LossDecreases() => RunStdTransformerLossDecreases(AccelerationType.MultiThreadCPU);
+
+        private void RunStdTransformerRegression(AccelerationType accelType)
+        {
+            var config = new TransformerConfig { DataType = TransformerDataType.TimeSeriesRegression, InputFeatureDim = 3, OutputDim = 1, MaxSequenceLength = 16, EmbeddingDim = 8, NumHeads = 2, NumLayers = 1, FeedForwardDim = 16, AccelerationType = accelType, UseDecoderOnly = true, L2RegulationLamda = 0f };
+            var model = new LanguageModel(config, new Random(42));
+            var rng = new Random(42);
+            var inputs = new float[5][,]; var targets = new float[5][,];
+            for (int s = 0; s < 5; s++)
+            {
+                inputs[s] = new float[6, 3]; targets[s] = new float[6, 1];
+                for (int i = 0; i < 6; i++) { for (int j = 0; j < 3; j++) inputs[s][i, j] = (float)rng.NextDouble(); targets[s][i, 0] = inputs[s][i, 0] * 0.5f + 0.1f; }
+            }
+            var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false };
+            var trainer = new TransformerTrainer(model, tc);
+            float lossBefore = trainer.ValidateContinuous(inputs, regressionTargets: targets);
+            tc.Epochs = 20;
+            trainer.TrainContinuous(inputs, regressionTargets: targets);
+            float lossAfter = trainer.ValidateContinuous(inputs, regressionTargets: targets);
+            Assert(lossAfter < lossBefore, $"Regression loss did not decrease with {accelType}: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        public void Test_Std_CPU_Regression() => RunStdTransformerRegression(AccelerationType.CPU);
+        public void Test_Std_MultiThread_Regression() => RunStdTransformerRegression(AccelerationType.MultiThreadCPU);
+
+        private void RunCrossAttnTrainPredict(AccelerationType accelType)
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, accelType: accelType, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 5, Verbose = false });
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            var (prediction, confidence) = model.PredictNext(textSeqs[0], priceInputs[0]);
+
+            Assert(prediction.Length == 5, $"Wrong prediction dim with {accelType}: {prediction.Length}");
+
+            foreach (var v in prediction)
+            {
+                Assert(!float.IsNaN(v), $"NaN in prediction with {accelType}");
+            }
+
+            Assert(!float.IsNaN(confidence) && confidence >= 0f && confidence <= 1f, $"Invalid confidence with {accelType}: {confidence}");
+        }
+
+        public void Test_CrossAttn_CPU_TrainPredict() => RunCrossAttnTrainPredict(AccelerationType.CPU);
+        public void Test_CrossAttn_MultiThread_TrainPredict() => RunCrossAttnTrainPredict(AccelerationType.MultiThreadCPU);
+
+        private void RunCrossAttnLossDecreases(AccelerationType accelType)
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 6);
+
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, accelType: accelType, priceSeqLen: 6);
+
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+
+            float lossBefore = trainer.Validate(textSeqs, priceInputs, priceTargets);
+
+            trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
+
+            trainer.Train(textSeqs, priceInputs, priceTargets);
+
+            float lossAfter = trainer.Validate(textSeqs, priceInputs, priceTargets);
+
+            Assert(lossAfter < lossBefore, $"CrossAttn loss did not decrease with {accelType}: before={lossBefore:F6}, after={lossAfter:F6}");
+        }
+
+        public void Test_CrossAttn_CPU_LossDecreases() => RunCrossAttnLossDecreases(AccelerationType.CPU);
+        public void Test_CrossAttn_MultiThread_LossDecreases() => RunCrossAttnLossDecreases(AccelerationType.MultiThreadCPU);
+
+        public void Test_MHA_Forward_CPUvsMultiThread()
+        {
+
+            var cpu = new AccelerationCPU();
+            var mt = new AccelerationMutliThreadCPU();
+
+            var rng = new Random(42);
+            int seqLen = 6, embDim = 8, numHeads = 2;
+            float scale = 1.0f / MathF.Sqrt(embDim / numHeads);
+
+            var Q = new float[seqLen, embDim];
+            var K = new float[seqLen, embDim];
+            var V = new float[seqLen, embDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j < embDim; j++)
+                {
+                    Q[i, j] = (float)(rng.NextDouble() - 0.5); K[i, j] = (float)(rng.NextDouble() - 0.5); V[i, j] = (float)(rng.NextDouble() - 0.5);
+                }
+            }
+
+            var resultCPU = cpu.MultiHeadAttentionForward(Q, K, V, numHeads, scale, null);
+            var resultMT = mt.MultiHeadAttentionForward(Q, K, V, numHeads, scale, null);
+            Assert(MatricesApproxEqual(resultCPU, resultMT, 1e-5f), "MHA Forward: CPU vs MultiThread results differ");
+        }
+
+        public void Test_MHA_Backward_CPUvsMultiThread()
+        {
+            var cpu = new AccelerationCPU();
+            var mt = new AccelerationMutliThreadCPU();
+            var rng = new Random(42);
+            int seqLen = 6, embDim = 8, numHeads = 2;
+            float scale = 1.0f / MathF.Sqrt(embDim / numHeads);
+            var Q = new float[seqLen, embDim];
+            var K = new float[seqLen, embDim];
+            var V = new float[seqLen, embDim];
+            var dConcat = new float[seqLen, embDim];
+            for (int i = 0; i < seqLen; i++)
+                for (int j = 0; j < embDim; j++)
+                { Q[i, j] = (float)(rng.NextDouble() - 0.5); K[i, j] = (float)(rng.NextDouble() - 0.5); V[i, j] = (float)(rng.NextDouble() - 0.5); dConcat[i, j] = (float)(rng.NextDouble() - 0.5); }
+
+            var (dQ_cpu, dK_cpu, dV_cpu) = cpu.MultiHeadAttentionBackward(Q, K, V, dConcat, numHeads, scale, true);
+            var (dQ_mt, dK_mt, dV_mt) = mt.MultiHeadAttentionBackward(Q, K, V, dConcat, numHeads, scale, true);
+            Assert(MatricesApproxEqual(dQ_cpu, dQ_mt, 1e-5f), "MHA Backward dQ: CPU vs MultiThread differ");
+            Assert(MatricesApproxEqual(dK_cpu, dK_mt, 1e-5f), "MHA Backward dK: CPU vs MultiThread differ");
+            Assert(MatricesApproxEqual(dV_cpu, dV_mt, 1e-5f), "MHA Backward dV: CPU vs MultiThread differ");
+        }
+
+        public void Test_CrossAttn_Forward_CPUvsMultiThread()
+        {
+            var cpu = new AccelerationCPU();
+            var mt = new AccelerationMutliThreadCPU();
+
+            var rng = new Random(42);
+
+            int seqLenQ = 5, seqLenK = 8, embDim = 8, numHeads = 2;
+            float scale = 1.0f / MathF.Sqrt(embDim / numHeads);
+
+            var Q = new float[seqLenQ, embDim];
+            var K = new float[seqLenK, embDim];
+            var V = new float[seqLenK, embDim];
+
+
+            for (int i = 0; i < seqLenQ; i++)
+            {
+                for (int j = 0; j < embDim; j++)
+                {
+                    Q[i, j] = (float)(rng.NextDouble() - 0.5);
+                }
+            }
+            for (int i = 0; i < seqLenK; i++)
+            {
+                for (int j = 0; j < embDim; j++)
+                {
+                    K[i, j] = (float)(rng.NextDouble() - 0.5); V[i, j] = (float)(rng.NextDouble() - 0.5);
+                }
+            }
+
+            var resultCPU = cpu.MultiHeadAttentionForward(Q, K, V, numHeads, scale, null);
+            var resultMT = mt.MultiHeadAttentionForward(Q, K, V, numHeads, scale, null);
+
+            Assert(resultCPU.GetLength(0) == seqLenQ, $"CPU output seqLen wrong: {resultCPU.GetLength(0)}");
+
+            Assert(resultMT.GetLength(0) == seqLenQ, $"MT output seqLen wrong: {resultMT.GetLength(0)}");
+
+            Assert(MatricesApproxEqual(resultCPU, resultMT, 1e-5f), "CrossAttn Forward: CPU vs MultiThread results differ");
+        }
+
+        #region Save/Load
+
+        private string GetTempDir(string name)
+        {
+            var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "transformer_tests", name + "_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            System.IO.Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        private void CleanupDir(string dir)
+        {
+            try { if (System.IO.Directory.Exists(dir)) System.IO.Directory.Delete(dir, true); } catch { }
+        }
+
+        private void AssertMatricesEqual(float[,] a, float[,] b, string name, float tol = 0f)
+        {
+            Assert(a.GetLength(0) == b.GetLength(0) && a.GetLength(1) == b.GetLength(1),
+                $"{name} shape mismatch: [{a.GetLength(0)},{a.GetLength(1)}] vs [{b.GetLength(0)},{b.GetLength(1)}]");
+            for (int i = 0; i < a.GetLength(0); i++)
+                for (int j = 0; j < a.GetLength(1); j++)
+                    Assert(MathF.Abs(a[i, j] - b[i, j]) <= tol,
+                        $"{name}[{i},{j}] mismatch: {a[i, j]} vs {b[i, j]}");
+        }
+
+        private void AssertVectorsEqual(float[] a, float[] b, string name, float tol = 0f)
+        {
+            Assert(a.Length == b.Length, $"{name} length mismatch: {a.Length} vs {b.Length}");
+            for (int i = 0; i < a.Length; i++)
+                Assert(MathF.Abs(a[i] - b[i]) <= tol,
+                    $"{name}[{i}] mismatch: {a[i]} vs {b[i]}");
+        }
+
+        private void AssertAttentionEqual(MultiHeadAttention a, MultiHeadAttention b, string prefix, float tol = 0f)
+        {
+            AssertMatricesEqual(a.WQ, b.WQ, $"{prefix}.WQ", tol);
+            AssertMatricesEqual(a.WK, b.WK, $"{prefix}.WK", tol);
+            AssertMatricesEqual(a.WV, b.WV, $"{prefix}.WV", tol);
+            AssertMatricesEqual(a.WO, b.WO, $"{prefix}.WO", tol);
+            AssertVectorsEqual(a.BiasQ, b.BiasQ, $"{prefix}.BiasQ", tol);
+            AssertVectorsEqual(a.BiasK, b.BiasK, $"{prefix}.BiasK", tol);
+            AssertVectorsEqual(a.BiasV, b.BiasV, $"{prefix}.BiasV", tol);
+            AssertVectorsEqual(a.BiasO, b.BiasO, $"{prefix}.BiasO", tol);
+        }
+
+        private void AssertLanguageModelsEqual(LanguageModel original, LanguageModel loaded)
+        {
+            // Config
+            Assert(original.Config.DataType == loaded.Config.DataType, "DataType mismatch");
+            Assert(original.Config.VocabSize == loaded.Config.VocabSize, "VocabSize mismatch");
+            Assert(original.Config.EmbeddingDim == loaded.Config.EmbeddingDim, "EmbeddingDim mismatch");
+            Assert(original.Config.NumHeads == loaded.Config.NumHeads, "NumHeads mismatch");
+            Assert(original.Config.NumLayers == loaded.Config.NumLayers, "NumLayers mismatch");
+            Assert(original.Config.FeedForwardDim == loaded.Config.FeedForwardDim, "FeedForwardDim mismatch");
+            Assert(original.Config.UseDecoderOnly == loaded.Config.UseDecoderOnly, "UseDecoderOnly mismatch");
+            Assert(original.Config.InputFeatureDim == loaded.Config.InputFeatureDim, "InputFeatureDim mismatch");
+            Assert(original.Config.OutputDim == loaded.Config.OutputDim, "OutputDim mismatch");
+
+            // Input layer
+            if (original.Config.UsesDiscreteTokens)
+            {
+                AssertMatricesEqual(original.TokenEmbedding, loaded.TokenEmbedding, "TokenEmbedding");
+            }
+            else
+            {
+                AssertMatricesEqual(original.InputProjection, loaded.InputProjection, "InputProjection");
+                AssertVectorsEqual(original.InputProjectionBias, loaded.InputProjectionBias, "InputProjectionBias");
+            }
+
+            // Blocks
+            for (int layer = 0; layer < original.Config.NumLayers; layer++)
+            {
+                var origBlock = original.Blocks[layer];
+                var loadBlock = loaded.Blocks[layer];
+
+                AssertAttentionEqual(origBlock.Attention, loadBlock.Attention, $"Block[{layer}].Attention");
+                AssertVectorsEqual(origBlock.LN1Gamma, loadBlock.LN1Gamma, $"Block[{layer}].LN1Gamma");
+                AssertVectorsEqual(origBlock.LN1Beta, loadBlock.LN1Beta, $"Block[{layer}].LN1Beta");
+                AssertVectorsEqual(origBlock.LN2Gamma, loadBlock.LN2Gamma, $"Block[{layer}].LN2Gamma");
+                AssertVectorsEqual(origBlock.LN2Beta, loadBlock.LN2Beta, $"Block[{layer}].LN2Beta");
+            }
+
+            // Output head
+            AssertMatricesEqual(original.OutputProjection, loaded.OutputProjection, "OutputProjection");
+            AssertVectorsEqual(original.OutputBias, loaded.OutputBias, "OutputBias");
+        }
+
+        public void Test_SaveLoad_Text_ExactWeightsAndForward()
+        {
+            var dir = GetTempDir("sl_text");
+            try
+            {
+                // Create and train
+                var (model, config) = CreateSmallModel(vocabSize: 12, embDim: 8, numHeads: 2, numLayers: 2, ffnDim: 16);
+                int[][] sequences = { new[] { 1, 2, 3, 4, 5 }, new[] { 3, 4, 5, 6, 7 } };
+                var tc = new TrainingConfig { LearningRate = 0.005f, BatchSize = 2, Epochs = 10, Verbose = false };
+                new TransformerTrainer(model, tc).Train(sequences);
+
+                // Forward before save
+                int[] testInput = { 1, 2, 3, 4 };
+                var logitsBefore = model.Forward(testInput);
+
+                // Save + Load
+                model.Save(dir);
+                var loaded = LanguageModel.Load(dir);
+
+                // Exact weight comparison
+                AssertLanguageModelsEqual(model, loaded);
+
+                // Forward after load must be bit-identical
+                var logitsAfter = loaded.Forward(testInput);
+                AssertMatricesEqual(logitsBefore, logitsAfter, "Forward output after load");
+
+                // Generate should work
+                var generated = loaded.Generate(new[] { 1, 2 }, maxNewTokens: 5, temperature: 1.0f);
+                Assert(generated.Length > 2, "Loaded text model failed to generate");
+
+                // Continue training on loaded model — loss should decrease
+                int[] input = { 1, 2, 3, 4 };
+                int[] target = { 2, 3, 4, 5 };
+                float lossBefore = ComputeLoss(loaded, input, target);
+                new TransformerTrainer(loaded, new TrainingConfig { LearningRate = 0.005f, BatchSize = 2, Epochs = 20, Verbose = false }).Train(sequences);
+                float lossAfter = ComputeLoss(loaded, input, target);
+                Assert(lossAfter < lossBefore, $"Text: loss did not decrease after retraining loaded model: {lossBefore:F6} -> {lossAfter:F6}");
+            }
+            finally { CleanupDir(dir); }
+        }
+
+        public void Test_SaveLoad_SymbolicSequence_ExactWeightsAndForward()
+        {
+            var dir = GetTempDir("sl_symbolic");
+            try
+            {
+                var config = new TransformerConfig
+                {
+                    DataType = TransformerDataType.SymbolicSequence,
+                    VocabSize = 8,
+                    MaxSequenceLength = 16,
+                    EmbeddingDim = 8,
+                    NumHeads = 2,
+                    NumLayers = 1,
+                    FeedForwardDim = 16,
+                    AccelerationType = AccelerationType.CPU,
+                    UseDecoderOnly = true,
+                    L2RegulationLamda = 0f
+                };
+                var model = new LanguageModel(config, new Random(42));
+
+                // DNA-like sequences: A=4, T=5, G=6, C=7, BOS=1, EOS=2
+                int[][] sequences = { new[] { 1, 4, 5, 6, 7, 2 }, new[] { 1, 6, 7, 4, 5, 2 } };
+                var tc = new TrainingConfig { LearningRate = 0.005f, BatchSize = 2, Epochs = 15, Verbose = false };
+                new TransformerTrainer(model, tc).Train(sequences);
+
+                int[] testInput = { 1, 4, 5, 6 };
+                var logitsBefore = model.Forward(testInput);
+
+                model.Save(dir);
+                var loaded = LanguageModel.Load(dir);
+
+                // Config check
+                Assert(loaded.Config.DataType == TransformerDataType.SymbolicSequence, "DataType not SymbolicSequence");
+                Assert(loaded.Config.UsesDiscreteTokens, "UsesDiscreteTokens should be true");
+
+                AssertLanguageModelsEqual(model, loaded);
+
+                var logitsAfter = loaded.Forward(testInput);
+                AssertMatricesEqual(logitsBefore, logitsAfter, "Symbolic forward output");
+
+                // Generate works
+                var generated = loaded.Generate(new[] { 1, 4 }, maxNewTokens: 4, temperature: 1.0f);
+                Assert(generated.Length > 2, "Loaded symbolic model failed to generate");
+
+                // Continue training
+                float lossBefore = ComputeLoss(loaded, new[] { 1, 4, 5 }, new[] { 4, 5, 6 });
+                new TransformerTrainer(loaded, new TrainingConfig { LearningRate = 0.005f, BatchSize = 2, Epochs = 30, Verbose = false }).Train(sequences);
+                float lossAfterRetrain = ComputeLoss(loaded, new[] { 1, 4, 5 }, new[] { 4, 5, 6 });
+                Assert(lossAfterRetrain < lossBefore, $"Symbolic: loss did not decrease after retraining: {lossBefore:F6} -> {lossAfterRetrain:F6}");
+            }
+            finally { CleanupDir(dir); }
+        }
+
+        public void Test_SaveLoad_TimeSeriesRegression_ExactWeightsAndForward()
+        {
+            var dir = GetTempDir("sl_regression");
+            try
+            {
+                var (model, config) = CreateSmallContinuousModel(
+                    TransformerDataType.TimeSeriesRegression,
+                    inputFeatureDim: 3, outputDim: 1,
+                    embDim: 8, numHeads: 2, numLayers: 1, ffnDim: 16);
+
+                var rng = new Random(42);
+                var inputs = new float[5][,];
+                var targets = new float[5][,];
+                for (int s = 0; s < 5; s++)
+                {
+                    inputs[s] = new float[6, 3];
+                    targets[s] = new float[6, 1];
+                    for (int i = 0; i < 6; i++)
+                    {
+                        for (int j = 0; j < 3; j++) inputs[s][i, j] = (float)rng.NextDouble();
+                        targets[s][i, 0] = inputs[s][i, 0] * 0.5f + 0.1f;
+                    }
+                }
+
+                var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false };
+                new TransformerTrainer(model, tc).TrainContinuous(inputs, regressionTargets: targets);
+
+                var forwardBefore = model.Forward(inputs[0]);
+
+                model.Save(dir);
+                var loaded = LanguageModel.Load(dir);
+
+                // Config check
+                Assert(loaded.Config.DataType == TransformerDataType.TimeSeriesRegression, "DataType not TimeSeriesRegression");
+                Assert(!loaded.Config.UsesDiscreteTokens, "UsesDiscreteTokens should be false");
+                Assert(loaded.Config.InputFeatureDim == 3, $"InputFeatureDim: {loaded.Config.InputFeatureDim}");
+                Assert(loaded.Config.OutputDim == 1, $"OutputDim: {loaded.Config.OutputDim}");
+
+                AssertLanguageModelsEqual(model, loaded);
+
+                var forwardAfter = loaded.Forward(inputs[0]);
+                AssertMatricesEqual(forwardBefore, forwardAfter, "Regression forward output");
+
+                // PredictNext works
+                float[] prediction = loaded.PredictNext(inputs[0]);
+                Assert(prediction.Length == 1, $"PredictNext dim: {prediction.Length}");
+                Assert(!float.IsNaN(prediction[0]), "PredictNext NaN");
+
+                // Continue training
+                var trainer = new TransformerTrainer(loaded, new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+                float lossBefore = trainer.ValidateContinuous(inputs, regressionTargets: targets);
+                trainer = new TransformerTrainer(loaded, new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 30, Verbose = false });
+                trainer.TrainContinuous(inputs, regressionTargets: targets);
+                float lossAfterRetrain = trainer.ValidateContinuous(inputs, regressionTargets: targets);
+                Assert(lossAfterRetrain < lossBefore, $"Regression: loss did not decrease after retraining: {lossBefore:F6} -> {lossAfterRetrain:F6}");
+            }
+            finally { CleanupDir(dir); }
+        }
+
+        public void Test_SaveLoad_TimeSeriesClassification_ExactWeightsAndForward()
+        {
+            var dir = GetTempDir("sl_classification");
+            try
+            {
+                var (model, config) = CreateSmallContinuousModel(
+                    TransformerDataType.TimeSeriesClassification,
+                    inputFeatureDim: 3, outputDim: 3,
+                    embDim: 8, numHeads: 2, numLayers: 1, ffnDim: 16);
+
+                var rng = new Random(42);
+                var inputs = new float[5][,];
+                var classTargets = new int[5][];
+                for (int s = 0; s < 5; s++)
+                {
+                    inputs[s] = new float[6, 3];
+                    classTargets[s] = new int[6];
+                    for (int i = 0; i < 6; i++)
+                    {
+                        for (int j = 0; j < 3; j++) inputs[s][i, j] = (float)rng.NextDouble();
+                        classTargets[s][i] = rng.Next(3);
+                    }
+                }
+
+                var tc = new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false };
+                new TransformerTrainer(model, tc).TrainContinuous(inputs, classTargets: classTargets);
+
+                var forwardBefore = model.Forward(inputs[0]);
+
+                model.Save(dir);
+                var loaded = LanguageModel.Load(dir);
+
+                // Config check
+                Assert(loaded.Config.DataType == TransformerDataType.TimeSeriesClassification, "DataType not TimeSeriesClassification");
+                Assert(!loaded.Config.UsesDiscreteTokens, "UsesDiscreteTokens should be false");
+                Assert(loaded.Config.OutputDim == 3, $"OutputDim: {loaded.Config.OutputDim}");
+
+                AssertLanguageModelsEqual(model, loaded);
+
+                var forwardAfter = loaded.Forward(inputs[0]);
+                AssertMatricesEqual(forwardBefore, forwardAfter, "Classification forward output");
+
+                // Continue training
+                var trainer = new TransformerTrainer(loaded, new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+                float lossBefore = trainer.ValidateContinuous(inputs, classTargets: classTargets);
+                trainer = new TransformerTrainer(loaded, new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 30, Verbose = false });
+                trainer.TrainContinuous(inputs, classTargets: classTargets);
+                float lossAfterRetrain = trainer.ValidateContinuous(inputs, classTargets: classTargets);
+                Assert(lossAfterRetrain < lossBefore, $"Classification: loss did not decrease after retraining: {lossBefore:F6} -> {lossAfterRetrain:F6}");
+            }
+            finally { CleanupDir(dir); }
+        }
+
+        public void Test_SaveLoad_CrossAttentionMultimodal_ExactWeightsAndForward()
+        {
+            var dir = GetTempDir("sl_crossattn");
+            try
+            {
+                var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 6);
+
+                var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 16, numHeads: 2, numLayers: 2, ffnDim: 32, priceSeqLen: 6, useConfidence: true, freezeTextEncoder: false);
+
+                var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+                var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 10, Verbose = false });
+
+                trainer.Train(textSeqs, priceInputs, priceTargets);
+
+                var (predBefore, confBefore) = model.Forward(textSeqs[0], priceInputs[0]);
+
+                model.Save(dir);
+
+                var loaded = Transformers.CrossAttentionMultimodal.Model.Load(dir);
+
+                Assert(loaded.Config.TextVocabSize == config.TextVocabSize, "TextVocabSize mismatch");
+                Assert(loaded.Config.TextEmbeddingDim == config.TextEmbeddingDim, "TextEmbeddingDim mismatch");
+                Assert(loaded.Config.TextNumLayers == config.TextNumLayers, "TextNumLayers mismatch");
+                Assert(loaded.Config.PriceInputFeatureDim == config.PriceInputFeatureDim, "PriceInputFeatureDim mismatch");
+                Assert(loaded.Config.PriceEmbeddingDim == config.PriceEmbeddingDim, "PriceEmbeddingDim mismatch");
+                Assert(loaded.Config.PriceNumLayers == config.PriceNumLayers, "PriceNumLayers mismatch");
+                Assert(loaded.Config.OutputDim == config.OutputDim, "OutputDim mismatch");
+                Assert(loaded.Config.UseConfidenceHead == config.UseConfidenceHead, "UseConfidenceHead mismatch");
+
+                AssertMatricesEqual(model.TextTokenEmbedding, loaded.TextTokenEmbedding, "TextTokenEmbedding");
+
+                for (int layer = 0; layer < config.TextNumLayers; layer++)
+                {
+                    AssertAttentionEqual(model.TextBlocks[layer].Attention, loaded.TextBlocks[layer].Attention, $"TextBlock[{layer}].Attention");
+                    AssertVectorsEqual(model.TextBlocks[layer].LN1Gamma, loaded.TextBlocks[layer].LN1Gamma, $"TextBlock[{layer}].LN1Gamma");
+                    AssertVectorsEqual(model.TextBlocks[layer].LN1Beta, loaded.TextBlocks[layer].LN1Beta, $"TextBlock[{layer}].LN1Beta");
+                    AssertVectorsEqual(model.TextBlocks[layer].LN2Gamma, loaded.TextBlocks[layer].LN2Gamma, $"TextBlock[{layer}].LN2Gamma");
+                    AssertVectorsEqual(model.TextBlocks[layer].LN2Beta, loaded.TextBlocks[layer].LN2Beta, $"TextBlock[{layer}].LN2Beta");
+                }
+
+                AssertMatricesEqual(model.PriceInputProjection, loaded.PriceInputProjection, "PriceInputProjection");
+                AssertVectorsEqual(model.PriceInputProjectionBias, loaded.PriceInputProjectionBias, "PriceInputProjectionBias");
+
+                for (int layer = 0; layer < config.PriceNumLayers; layer++)
+                {
+                    AssertAttentionEqual(model.PriceBlocks[layer].SelfAttention, loaded.PriceBlocks[layer].SelfAttention, $"PriceBlock[{layer}].SelfAttention");
+                    AssertVectorsEqual(model.PriceBlocks[layer].LNSelfGamma, loaded.PriceBlocks[layer].LNSelfGamma, $"PriceBlock[{layer}].LNSelfGamma");
+                    AssertVectorsEqual(model.PriceBlocks[layer].LNSelfBeta, loaded.PriceBlocks[layer].LNSelfBeta, $"PriceBlock[{layer}].LNSelfBeta");
+                    AssertAttentionEqual(model.PriceBlocks[layer].CrossAttention, loaded.PriceBlocks[layer].CrossAttention, $"PriceBlock[{layer}].CrossAttention");
+                    AssertVectorsEqual(model.PriceBlocks[layer].LNCrossGamma, loaded.PriceBlocks[layer].LNCrossGamma, $"PriceBlock[{layer}].LNCrossGamma");
+                    AssertVectorsEqual(model.PriceBlocks[layer].LNCrossBeta, loaded.PriceBlocks[layer].LNCrossBeta, $"PriceBlock[{layer}].LNCrossBeta");
+                    AssertVectorsEqual(model.PriceBlocks[layer].LNFFNGamma, loaded.PriceBlocks[layer].LNFFNGamma, $"PriceBlock[{layer}].LNFFNGamma");
+                    AssertVectorsEqual(model.PriceBlocks[layer].LNFFNBeta, loaded.PriceBlocks[layer].LNFFNBeta, $"PriceBlock[{layer}].LNFFNBeta");
+                }
+
+                AssertMatricesEqual(model.OutputProjection, loaded.OutputProjection, "OutputProjection");
+                AssertVectorsEqual(model.OutputBias, loaded.OutputBias, "OutputBias");
+                AssertMatricesEqual(model.ConfidenceProjection, loaded.ConfidenceProjection, "ConfidenceProjection");
+                AssertVectorsEqual(model.ConfidenceBias, loaded.ConfidenceBias, "ConfidenceBias");
+
+                var (predAfter, confAfter) = loaded.Forward(textSeqs[0], priceInputs[0]);
+                AssertMatricesEqual(predBefore, predAfter, "CrossAttn prediction output");
+                AssertMatricesEqual(confBefore, confAfter, "CrossAttn confidence output");
+
+                var (pred, conf) = loaded.PredictNext(textSeqs[0], priceInputs[0]);
+
+                Assert(pred.Length == config.OutputDim, $"PredictNext dim: {pred.Length}");
+
+                Assert(!float.IsNaN(conf) && conf >= 0f && conf <= 1f, $"PredictNext confidence: {conf}");
+
+                var loadedTrainer = new Transformers.CrossAttentionMultimodal.Trainer(loaded, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+
+                float lossBefore = loadedTrainer.Validate(textSeqs, priceInputs, priceTargets);
+
+                loadedTrainer = new Transformers.CrossAttentionMultimodal.Trainer(loaded, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 20, Verbose = false });
+
+                loadedTrainer.Train(textSeqs, priceInputs, priceTargets);
+
+                float lossAfterRetrain = loadedTrainer.Validate(textSeqs, priceInputs, priceTargets);
+
+                Assert(lossAfterRetrain < lossBefore, $"CrossAttn: loss did not decrease after retraining: {lossBefore:F6} -> {lossAfterRetrain:F6}");
+            }
+            finally 
+            { 
+                CleanupDir(dir);
+            }
+        }
+
+        public void Test_SaveLoad_CrossAttention_NoConfidenceHead()
+        {
+            var dir = GetTempDir("sl_crossattn_noconf");
+            try
+            {
+                var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 5, priceSeqLen: 6);
+                var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, priceSeqLen: 6, useConfidence: false);
+
+                var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+                var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 5, Verbose = false });
+
+                trainer.Train(textSeqs, priceInputs, priceTargets);
+
+                var (predBefore, confBefore) = model.Forward(textSeqs[0], priceInputs[0]);
+                Assert(confBefore == null, "Confidence should be null when UseConfidenceHead=false");
+
+                model.Save(dir);
+
+                var loaded = Transformers.CrossAttentionMultimodal.Model.Load(dir);
+
+                Assert(!loaded.Config.UseConfidenceHead, "Loaded UseConfidenceHead should be false");
+
+                var (predAfter, confAfter) = loaded.Forward(textSeqs[0], priceInputs[0]);
+
+                Assert(confAfter == null, "Loaded confidence should be null");
+                AssertMatricesEqual(predBefore, predAfter, "NoConfidence prediction output");
+            }
+            finally 
+            { 
+                CleanupDir(dir);
+            }
+        }
+
+        public void Test_SaveLoad_DoubleSaveLoad_RoundTrip()
+        {
+            var dir1 = GetTempDir("sl_roundtrip1");
+            var dir2 = GetTempDir("sl_roundtrip2");
+            try
+            {
+                var (model, config) = CreateSmallModel(vocabSize: 10, embDim: 8, numHeads: 2, numLayers: 2, ffnDim: 16);
+                int[][] sequences = { new[] { 1, 2, 3, 4, 5 } };
+                new TransformerTrainer(model, new TrainingConfig { LearningRate = 0.005f, BatchSize = 1, Epochs = 10, Verbose = false }).Train(sequences);
+
+                int[] testInput = { 1, 2, 3 };
+                var logitsOriginal = model.Forward(testInput);
+
+                // Save -> Load -> Save -> Load
+                model.Save(dir1);
+                var loaded1 = LanguageModel.Load(dir1);
+                loaded1.Save(dir2);
+                var loaded2 = LanguageModel.Load(dir2);
+
+                var logitsFinal = loaded2.Forward(testInput);
+                AssertMatricesEqual(logitsOriginal, logitsFinal, "Double round-trip forward output");
+                AssertLanguageModelsEqual(model, loaded2);
+            }
+            finally { CleanupDir(dir1); CleanupDir(dir2); }
+        }
+
+        #endregion
+
+        public void Test_CrossAttention_PriceOnly_ForwardNoError()
+        {
+            var (tokenizer, _, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            // Forward with null text
+            var (predictions, confidence) = model.Forward(null, priceInputs[0]);
+            Assert(predictions.GetLength(0) == 6, $"PriceOnly forward: wrong seq len {predictions.GetLength(0)}");
+            Assert(predictions.GetLength(1) == 5, $"PriceOnly forward: wrong output dim {predictions.GetLength(1)}");
+            for (int i = 0; i < predictions.GetLength(0); i++)
+                for (int j = 0; j < predictions.GetLength(1); j++)
+                    Assert(!float.IsNaN(predictions[i, j]), $"NaN at predictions[{i},{j}]");
+        }
+
+        public void Test_CrossAttention_PriceOnly_PredictNext()
+        {
+            var (tokenizer, _, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var (prediction, confidence) = model.PredictNext(null, priceInputs[0]);
+            Assert(prediction.Length == 5, $"PriceOnly PredictNext dim: {prediction.Length}");
+            Assert(!float.IsNaN(confidence) && confidence >= 0f && confidence <= 1f, $"Confidence: {confidence}");
+        }
+
+        public void Test_CrossAttention_PriceOnly_TrainAndLossDecreases()
+        {
+            var (tokenizer, _, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            // All null text
+            var nullTextSeqs = new int[10][];
+            // nullTextSeqs[i] remains null
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model,
+                new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+            float lossBefore = trainer.Validate(nullTextSeqs, priceInputs, priceTargets);
+
+            trainer = new Transformers.CrossAttentionMultimodal.Trainer(model,
+                new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
+            trainer.Train(nullTextSeqs, priceInputs, priceTargets);
+
+            float lossAfter = trainer.Validate(nullTextSeqs, priceInputs, priceTargets);
+            Assert(lossAfter < lossBefore, $"PriceOnly: loss did not decrease: {lossBefore:F6} -> {lossAfter:F6}");
+        }
+
+        public void Test_CrossAttention_MixedBatch_SomeTextSomeNull()
+        {
+            var (tokenizer, textSeqs, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 10, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            // Set half the text sequences to null
+            var mixedTextSeqs = (int[][])textSeqs.Clone();
+            for (int i = 0; i < mixedTextSeqs.Length; i += 2)
+                mixedTextSeqs[i] = null;
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model,
+                new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
+            float lossBefore = trainer.Validate(mixedTextSeqs, priceInputs, priceTargets);
+
+            trainer = new Transformers.CrossAttentionMultimodal.Trainer(model,
+                new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
+            trainer.Train(mixedTextSeqs, priceInputs, priceTargets);
+
+            float lossAfter = trainer.Validate(mixedTextSeqs, priceInputs, priceTargets);
+            Assert(lossAfter < lossBefore, $"MixedBatch: loss did not decrease: {lossBefore:F6} -> {lossAfter:F6}");
+        }
+
+        public void Test_CrossAttention_EmptyTextArray_TreatedAsNull()
+        {
+            var (tokenizer, _, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            // Empty array should be treated same as null
+            var (predictions, _) = model.Forward(new int[0], priceInputs[0]);
+            Assert(predictions.GetLength(0) == 6, "Empty text array should work like null");
+        }
+
+        public void Test_CrossAttention_TextVsNoText_DifferentOutputs()
+        {
+            var (tokenizer, textSeqs, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var (predWithText, _) = model.Forward(textSeqs[0], priceInputs[0]);
+            var (predNoText, _) = model.Forward(null, priceInputs[0]);
+
+            // Outputs should differ because cross-attention adds information
+            bool anyDiff = false;
+            for (int i = 0; i < predWithText.GetLength(0) && !anyDiff; i++)
+                for (int j = 0; j < predWithText.GetLength(1) && !anyDiff; j++)
+                    if (MathF.Abs(predWithText[i, j] - predNoText[i, j]) > 1e-6f)
+                        anyDiff = true;
+
+            Assert(anyDiff, "Forward with text and without text produced identical outputs — cross-attention has no effect");
+        }
+
+        public void Test_CrossAttention_PriceOnly_Deterministic()
+        {
+            var (tokenizer, _, priceInputs, _) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, priceSeqLen: 6);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var (pred1, _) = model.Forward(null, priceInputs[0]);
+            var (pred2, _) = model.Forward(null, priceInputs[0]);
+
+            for (int i = 0; i < pred1.GetLength(0); i++)
+                for (int j = 0; j < pred1.GetLength(1); j++)
+                    Assert(pred1[i, j] == pred2[i, j], $"PriceOnly non-deterministic at [{i},{j}]");
+        }
+
+        public void Test_CrossAttention_PriceOnly_SingleSampleOverfit()
+        {
+            var (tokenizer, _, priceInputs, priceTargets) = CreateCrossAttentionTestData(numSamples: 1, priceSeqLen: 6);
+            var config = CreateSmallCrossAttentionConfig(tokenizer.VocabSize + 2, embDim: 32, numHeads: 2, numLayers: 2,
+                ffnDim: 64, priceSeqLen: 6, useConfidence: false);
+            var model = new Transformers.CrossAttentionMultimodal.Model(config, new Random(42));
+
+            var nullTextSeqs = new int[1][];  // null text
+
+            var trainer = new Transformers.CrossAttentionMultimodal.Trainer(model,
+                new MultimodalTrainingConfig { LearningRate = 0.005f, BatchSize = 1, Epochs = 1, Verbose = false });
+            float lossBefore = trainer.Validate(nullTextSeqs, priceInputs, priceTargets);
+
+            trainer = new Transformers.CrossAttentionMultimodal.Trainer(model,
+                new MultimodalTrainingConfig { LearningRate = 0.005f, BatchSize = 1, Epochs = 100, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
+            trainer.Train(nullTextSeqs, priceInputs, priceTargets);
+
+            float lossAfter = trainer.Validate(nullTextSeqs, priceInputs, priceTargets);
+            Assert(lossAfter < lossBefore * 0.5f, $"PriceOnly overfit failed: {lossBefore:F6} -> {lossAfter:F6}");
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     }
 }
