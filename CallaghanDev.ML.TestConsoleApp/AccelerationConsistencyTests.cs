@@ -1,5 +1,6 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.TACAMT;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -115,6 +116,29 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (Test_CrossEntropyLoss_LargeVocab,             "CrossEntropyLoss (large vocab)"),
                 (Test_LayerNormForward_Large,                  "LayerNormForward (large batch)"),
                 (Test_BackpropOutputProjection_Large,          "BackpropOutputProjection (large)"),
+
+
+                (Test_ApplyContextTypeEmbedding,              "ApplyContextTypeEmbedding"),
+                (Test_ComputeTimeDiffMatrix,                  "ComputeTimeDiffMatrix"),
+                (Test_MeanPoolRows,                           "MeanPoolRows"),
+                (Test_EmbedWithBiasAndPositional,             "EmbedWithBiasAndPositional"),
+                (Test_ComputeMemoryAttentionScores,           "ComputeMemoryAttentionScores"),
+                (Test_ProjectOutputBatch,                     "ProjectOutputBatch"),
+                (Test_FFNForwardBatch,                        "FFNForwardBatch"),
+
+
+
+// Content-Aware Decay & Cross-Attention
+(Test_ContentAwareDecayForward,                   "ContentAwareDecayForward"),
+(Test_ContentAwareDecayForward_WithDropout,       "ContentAwareDecayForward (with dropout)"),
+(Test_ContentAwareCrossAttentionForward,          "ContentAwareCrossAttentionForward"),
+(Test_ContentAwareCrossAttentionForward_NoDecayBias, "ContentAwareCrossAttentionForward (no decay)"),
+(Test_ContentAwareCrossAttentionWithCache,        "ContentAwareCrossAttentionWithCache"),
+
+// Large-scale Content-Aware tests
+(Test_ContentAwareDecayForward_Large,             "ContentAwareDecayForward (large)"),
+(Test_ContentAwareCrossAttentionForward_Large,    "ContentAwareCrossAttentionForward (large)"),
+
             };
 
             for (int i = 0; i < tests.Length; i++)
@@ -255,9 +279,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
         #endregion
 
-        // =====================================================================
-        // Basic linear algebra
-        // =====================================================================
+        #region linear algebra. Isnt it all just linear algebra?
 
         public void Test_CalculateDotProduct()
         {
@@ -379,9 +401,10 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (a, b, name) => AssertVectorsClose(a, b, name));
         }
 
-        // =====================================================================
-        // Matrix operations
-        // =====================================================================
+        #endregion
+
+
+        #region Matrix operations see i told you.. Linear algebra
 
         public void Test_MatrixMultiply()
         {
@@ -471,9 +494,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (a, b, name) => AssertMatricesClose(a, b, name, _tolerance_stricter));
         }
 
-        // =====================================================================
-        // Softmax
-        // =====================================================================
+        #endregion
 
         public void Test_Softmax_NoMask()
         {
@@ -495,10 +516,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 mgr => mgr.Softmax(matrix, mask),
                 (a, b, name) => AssertMatricesClose(a, b, name));
         }
-
-        // =====================================================================
-        // LayerNorm
-        // =====================================================================
 
         public void Test_LayerNorm()
         {
@@ -553,9 +570,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 });
         }
 
-        // =====================================================================
-        // Embedding / positional
-        // =====================================================================
 
         public void Test_EmbedTokensWithPosition()
         {
@@ -582,10 +596,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 mgr => mgr.AddBiasAndPositionalEncoding(projected, bias, positionalEncoding, seqLen, embDim),
                 (a, b, name) => AssertMatricesClose(a, b, name, _tolerance_stricter));
         }
-
-        // =====================================================================
-        // Loss functions
-        // =====================================================================
 
         public void Test_CrossEntropyLossAndGradient()
         {
@@ -619,9 +629,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 });
         }
 
-        // =====================================================================
-        // Backprop helpers
-        // =====================================================================
 
         public void Test_BackpropOutputProjection()
         {
@@ -726,9 +733,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (a, b, name) => AssertVectorsClose(a, b, name));
         }
 
-        // =====================================================================
-        // In-place operations
-        // =====================================================================
 
         public void Test_MatrixScaleInPlace()
         {
@@ -842,9 +846,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (a, b, name) => AssertMatricesClose(a, b, name));
         }
 
-        // =====================================================================
-        // Norms
-        // =====================================================================
 
         public void Test_MatrixSquaredNorm()
         {
@@ -866,9 +867,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (a, b, name) => AssertClose(a, b, name));
         }
 
-        // =====================================================================
-        // Row operations
-        // =====================================================================
 
         public void Test_SliceRows()
         {
@@ -919,9 +917,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 });
         }
 
-        // =====================================================================
-        // Multi-head attention
-        // =====================================================================
 
         public void Test_MHA_Forward_SelfAttention()
         {
@@ -1026,9 +1021,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 });
         }
 
-        // =====================================================================
-        // Larger sizes to stress parallel paths
-        // =====================================================================
 
         public void Test_MatrixMultiply_Large()
         {
@@ -1134,6 +1126,415 @@ namespace CallaghanDev.ML.TestConsoleApp
                     AssertMatricesClose(a.dX, b.dX, name + ".dX", 1e-3f);
                     AssertMatricesClose(a.wg, b.wg, name + ".weightGrad", 1e-3f);
                     AssertVectorsClose(a.bg, b.bg, name + ".biasGrad", 1e-3f);
+                });
+        }
+
+        public void Test_ApplyContextTypeEmbedding()
+        {
+            var rng = new Random(42);
+            int n = 8, embDim = 16, numTypes = 4;
+            var typeEmbedding = RandMatrix(rng, numTypes, embDim);
+            var typeIndices = new int[] { 0, 2, 1, 3, 0, 2, 1, 0 };
+
+            CompareAllBackends("ApplyContextTypeEmbedding",
+                mgr =>
+                {
+                    var context = RandMatrix(new Random(99), n, embDim);
+                    mgr.ApplyContextTypeEmbedding(context, typeEmbedding, typeIndices);
+                    return context;
+                },
+                (a, b, name) => AssertMatricesClose(a, b, name));
+        }
+
+        public void Test_ComputeTimeDiffMatrix()
+        {
+            var rng = new Random(42);
+            int priceSeqLen = 12;
+            var keyArrivalTimes = new float[] { 1.5f, 3.2f, 5.7f, 8.1f, 10.3f };
+
+            CompareAllBackends("ComputeTimeDiffMatrix",
+                mgr => mgr.ComputeTimeDiffMatrix(priceSeqLen, keyArrivalTimes),
+                (a, b, name) => AssertMatricesClose(a, b, name, _tolerance_stricter));
+        }
+
+        public void Test_MeanPoolRows()
+        {
+            var rng = new Random(42);
+            int totalTokens = 20, numStories = 4, embDim = 8;
+            var hidden = RandMatrix(rng, totalTokens, embDim);
+            var storyOffsets = new int[] { 0, 5, 12, 17 };
+            var storyCounts = new int[] { 5, 7, 5, 3 };
+
+            CompareAllBackends("MeanPoolRows",
+                mgr => mgr.MeanPoolRows(hidden, storyOffsets, storyCounts, numStories, embDim),
+                (a, b, name) => AssertMatricesClose(a, b, name));
+        }
+
+        public void Test_EmbedWithBiasAndPositional()
+        {
+            var rng = new Random(42);
+            int seqLen = 8, embDim = 16;
+            var projected = RandMatrix(rng, seqLen, embDim);
+            var bias = RandVector(rng, embDim);
+            var positionalEncoding = RandMatrix(rng, seqLen, embDim);
+
+            CompareAllBackends("EmbedWithBiasAndPositional",
+                mgr => mgr.EmbedWithBiasAndPositional(projected, bias, positionalEncoding, seqLen, embDim),
+                (a, b, name) => AssertMatricesClose(a, b, name, _tolerance_stricter));
+        }
+
+        public void Test_ComputeMemoryAttentionScores()
+        {
+            var rng = new Random(42);
+            int priceSeqLen = 10, totalCtx = 15, embDim = 8;
+            var priceHidden = RandMatrix(rng, priceSeqLen, embDim);
+            var contextHidden = RandMatrix(rng, totalCtx, embDim);
+            int lastPos = priceSeqLen - 1;
+            float scale = 0.5f;
+
+            CompareAllBackends("ComputeMemoryAttentionScores",
+                mgr => mgr.ComputeMemoryAttentionScores(priceHidden, lastPos, contextHidden, totalCtx, scale),
+                (a, b, name) => AssertVectorsClose(a, b, name));
+        }
+
+        public void Test_ProjectOutputBatch()
+        {
+            var rng = new Random(42);
+            int seqLen = 8, outputDim = 12, embDim = 16;
+            var hidden = RandMatrix(rng, seqLen, embDim);
+            var outputProjection = RandMatrix(rng, outputDim, embDim);
+            var outputBias = RandVector(rng, outputDim);
+
+            CompareAllBackends("ProjectOutputBatch",
+                mgr => mgr.ProjectOutputBatch(hidden, outputProjection, outputBias, seqLen, outputDim),
+                (a, b, name) => AssertMatricesClose(a, b, name));
+        }
+
+        public void Test_FFNForwardBatch()
+        {
+            var rng = new Random(42);
+            int seqLen = 6, inputDim = 8, outputDim = 4;
+            var input = RandMatrix(rng, seqLen, inputDim);
+
+            // Simple deterministic function for testing
+            Func<float[], float[]> forwardFn = (row) =>
+            {
+                var output = new float[outputDim];
+                for (int i = 0; i < outputDim; i++)
+                {
+                    float sum = 0f;
+                    for (int j = 0; j < row.Length; j++)
+                        sum += row[j] * (i + 1);
+                    output[i] = MathF.Tanh(sum);
+                }
+                return output;
+            };
+
+            CompareAllBackends("FFNForwardBatch",
+                mgr => mgr.FFNForwardBatch(input, seqLen, outputDim, forwardFn),
+                (a, b, name) => AssertMatricesClose(a, b, name));
+        }
+
+
+
+        public void Test_ContentAwareCrossAttentionForward()
+        {
+            var rng = new Random(42);
+            int seqLenQ = 5, seqLenK = 8, embDim = 12, numHeads = 3;
+            float scale = 1.0f / MathF.Sqrt(embDim / numHeads);
+
+            var Q = RandMatrix(rng, seqLenQ, embDim);
+            var K = RandMatrix(rng, seqLenK, embDim);
+            var V = RandMatrix(rng, seqLenK, embDim);
+            var decayBias = new float[seqLenQ, seqLenK, numHeads];
+
+            // Add some decay bias
+            for (int i = 0; i < seqLenQ; i++)
+                for (int j = 0; j < seqLenK; j++)
+                    for (int h = 0; h < numHeads; h++)
+                        decayBias[i, j, h] = ((float)rng.NextDouble() - 0.5f) * 2f;
+
+            CompareAllBackends("ContentAwareCrossAttentionForward",
+                mgr =>
+                {
+                    var output = mgr.ContentAwareCrossAttentionForward(
+                        Q, K, V, numHeads, scale, decayBias,
+                        out var attentionWeights, out var scoresPreSoftmax);
+                    return (output, attentionWeights, scoresPreSoftmax);
+                },
+                (a, b, name) =>
+                {
+                    // Compare output matrix
+                    AssertMatricesClose(a.output, b.output, name + ".output");
+
+                    // Compare attention weights (jagged array per head)
+                    Assert(a.attentionWeights.Length == b.attentionWeights.Length,
+                        $"{name}.attentionWeights: head count mismatch");
+                    for (int h = 0; h < a.attentionWeights.Length; h++)
+                        AssertMatricesClose(a.attentionWeights[h], b.attentionWeights[h],
+                            $"{name}.attentionWeights[{h}]");
+
+                    // Compare scores pre-softmax
+                    Assert(a.scoresPreSoftmax.Length == b.scoresPreSoftmax.Length,
+                        $"{name}.scoresPreSoftmax: head count mismatch");
+                    for (int h = 0; h < a.scoresPreSoftmax.Length; h++)
+                        AssertMatricesClose(a.scoresPreSoftmax[h], b.scoresPreSoftmax[h],
+                            $"{name}.scoresPreSoftmax[{h}]");
+                });
+        }
+
+        public void Test_ContentAwareCrossAttentionForward_NoDecayBias()
+        {
+            var rng = new Random(42);
+            int seqLenQ = 4, seqLenK = 6, embDim = 8, numHeads = 2;
+            float scale = 1.0f / MathF.Sqrt(embDim / numHeads);
+
+            var Q = RandMatrix(rng, seqLenQ, embDim);
+            var K = RandMatrix(rng, seqLenK, embDim);
+            var V = RandMatrix(rng, seqLenK, embDim);
+
+            CompareAllBackends("ContentAwareCrossAttentionForward_NoDecayBias",
+                mgr =>
+                {
+                    var output = mgr.ContentAwareCrossAttentionForward(
+                        Q, K, V, numHeads, scale, null,
+                        out var attentionWeights, out var scoresPreSoftmax);
+                    return output;
+                },
+                (a, b, name) => AssertMatricesClose(a, b, name));
+        }
+
+
+
+        public void Test_ContentAwareCrossAttentionForward_Large()
+        {
+            var rng = new Random(42);
+            int seqLenQ = 16, seqLenK = 24, embDim = 32, numHeads = 4;
+            float scale = 1.0f / MathF.Sqrt(embDim / numHeads);
+
+            var Q = RandMatrix(rng, seqLenQ, embDim);
+            var K = RandMatrix(rng, seqLenK, embDim);
+            var V = RandMatrix(rng, seqLenK, embDim);
+            var decayBias = new float[seqLenQ, seqLenK, numHeads];
+
+            for (int i = 0; i < seqLenQ; i++)
+                for (int j = 0; j < seqLenK; j++)
+                    for (int h = 0; h < numHeads; h++)
+                        decayBias[i, j, h] = ((float)rng.NextDouble() - 0.5f) * 2f;
+
+            CompareAllBackends("ContentAwareCrossAttentionForward_Large",
+                mgr =>
+                {
+                    var output = mgr.ContentAwareCrossAttentionForward(
+                        Q, K, V, numHeads, scale, decayBias,
+                        out var attentionWeights, out var scoresPreSoftmax);
+                    return output;
+                },
+                (a, b, name) => AssertMatricesClose(a, b, name, 1e-3f));
+        }
+
+        public void Test_ContentAwareDecayForward()
+        {
+            var rng = new Random(42);
+            int queryLen = 4, keyLen = 6;
+            int numHeads = 2, projDim = 8, contentDim = 12;
+            int hiddenDim = 16;
+            int numBases = 4;
+
+            var queryEmbeddings = RandMatrix(rng, queryLen, contentDim);
+            var keyEmbeddings = RandMatrix(rng, keyLen, contentDim);
+            var timeDiffs = RandMatrix(rng, queryLen, keyLen);
+            var keyTimesFromRef = RandVector(rng, keyLen, 10f);
+
+            // FIXED: Correct constructor signature
+            var network = new ContentAwareDecayNetwork(
+                numHeads: numHeads,
+                contentDim: contentDim,
+                projectionDim: projDim,
+                hiddenDim: hiddenDim,
+                random: new Random(42),
+                memAttnDropout: 0.1f,
+                mlpDropout: 0.1f,
+                weightDecay: 0.0f,
+                numTimeBases: numBases);
+
+            CompareAllBackends("ContentAwareDecayForward",
+                mgr =>
+                {
+                    var (decayBias, cache) = mgr.ContentAwareDecayForward(
+                        queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef,
+                        network, isTraining: false, dropoutRng: null);
+                    return decayBias;
+                },
+                (a, b, name) =>
+                {
+                    // Compare 3D arrays
+                    Assert(a.GetLength(0) == b.GetLength(0) &&
+                           a.GetLength(1) == b.GetLength(1) &&
+                           a.GetLength(2) == b.GetLength(2),
+                        $"{name}: shape mismatch");
+
+                    for (int i = 0; i < a.GetLength(0); i++)
+                        for (int j = 0; j < a.GetLength(1); j++)
+                            for (int h = 0; h < a.GetLength(2); h++)
+                                Assert(MathF.Abs(a[i, j, h] - b[i, j, h]) <= _tolerance_float,
+                                    $"{name}[{i},{j},{h}]: {a[i, j, h]} vs {b[i, j, h]} (diff={MathF.Abs(a[i, j, h] - b[i, j, h])})");
+                });
+        }
+
+        public void Test_ContentAwareDecayForward_WithDropout()
+        {
+            var rng = new Random(42);
+            int queryLen = 4, keyLen = 6;
+            int numHeads = 2, projDim = 8, contentDim = 12;
+            int hiddenDim = 16;
+            int numBases = 4;
+
+            var queryEmbeddings = RandMatrix(rng, queryLen, contentDim);
+            var keyEmbeddings = RandMatrix(rng, keyLen, contentDim);
+            var timeDiffs = RandMatrix(rng, queryLen, keyLen);
+            var keyTimesFromRef = RandVector(rng, keyLen, 10f);
+
+            var network = new ContentAwareDecayNetwork(
+                numHeads: numHeads,
+                contentDim: contentDim,
+                projectionDim: projDim,
+                hiddenDim: hiddenDim,
+                random: new Random(42),
+                memAttnDropout: 0.1f,
+                mlpDropout: 0.1f,
+                weightDecay: 0.0f,
+                numTimeBases: numBases);
+
+            // Use same RNG seed for all backends
+            CompareAllBackends("ContentAwareDecayForward_WithDropout",
+                mgr =>
+                {
+                    var dropoutRng = new Random(123);
+                    var (decayBias, cache) = mgr.ContentAwareDecayForward(
+                        queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef,
+                        network, isTraining: true, dropoutRng: dropoutRng);
+                    return decayBias;
+                },
+                (a, b, name) =>
+                {
+                    for (int i = 0; i < a.GetLength(0); i++)
+                        for (int j = 0; j < a.GetLength(1); j++)
+                            for (int h = 0; h < a.GetLength(2); h++)
+                                Assert(MathF.Abs(a[i, j, h] - b[i, j, h]) <= _tolerance_float,
+                                    $"{name}[{i},{j},{h}]: {a[i, j, h]} vs {b[i, j, h]}");
+                });
+        }
+
+        public void Test_ContentAwareCrossAttentionWithCache()
+        {
+            var rng = new Random(42);
+            int seqLenQ = 4, seqLenK = 6, embDim = 12, numHeads = 2;
+            int contentDim = 16, projDim = 8, hiddenDim = 16, numBases = 4;
+
+            var Q = RandMatrix(rng, seqLenQ, embDim);
+            var K = RandMatrix(rng, seqLenK, embDim);
+            var V = RandMatrix(rng, seqLenK, embDim);
+            var timeDiffs = RandMatrix(rng, seqLenQ, seqLenK);
+            var keyTimesFromRef = RandVector(rng, seqLenK, 10f);
+            var queryEmbeddings = RandMatrix(rng, seqLenQ, contentDim);
+            var keyEmbeddings = RandMatrix(rng, seqLenK, contentDim);
+
+            // Create minimal TransformerBlock with DecayNetwork - FIXED constructor
+            var decayNetwork = new ContentAwareDecayNetwork(
+                numHeads: numHeads,
+                contentDim: contentDim,
+                projectionDim: projDim,
+                hiddenDim: hiddenDim,
+                random: new Random(42),
+                memAttnDropout: 0.1f,
+                mlpDropout: 0.1f,
+                weightDecay: 0.0f,
+                numTimeBases: numBases);
+
+            // FIXED: TransformerBlock constructor
+            var block = new TransformerBlock(
+                embeddingDim: embDim,
+                numHeads: numHeads,
+                feedForwardDim: embDim * 4,
+                ffnActivation: ActivationType.Relu,
+                accel: new AccelerationCPU(),
+                random: new Random(42),
+                accelType: AccelerationType.CPU,
+                accelDeviceId: 0,
+                l2Lambda: 0.01f,
+                decayProjectionDim: projDim,
+                decayHiddenDim: hiddenDim,
+                decayMemAttnDropout: 0.1f,
+                decayMLPDropout: 0.1f,
+                decayWeightDecay: 0.0f,
+                decayTimeBases: numBases);
+
+            CompareAllBackends("ContentAwareCrossAttentionWithCache",
+                mgr =>
+                {
+                    var bc = new BlockCache();
+                    var output = mgr.ContentAwareCrossAttentionWithCache(
+                        Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings,
+                        block, bc, embDim, numHeads, isTraining: false, dropoutRng: null);
+                    return (output, bc);
+                },
+                (a, b, name) =>
+                {
+                    // Compare output
+                    AssertMatricesClose(a.output, b.output, name + ".output");
+
+                    // Compare cache - attention weights
+                    Assert(a.bc.CrossAttentionWeights != null && b.bc.CrossAttentionWeights != null,
+                        $"{name}: cache attention weights null mismatch");
+                    Assert(a.bc.CrossAttentionWeights.Length == b.bc.CrossAttentionWeights.Length,
+                        $"{name}: cache attention weights length mismatch");
+
+                    for (int h = 0; h < a.bc.CrossAttentionWeights.Length; h++)
+                        AssertMatricesClose(a.bc.CrossAttentionWeights[h], b.bc.CrossAttentionWeights[h],
+                            $"{name}.cache.CrossAttentionWeights[{h}]");
+                });
+        }
+
+        public void Test_ContentAwareDecayForward_Large()
+        {
+            var rng = new Random(42);
+            int queryLen = 16, keyLen = 24;
+            int numHeads = 4, projDim = 16, contentDim = 32;
+            int hiddenDim = 64;
+            int numBases = 8;
+
+            var queryEmbeddings = RandMatrix(rng, queryLen, contentDim);
+            var keyEmbeddings = RandMatrix(rng, keyLen, contentDim);
+            var timeDiffs = RandMatrix(rng, queryLen, keyLen);
+            var keyTimesFromRef = RandVector(rng, keyLen, 20f);
+
+            var network = new ContentAwareDecayNetwork(
+                numHeads: numHeads,
+                contentDim: contentDim,
+                projectionDim: projDim,
+                hiddenDim: hiddenDim,
+                random: new Random(42),
+                memAttnDropout: 0.1f,
+                mlpDropout: 0.1f,
+                weightDecay: 0.0f,
+                numTimeBases: numBases);
+
+            CompareAllBackends("ContentAwareDecayForward_Large",
+                mgr =>
+                {
+                    var (decayBias, cache) = mgr.ContentAwareDecayForward(
+                        queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef,
+                        network, isTraining: false, dropoutRng: null);
+                    return decayBias;
+                },
+                (a, b, name) =>
+                {
+                    for (int i = 0; i < a.GetLength(0); i++)
+                        for (int j = 0; j < a.GetLength(1); j++)
+                            for (int h = 0; h < a.GetLength(2); h++)
+                                Assert(MathF.Abs(a[i, j, h] - b[i, j, h]) <= 1e-3f,
+                                    $"{name}[{i},{j},{h}]: {a[i, j, h]} vs {b[i, j, h]}");
                 });
         }
     }

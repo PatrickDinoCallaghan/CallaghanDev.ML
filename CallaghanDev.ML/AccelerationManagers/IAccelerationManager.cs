@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.TACAMT;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,8 +16,6 @@ namespace CallaghanDev.ML.AccelerationManagers
         float[] CalculateHiddenGradients(float[,] weights, float[] nextDeltas, float[] derivative);
         float[,] UpdateWeights(float[,] weights, float[] deltas, float[] prevActivations, float learningRate, float lambda);
         float[] UpdateBias(float[] bias, float[] deltas, float learningRate);
-
-
 
         /// <summary>
         /// Matrix-matrix multiplication: C = A * B
@@ -110,52 +109,23 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// </summary>
         void ZeroMatrix(float[,] matrix);
 
-
-        #region New methods
-
-        /// <summary>
-        /// Adds a bias vector to each row: result[i,j] = matrix[i,j] + bias[j].
-        /// Replaces all inline AddBiasToMatrix / ComputeProjection bias loops.
-        /// </summary>
         float[,] MatrixAddBias(float[,] matrix, float[] bias);
 
-        /// <summary>
-        /// Token embedding lookup + positional encoding addition.
-        /// result[i,j] = tokenEmbedding[tokenIds[i], j] + positionalEncoding[i, j]
-        /// </summary>
         float[,] EmbedTokensWithPosition(float[,] tokenEmbedding, int[] tokenIds, float[,] positionalEncoding, int seqLen, int embeddingDim);
 
-        /// <summary>
-        /// Fuses projected + bias + positionalEncoding:
-        /// result[i,j] = projected[i,j] + bias[j] + positionalEncoding[i,j]
-        /// </summary>
         float[,] AddBiasAndPositionalEncoding(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim);
 
-        /// <summary>
-        /// Fused cross-entropy softmax + loss + gradient computation.
-        /// Returns averaged loss and scaled dLogits ready for backprop.
-        /// </summary>
         (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen);
 
-        /// <summary>
-        /// Fused MSE loss + gradient computation.
-        /// Returns averaged loss and scaled dOutput ready for backprop.
-        /// </summary>
         (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int effectiveLen);
 
-        /// <summary>
-        /// Fused output projection backprop: computes weight grads, bias grads, and input gradient.
-        /// Replaces separate BackpropOutputLayer + ComputeOutputGradient.
-        /// </summary>
-        float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights,
-            float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim);
+        float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights, float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim);
 
         /// <summary>
         /// Backprop through input projection (continuous inputs).
         /// Accumulates into weightGrad and biasGrad.
         /// </summary>
-        void BackpropInputProjection(float[,] dX, float[,] continuousInput,
-            float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim);
+        void BackpropInputProjection(float[,] dX, float[,] continuousInput, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim);
 
         /// <summary>
         /// Accumulates embedding gradients: embeddingGrad[tokenIds[i], j] += dX[i, j]
@@ -203,7 +173,27 @@ namespace CallaghanDev.ML.AccelerationManagers
         void ZeroVector(float[] vector);
 
         void SigmoidInPlace(float[,] matrix);
-        #endregion
+
+        float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax);
+
+        float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn);
+
+        void ApplyContextTypeEmbedding(float[,] contextHidden,  float[,] typeEmbedding,int[] typeIndices);
+
+        float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes);
+
+        float[,] MeanPoolRows(float[,] hidden, int[] storyOffsets, int[] storyCounts, int numStories, int embeddingDim);
+
+        float[,] EmbedWithBiasAndPositional(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim);
+
+        float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos, float[,] contextHidden, int totalCtx, float scale);
+
+        float[,] ProjectOutputBatch(float[,] hidden, float[,] outputProjection, float[] outputBias, int seqLen, int outputDim);
+
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, CallaghanDev.ML.Transformers.TACAMT.ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null);
+
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null);
+
 
         void Dispose();
     }

@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.TACAMT;
 using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -26,15 +27,26 @@ namespace CallaghanDev.ML.AccelerationManagers
             };
         }
 
+
+        private readonly object _singleThreadCPULock = new object();
+
         private bool ShouldParallelize(int workUnits)
         {
-           
-            if (workUnits < PARALLEL_THRESHOLD && !AlwaysParallel && _singleThreadCPU == null)
+            if (workUnits < PARALLEL_THRESHOLD && !AlwaysParallel)
             {
-                _singleThreadCPU = new AccelerationCPU();
+                if (_singleThreadCPU == null)
+                {
+                    lock (_singleThreadCPULock)
+                    {
+                        // Double-check pattern to avoid multiple instantiations
+                        if (_singleThreadCPU == null)
+                        {
+                            _singleThreadCPU = new AccelerationCPU();
+                        }
+                    }
+                }
             }
-
-           return workUnits >= PARALLEL_THRESHOLD || AlwaysParallel;
+            return workUnits >= PARALLEL_THRESHOLD || AlwaysParallel;
         }
 
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
@@ -1547,8 +1559,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             Buffer.BlockCopy(values, 0, matrix, rowIndex * cols * sizeof(float), cols * sizeof(float));
         }
 
-
-
         public bool[,] CreateCausalMask(int seqLen)
         {
             var mask = new bool[seqLen, seqLen];
@@ -1644,6 +1654,581 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
 
+
+        #region ContentAwareCrossAttentionForward
+
+        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        {
+            int psl = Q.GetLength(0);
+            int tsl = K.GetLength(0);
+            int embDim = Q.GetLength(1);
+            int headDim = embDim / numHeads;
+
+            var output = new float[psl, embDim];
+            var aw = new float[numHeads][,];
+            var sp = new float[numHeads][,];
+
+            // Allocate per-head arrays up-front (avoids allocation inside parallel body)
+            for (int h = 0; h < numHeads; h++)
+            {
+                aw[h] = new float[psl, tsl];
+                sp[h] = new float[psl, tsl];
+            }
+
+            bool parallelHeads = ShouldParallelize(numHeads * psl * tsl);
+
+            if (parallelHeads)
+            {
+                Parallel.For(0, numHeads, _parallelOptions, h => ContentAwareCrossAttentionHead(Q, K, V, output, aw[h], sp[h], h, headDim, psl, tsl, scale, decayBias));
+            }
+            else
+            {
+                for (int h = 0; h < numHeads; h++)
+                {
+                    ContentAwareCrossAttentionHead(Q, K, V, output, aw[h], sp[h], h, headDim, psl, tsl, scale, decayBias);
+                }
+            }
+
+            attentionWeights = aw;
+            scoresPreSoftmax = sp;
+            return output;
+        }
+
+        private static unsafe void ContentAwareCrossAttentionHead(float[,] Q, float[,] K, float[,] V,float[,] output, float[,] weights, float[,] scores, int h, int headDim, int psl, int tsl, float scale, float[,,] decayBias)
+        {
+            int si = h * headDim;
+            int embDim = Q.GetLength(1);
+            int vecSize = Vector<float>.Count;
+            int vecEnd = headDim - (headDim % vecSize);
+
+            fixed (float* pQ = Q, pK = K, pV = V, pOut = output,
+                          pW = weights, pS = scores)
+            {
+                int strideQ = embDim;
+                int strideK = K.GetLength(1);
+                int strideV = V.GetLength(1);
+                int strideOut = embDim;
+                int strideW = tsl;
+                int strideScr = tsl;
+
+                for (int p = 0; p < psl; p++)
+                {
+                    float* qi = pQ + p * strideQ + si;
+                    float* oi = pOut + p * strideOut + si;
+                    float* wi = pW + p * strideW;
+                    float* sci = pS + p * strideScr;
+
+                    float mx = float.MinValue;
+
+                    // ── Compute raw scores ──
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        float* kj = pK + s * strideK + si;
+                        float dot = 0f;
+                        int k = 0;
+
+                        for (; k < vecEnd; k += vecSize)
+                            dot += Vector.Dot(
+                                new Vector<float>(new ReadOnlySpan<float>(qi + k, vecSize)),
+                                new Vector<float>(new ReadOnlySpan<float>(kj + k, vecSize)));
+                        for (; k < headDim; k++) dot += qi[k] * kj[k];
+
+                        float sc = dot * scale;
+                        if (decayBias != null) sc += decayBias[p, s, h];
+                        sci[s] = sc;
+                        if (sc > mx) mx = sc;
+                    }
+
+                    // ── Softmax ──
+                    float se = 0f;
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        float e = MathF.Exp(sci[s] - mx);
+                        wi[s] = e;
+                        se += e;
+                    }
+                    float invSe = se > 0f ? 1f / se : 0f;
+                    for (int s = 0; s < tsl; s++) wi[s] *= invSe;
+
+                    // ── Weighted sum of V ──
+                    // Zero the head-slice first
+                    for (int d = 0; d < headDim; d++) oi[d] = 0f;
+
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        float wis = wi[s];
+                        if (wis == 0f) continue;
+
+                        float* vj = pV + s * strideV + si;
+                        var wVec = new Vector<float>(wis);
+                        int k = 0;
+
+                        for (; k < vecEnd; k += vecSize)
+                        {
+                            var ov = new Vector<float>(new ReadOnlySpan<float>(oi + k, vecSize));
+                            var vv = new Vector<float>(new ReadOnlySpan<float>(vj + k, vecSize));
+                            (ov + wVec * vv).CopyTo(new Span<float>(oi + k, vecSize));
+                        }
+                        for (; k < headDim; k++) oi[k] += wis * vj[k];
+                    }
+                }
+            }
+        }
+
+        public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
+        {
+            int inputDim = input.GetLength(1);
+
+            if (!ShouldParallelize(seqLen * inputDim))
+            {
+                return _singleThreadCPU.FFNForwardBatch(input, seqLen, outputDim, forwardPassFn);
+            }
+
+            var result = new float[seqLen, outputDim];
+
+            Parallel.For(0, seqLen, _parallelOptions, i =>
+            {
+                // Each thread gets its own input row buffer (no sharing)
+                var row = new float[inputDim];
+                for (int j = 0; j < inputDim; j++)
+                    row[j] = input[i, j];
+
+                var outRow = forwardPassFn(row);
+
+                for (int j = 0; j < outputDim; j++)
+                    result[i, j] = outRow[j];
+            });
+
+            return result;
+        }
+
+        public void ApplyContextTypeEmbedding(float[,] contextHidden, float[,] typeEmbedding, int[] typeIndices)
+        {
+            int n = contextHidden.GetLength(0);
+            int embDim = contextHidden.GetLength(1);
+
+            if (!ShouldParallelize(n * embDim))
+            {
+                _singleThreadCPU.ApplyContextTypeEmbedding(contextHidden, typeEmbedding, typeIndices);
+                return;
+            }
+
+            Parallel.For(0, n, _parallelOptions, i =>
+            {
+                int t = typeIndices[i];
+                int vecSize = Vector<float>.Count;
+                int vecEnd = embDim - (embDim % vecSize);
+                int d = 0;
+
+                // SIMD path for the inner dimension
+                for (; d < vecEnd; d += vecSize)
+                {
+                    // contextHidden does not have a direct Span constructor (2-D array),
+                    // so we fall back to scalar for safety. SIMD would require unsafe/pinning.
+                    for (int k = d; k < d + vecSize; k++)
+                        contextHidden[i, k] += typeEmbedding[t, k];
+                }
+                for (; d < embDim; d++)
+                    contextHidden[i, d] += typeEmbedding[t, d];
+            });
+        }
+
+        public float[,] ComputeTimeDiffMatrix( int priceSeqLen, float[] keyArrivalTimes)
+        {
+            int numKeys = keyArrivalTimes.Length;
+
+            if (!ShouldParallelize(priceSeqLen * numKeys))
+            {
+                return _singleThreadCPU.ComputeTimeDiffMatrix(priceSeqLen, keyArrivalTimes);
+            }
+
+            var td = new float[priceSeqLen, numKeys];
+
+            Parallel.For(0, priceSeqLen, _parallelOptions, p =>
+            {
+                float fp = p;
+                for (int s = 0; s < numKeys; s++)
+                    td[p, s] = MathF.Abs(fp - keyArrivalTimes[s]);
+            });
+
+            return td;
+        }
+        public float[,] MeanPoolRows(float[,] hidden,  int[] storyOffsets, int[] storyCounts, int numStories,  int embeddingDim)
+        {
+            if (!ShouldParallelize(numStories * embeddingDim))
+            {
+                return _singleThreadCPU.MeanPoolRows(hidden, storyOffsets, storyCounts, numStories, embeddingDim);
+            }
+
+            var result = new float[numStories, embeddingDim];
+
+            Parallel.For(0, numStories, _parallelOptions, s =>
+            {
+                int start = storyOffsets[s];
+                int count = storyCounts[s];
+                if (count <= 0) return;
+
+                float inv = 1f / count;
+
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    float sum = 0f;
+                    for (int t = start; t < start + count; t++)
+                        sum += hidden[t, d];
+                    result[s, d] = sum * inv;
+                }
+            });
+
+            return result;
+        }
+
+        public float[,] EmbedWithBiasAndPositional(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
+        {
+            if (!ShouldParallelize(seqLen * embeddingDim))
+            {
+                return _singleThreadCPU.EmbedWithBiasAndPositional(projected, bias, positionalEncoding, seqLen, embeddingDim);
+            }
+
+            var result = new float[seqLen, embeddingDim];
+
+            Parallel.For(0, seqLen, _parallelOptions, i =>
+            {
+                for (int j = 0; j < embeddingDim; j++)
+                    result[i, j] = projected[i, j] + bias[j] + positionalEncoding[i, j];
+            });
+
+            return result;
+        }
+
+        public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos,  float[,] contextHidden,  int totalCtx, float scale)
+        {
+            int embDim = priceHidden.GetLength(1);
+
+            if (!ShouldParallelize(totalCtx * embDim))
+            {
+                return _singleThreadCPU.ComputeMemoryAttentionScores(priceHidden, lastPos, contextHidden, totalCtx, scale);
+            }
+
+            var scores = new float[totalCtx];
+
+            Parallel.For(0, totalCtx, _parallelOptions, s =>
+            {
+                float dot = 0f;
+                int vecSize = Vector<float>.Count;
+                int vecEnd = embDim - (embDim % vecSize);
+                int d = 0;
+
+                // Scalar fallback (2-D array → no direct span).
+                // For hot paths this should be moved to unsafe code; for now
+                // the parallelism across context entries is the primary win.
+                for (; d < embDim; d++)
+                    dot += priceHidden[lastPos, d] * contextHidden[s, d];
+
+                scores[s] = dot * scale;
+            });
+
+            return scores;
+        }
+
+        public float[,] ProjectOutputBatch(float[,] hidden, float[,] outputProjection, float[] outputBias, int seqLen, int outputDim)
+        {
+            int embDim = hidden.GetLength(1);
+
+            if (!ShouldParallelize(seqLen * outputDim))
+            {
+                return _singleThreadCPU.ProjectOutputBatch(hidden, outputProjection, outputBias, seqLen, outputDim);
+            }
+
+            var pred = new float[seqLen, outputDim];
+
+            Parallel.For(0, seqLen, _parallelOptions, i =>
+            {
+                for (int j = 0; j < outputDim; j++)
+                {
+                    float sum = outputBias[j];
+                    for (int k = 0; k < embDim; k++)
+                        sum += outputProjection[j, k] * hidden[i, k];
+                    pred[i, j] = sum;
+                }
+            });
+
+            return pred;
+        }
+
+
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
+        {
+            int queryLen = timeDiffs.GetLength(0);
+            int keyLen = timeDiffs.GetLength(1);
+            int numHeads = network.NumHeads;
+            int projDim = network.ProjectionDim;
+            int contentDim = network.ContentDim;
+            int hiddenDim = network.HiddenDim;
+            int mlpInputDim = network.MLPInputDim;
+            int numBases = network.NumTimeBases;
+            int rawDim = network.TimeRawDim;
+
+            var cache = new ContentAwareDecayCache
+            {
+                QueryEmbeddings = queryEmbeddings,
+                KeyEmbeddings = keyEmbeddings,
+                TimeDiffs = timeDiffs,
+                KeyTimesFromRef = keyTimesFromRef,
+                QueryProj = new float[numHeads, queryLen, projDim],
+                KeyProj = new float[numHeads, keyLen, projDim],
+                TimeRawFeatures = new float[numHeads, keyLen, rawDim],
+                TimeEncoding = new float[numHeads, keyLen, projDim],
+                MemAttnQInput = new float[numHeads, keyLen, projDim],
+                MemAttnKInput = new float[numHeads, keyLen, projDim],
+                MemAttnWeights = new float[numHeads, keyLen, keyLen],
+                MemAttnOutput = new float[numHeads, keyLen, projDim],
+                RefinedKey = new float[numHeads, keyLen, projDim],
+                MLPInput = new float[queryLen, keyLen, numHeads, mlpInputDim],
+                MLPHiddenPreAct = new float[queryLen, keyLen, numHeads, hiddenDim],
+                MLPHidden = new float[queryLen, keyLen, numHeads, hiddenDim],
+                GateLogits = new float[queryLen, keyLen, numHeads],
+                Gates = new float[queryLen, keyLen, numHeads],
+                MemAttnDropoutMask = null,
+                MLPDropoutMask = null
+            };
+
+            bool useMemAttnDrop = isTraining && network.MemoryAttentionDropout > 0 && dropoutRng != null;
+            bool useMLPDrop = isTraining && network.MLPDropout > 0 && dropoutRng != null;
+
+            if (useMemAttnDrop)
+            {
+                cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
+            }
+            if (useMLPDrop)
+            {
+                cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
+            }
+
+            var decayBias = new float[queryLen, keyLen, numHeads];
+
+            int totalWork = numHeads * queryLen * keyLen;
+
+            if (!ShouldParallelize(totalWork))
+            {
+                return _singleThreadCPU.ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, network, isTraining, dropoutRng);
+            }
+
+            Parallel.For(0, numHeads, _parallelOptions, h =>
+            {
+                ProcessDecayHead(h, queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, network, cache, decayBias, isTraining, useMemAttnDrop, useMLPDrop, dropoutRng, queryLen, keyLen, projDim, contentDim, hiddenDim, mlpInputDim, numBases, rawDim);
+            });
+
+            return (decayBias, cache);
+        }
+
+        private void ProcessDecayHead(int h, float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, ContentAwareDecayCache cache, float[,,] decayBias, bool isTraining, bool useMemAttnDrop, bool useMLPDrop, Random dropoutRng, int queryLen, int keyLen, int projDim, int contentDim, int hiddenDim, int mlpInputDim, int numBases, int rawDim)
+        {
+            // 1. Project queries
+            for (int q = 0; q < queryLen; q++)
+            {
+                for (int p = 0; p < projDim; p++)
+                {
+                    float val = network.QueryProjectionBias[h, p];
+                    for (int d = 0; d < contentDim; d++)
+                        val += network.QueryProjection[h, p, d] * queryEmbeddings[q, d];
+                    cache.QueryProj[h, q, p] = val;
+                }
+            }
+
+            // 2. Project keys
+            for (int s = 0; s < keyLen; s++)
+            {
+                for (int p = 0; p < projDim; p++)
+                {
+                    float val = network.KeyProjectionBias[h, p];
+                    for (int d = 0; d < contentDim; d++)
+                        val += network.KeyProjection[h, p, d] * keyEmbeddings[s, d];
+                    cache.KeyProj[h, s, p] = val;
+                }
+            }
+
+            // 3. Multi-scale sinusoidal time encoding
+            for (int s = 0; s < keyLen; s++)
+            {
+                float t = keyTimesFromRef != null ? keyTimesFromRef[s] : 0f;
+                for (int b = 0; b < numBases; b++)
+                {
+                    float freq = MathF.Exp(network.TimeLogFreq[h, b]);
+                    float angle = freq * t;
+                    cache.TimeRawFeatures[h, s, b * 2] = MathF.Sin(angle);
+                    cache.TimeRawFeatures[h, s, b * 2 + 1] = MathF.Cos(angle);
+                }
+                for (int p = 0; p < projDim; p++)
+                {
+                    float val = network.TimeProjBias[h, p];
+                    for (int r = 0; r < rawDim; r++)
+                        val += network.TimeProj[h, p, r] * cache.TimeRawFeatures[h, s, r];
+                    cache.TimeEncoding[h, s, p] = val;
+                }
+            }
+
+            // 4. Memory interaction attention (self-attention over keys)
+            float memScale = 1.0f / MathF.Sqrt(projDim);
+
+            for (int s = 0; s < keyLen; s++)
+            {
+                for (int p = 0; p < projDim; p++)
+                {
+                    cache.MemAttnQInput[h, s, p] = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
+                    cache.MemAttnKInput[h, s, p] = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
+                }
+            }
+
+            for (int i = 0; i < keyLen; i++)
+            {
+                float maxScore = float.MinValue;
+                var scores = new float[keyLen];
+
+                for (int j = 0; j < keyLen; j++)
+                {
+                    float dot = 0;
+                    for (int p = 0; p < projDim; p++)
+                        dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+                    scores[j] = dot * memScale;
+                    if (scores[j] > maxScore) maxScore = scores[j];
+                }
+
+                float sumExp = 0;
+                for (int j = 0; j < keyLen; j++)
+                {
+                    cache.MemAttnWeights[h, i, j] = MathF.Exp(scores[j] - maxScore);
+                    sumExp += cache.MemAttnWeights[h, i, j];
+                }
+                if (sumExp > 0)
+                {
+                    for (int j = 0; j < keyLen; j++)
+                        cache.MemAttnWeights[h, i, j] /= sumExp;
+                }
+
+                // Dropout on memory attention (thread-safe RNG)
+                if (useMemAttnDrop)
+                {
+                    float keepProb = 1.0f - network.MemoryAttentionDropout;
+                    float dscale = 1.0f / keepProb;
+                    lock (dropoutRng)  // Thread-safe RNG access
+                    {
+                        for (int j = 0; j < keyLen; j++)
+                        {
+                            float mask = dropoutRng.NextSingle() < keepProb ? dscale : 0f;
+                            cache.MemAttnDropoutMask[h, i, j] = mask;
+                            cache.MemAttnWeights[h, i, j] *= mask;
+                        }
+                    }
+                }
+
+                // Weighted sum
+                for (int p = 0; p < projDim; p++)
+                {
+                    float val = 0;
+                    for (int j = 0; j < keyLen; j++)
+                        val += cache.MemAttnWeights[h, i, j] * cache.KeyProj[h, j, p];
+                    cache.MemAttnOutput[h, i, p] = val;
+                }
+            }
+
+            // 5. Output projection (refined key)
+            for (int s = 0; s < keyLen; s++)
+            {
+                for (int p = 0; p < projDim; p++)
+                {
+                    float val = network.MemAttnOutputB[h, p];
+                    for (int q = 0; q < projDim; q++)
+                        val += network.MemAttnOutputW[h, p, q] * cache.MemAttnOutput[h, s, q];
+                    cache.RefinedKey[h, s, p] = val + cache.KeyProj[h, s, p];
+                }
+            }
+
+            // 6. Gating MLP (query × key pairs)
+            for (int qi = 0; qi < queryLen; qi++)
+            {
+                for (int si = 0; si < keyLen; si++)
+                {
+                    float td = timeDiffs[qi, si];
+                    float logTd = MathF.Log(1f + td);
+
+                    // Build MLP input
+                    int idx = 0;
+                    for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
+                    for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
+                    for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p] * cache.RefinedKey[h, si, p];
+                    cache.MLPInput[qi, si, h, idx++] = td;
+                    cache.MLPInput[qi, si, h, idx++] = logTd;
+
+                    // Hidden layer (ReLU)
+                    for (int j = 0; j < hiddenDim; j++)
+                    {
+                        float val = network.B1[h, j];
+                        for (int k = 0; k < mlpInputDim; k++)
+                            val += network.W1[h, j, k] * cache.MLPInput[qi, si, h, k];
+                        cache.MLPHiddenPreAct[qi, si, h, j] = val;
+                        float activated = val > 0 ? val : 0;
+
+                        // Dropout on MLP hidden (thread-safe RNG)
+                        if (useMLPDrop)
+                        {
+                            float keepProb = 1.0f - network.MLPDropout;
+                            lock (dropoutRng)  // Thread-safe RNG access
+                            {
+                                float mask = dropoutRng.NextSingle() < keepProb ? (1.0f / keepProb) : 0f;
+                                cache.MLPDropoutMask[qi, si, h, j] = mask;
+                                activated *= mask;
+                            }
+                        }
+                        cache.MLPHidden[qi, si, h, j] = activated;
+                    }
+
+                    // Output layer
+                    float logit = network.B2[h];
+                    for (int j = 0; j < hiddenDim; j++)
+                        logit += network.W2[h, j] * cache.MLPHidden[qi, si, h, j];
+                    cache.GateLogits[qi, si, h] = logit;
+
+                    float gate = StableSigmoid(logit);  // Use existing StableSigmoid method
+                    cache.Gates[qi, si, h] = gate;
+
+                    float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
+                    decayBias[qi, si, h] = -(baseRate * gate) * td;
+                }
+            }
+        }
+
+        #endregion
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, CallaghanDev.ML.Transformers.TACAMT.TransformerBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false,  Random dropoutRng = null)
+        {
+            int psl = Q.GetLength(0);
+            int tsl = K.GetLength(0);
+            int ed = PriceEmbeddingDim;
+            int nh = PriceNumHeads;
+            int hd = ed / nh;
+            float scale = 1.0f / MathF.Sqrt(hd);
+
+            float[,,] decayBias = null;
+            if (timeDiffs != null)
+            {
+                var (bias, decayCache) = ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, block.DecayNetwork, isTraining, dropoutRng);
+                decayBias = bias;
+                bc.DecayCache = decayCache;
+            }
+
+
+            float[][,] attentionWeights;
+            float[][,] scoresPreSoftmax;
+
+            var output = ContentAwareCrossAttentionForward(Q, K, V, nh, scale, decayBias, out attentionWeights, out scoresPreSoftmax);
+
+
+            bc.CrossAttentionWeights = attentionWeights;
+            bc.CrossScoresPreSoftmax = scoresPreSoftmax;
+
+            return output;
+        }
+
         public void Dispose() { }
+
     }
 }

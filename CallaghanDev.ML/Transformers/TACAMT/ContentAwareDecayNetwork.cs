@@ -130,7 +130,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 LogBaseDecayRate[h] = -2.3f;
             }
         }
-
+        /*
         public (float[,,] decayBias, ContentAwareDecayCache cache) Forward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, bool isTraining = false, Random dropoutRng = null)
         {
             int queryLen = timeDiffs.GetLength(0);
@@ -353,7 +353,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return (decayBias, cache);
         }
-
+        */
         public (ContentAwareDecayGradients grads, float[,] dQueryEmbeddings, float[,] dKeyEmbeddings) Backward(float[,,] dDecayBias, ContentAwareDecayCache cache)
         {
             int queryLen = cache.TimeDiffs.GetLength(0);

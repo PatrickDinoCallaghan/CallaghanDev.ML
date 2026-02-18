@@ -31,7 +31,6 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var tests = new (Action test, string name)[]
             {
-                (Test_E2E_LearnRecencyMatters, "E2E: Recent news produces different prediction than old news"),
                 (Test_ContextTypeEmbedding_ChangesAfterTraining, "ContextTypeEmb: Type embeddings change after training"),
                 (Test_ContextTypeEmbedding_TypesDivergeAfterTraining, "ContextTypeEmb: Type 0 and type 1 embeddings diverge"),
                 (Test_ContextTypeEmbedding_SaveLoadRoundTrip, "ContextTypeEmb: Save/load preserves type embeddings"),
@@ -405,8 +404,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (Test_GradCheck_DecayNetwork_LogBaseDecayRate_FiniteDifference, "GradCheck: DecayNetwork LogBaseDecayRate finite difference"),
                 (Test_GradCheck_DecayNetwork_W1_FiniteDifference, "GradCheck: DecayNetwork W1 MLP finite difference"),
                 (Test_GradCheck_TextEmbedding_FiniteDifference, "GradCheck: TextEmbedding affects loss through cross-attention"),
-
-
+                (Test_E2E_LearnRecencyMatters, "E2E: Recent news produces different prediction than old news"),
             };
 
             for (int i = 0; i < tests.Length; i++)
@@ -456,10 +454,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 Console.WriteLine();
             }
         }
-
-        // =====================================================================
-        // Helpers
-        // =====================================================================
 
         private void Assert(bool condition, string message)
         {
@@ -1067,9 +1061,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
         }
 
-        // =====================================================================
-        // NUMERICAL STABILITY
-        // =====================================================================
 
         public void Test_PriceContext_GradientClipping_NoNaN()
         {
@@ -1107,9 +1098,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
         }
 
-        // =====================================================================
-        // TACAMT CORE — Multi-Story Forward
-        // =====================================================================
 
         public void Test_TACAMT_MultiStory_ForwardNoError()
         {
@@ -1155,10 +1143,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                     if (MathF.Abs(pred1[i, j] - pred2[i, j]) > 1e-6f) anyDiff = true;
             Assert(anyDiff, "Different arrival times should produce different outputs");
         }
-
-        // =====================================================================
-        // TACAMT CORE — Time Decay
-        // =====================================================================
 
         public void Test_TACAMT_TimeDecay_InitialValues()
         {
@@ -1208,9 +1192,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(MathF.Abs(timeDiffs[3, 2] - 2f) < 1e-5f, "timeDiffs[3,2] should be |3-5|=2");
         }
 
-        // =====================================================================
-        // TACAMT CORE — Training
-        // =====================================================================
 
         public void Test_TACAMT_MultiStory_LossDecreases()
         {
@@ -1250,9 +1231,6 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
 
 
-        // =====================================================================
-        // TACAMT CORE — Backward Compatibility
-        // =====================================================================
 
         public void Test_TACAMT_BackwardCompat_SingleText_NoError()
         {
@@ -1294,9 +1272,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(!float.IsNaN(loss), "int[][] training produced NaN");
         }
 
-        // =====================================================================
-        // TACAMT CORE — Edge Cases
-        // =====================================================================
 
         public void Test_TACAMT_MixedBatch_SomeStoriesSomeNull()
         {
@@ -1351,9 +1326,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(pred != null && !HasNaN(pred), "Single token story failed");
         }
 
-        // =====================================================================
-        // TACAMT CORE — Memory Management
-        // =====================================================================
 
         public void Test_TACAMT_UpdateNewsMemory_StoresEntries()
         {
@@ -1438,10 +1410,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 if (MathF.Abs(pred1[j] - pred2[j]) > 1e-6f) anyDiff = true;
             Assert(anyDiff, "Old stories at different time distances should produce different outputs");
         }
-
-        // =====================================================================
-        // TACAMT CORE — Save/Load
-        // =====================================================================
 
         public void Test_TACAMT_SaveLoad_DecayParams_Preserved()
         {
@@ -1557,9 +1525,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             finally { CleanupDir(dir); }
         }
 
-        // =====================================================================
-        // TACAMT CORE — Determinism & Stability
-        // =====================================================================
 
         public void Test_TACAMT_Deterministic_MultiStory()
         {
@@ -1619,9 +1584,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(anyDifferent, "Per-head decay rates should diverge after training");
         }
 
-        // =====================================================================
-        // TACAMT CORE — Price-Only
-        // =====================================================================
 
         public void Test_TACAMT_PriceOnly_ForwardNoError()
         {
@@ -1686,9 +1648,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 "Decay LogBaseDecayRate should still change when text is frozen");
         }
 
-        // =====================================================================
-        // Config Validation
-        // =====================================================================
 
         public void Test_Config_Validate_ThrowsOnBadDims()
         {
@@ -1704,9 +1663,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             config.Validate(); // Should not throw
         }
 
-        // =====================================================================
-        // Memory Pruning
-        // =====================================================================
 
         public void Test_MemoryPruning_AttentionBased_KeepsHighScoreEntries()
         {
@@ -1805,15 +1761,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(coldStartSurvivors > 0, "Cold-start entries should be protected from pruning");
         }
 
-        // =====================================================================
-        // ContentAwareDecayNetwork Unit Tests
-        // =====================================================================
-
         public void Test_DecayNetwork_ForwardProduces_ValidBias()
         {
             var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
             var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng);
-
             var queryEmb = new float[4, 16];
             var keyEmb = new float[3, 16];
             var timeDiffs = new float[4, 3];
@@ -1821,13 +1773,10 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int i = 0; i < 4; i++) for (int j = 0; j < 16; j++) queryEmb[i, j] = (float)rng.NextDouble() - 0.5f;
             for (int i = 0; i < 3; i++) for (int j = 0; j < 16; j++) keyEmb[i, j] = (float)rng.NextDouble() - 0.5f;
             for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) timeDiffs[i, j] = MathF.Abs(i - keyTimes[j]);
-
-            var (bias, cache) = net.Forward(queryEmb, keyEmb, timeDiffs, keyTimes);
-
+            var (bias, cache) = accel.ContentAwareDecayForward(queryEmb, keyEmb, timeDiffs, keyTimes, net);
             Assert(bias.GetLength(0) == 4, $"Bias dim0: {bias.GetLength(0)}, expected 4");
             Assert(bias.GetLength(1) == 3, $"Bias dim1: {bias.GetLength(1)}, expected 3");
             Assert(bias.GetLength(2) == 2, $"Bias dim2: {bias.GetLength(2)}, expected 2");
-
             for (int i = 0; i < 4; i++)
                 for (int j = 0; j < 3; j++)
                     for (int h = 0; h < 2; h++)
@@ -1837,8 +1786,8 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_DecayNetwork_BackwardProduces_NonZeroGrads()
         {
             var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
             var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng);
-
             var queryEmb = new float[4, 16];
             var keyEmb = new float[3, 16];
             var timeDiffs = new float[4, 3];
@@ -1846,34 +1795,28 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int i = 0; i < 4; i++) for (int j = 0; j < 16; j++) queryEmb[i, j] = (float)rng.NextDouble() - 0.5f;
             for (int i = 0; i < 3; i++) for (int j = 0; j < 16; j++) keyEmb[i, j] = (float)rng.NextDouble() - 0.5f;
             for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) timeDiffs[i, j] = MathF.Abs(i + 1);
-
-            var (bias, cache) = net.Forward(queryEmb, keyEmb, timeDiffs, keyTimes);
-
+            var (bias, cache) = accel.ContentAwareDecayForward(queryEmb, keyEmb, timeDiffs, keyTimes, net);
             // Create upstream gradient
             var dBias = new float[4, 3, 2];
             for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) for (int h = 0; h < 2; h++)
                 dBias[i, j, h] = 1.0f;
-
             var (grads, dQuery, dKey) = net.Backward(dBias, cache);
-
             // Check that grads are non-zero somewhere
             bool anyNonZero = false;
             for (int h = 0; h < 2 && !anyNonZero; h++)
                 if (MathF.Abs(grads.LogBaseDecayRateGrad[h]) > 1e-12f) anyNonZero = true;
             Assert(anyNonZero, "LogBaseDecayRateGrad should have non-zero values");
-
             bool queryGradNonZero = false;
             for (int i = 0; i < 4 && !queryGradNonZero; i++)
                 for (int j = 0; j < 16 && !queryGradNonZero; j++)
                     if (MathF.Abs(dQuery[i, j]) > 1e-12f) queryGradNonZero = true;
             Assert(queryGradNonZero, "dQueryEmbeddings should have non-zero values");
         }
-
         public void Test_DecayNetwork_DropoutChangesOutput()
         {
             var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
             var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng, memAttnDropout: 0.5f, mlpDropout: 0.5f);
-
             var queryEmb = new float[4, 16];
             var keyEmb = new float[3, 16];
             var timeDiffs = new float[4, 3];
@@ -1881,13 +1824,10 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int i = 0; i < 4; i++) for (int j = 0; j < 16; j++) queryEmb[i, j] = (float)rng.NextDouble() - 0.5f;
             for (int i = 0; i < 3; i++) for (int j = 0; j < 16; j++) keyEmb[i, j] = (float)rng.NextDouble() - 0.5f;
             for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) timeDiffs[i, j] = MathF.Abs(i + 1);
-
             // Inference (no dropout)
-            var (biasInf, _) = net.Forward(queryEmb, keyEmb, timeDiffs, keyTimes, isTraining: false);
-
+            var (biasInf, _) = accel.ContentAwareDecayForward(queryEmb, keyEmb, timeDiffs, keyTimes, net, isTraining: false);
             // Training (with dropout)
-            var (biasTrain, _) = net.Forward(queryEmb, keyEmb, timeDiffs, keyTimes, isTraining: true, dropoutRng: new Random(99));
-
+            var (biasTrain, _) = accel.ContentAwareDecayForward(queryEmb, keyEmb, timeDiffs, keyTimes, net, isTraining: true, dropoutRng: new Random(99));
             bool anyDiff = false;
             for (int i = 0; i < 4 && !anyDiff; i++)
                 for (int j = 0; j < 3 && !anyDiff; j++)
@@ -1896,12 +1836,11 @@ namespace CallaghanDev.ML.TestConsoleApp
                             anyDiff = true;
             Assert(anyDiff, "Dropout should change output between training and inference");
         }
-
         public void Test_DecayNetwork_WeightDecay_AddedToGrads()
         {
             var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
             var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng, weightDecay: 0.01f);
-
             var queryEmb = new float[4, 16];
             var keyEmb = new float[3, 16];
             var timeDiffs = new float[4, 3];
@@ -1909,12 +1848,10 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int i = 0; i < 4; i++) for (int j = 0; j < 16; j++) queryEmb[i, j] = (float)rng.NextDouble();
             for (int i = 0; i < 3; i++) for (int j = 0; j < 16; j++) keyEmb[i, j] = (float)rng.NextDouble();
             for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) timeDiffs[i, j] = 1f;
-
-            var (_, cache) = net.Forward(queryEmb, keyEmb, timeDiffs, keyTimes);
+            var (_, cache) = accel.ContentAwareDecayForward(queryEmb, keyEmb, timeDiffs, keyTimes, net);
             var dBias = new float[4, 3, 2];
             // Zero upstream -> only weight decay contributes to grads
             var (grads, _, _) = net.Backward(dBias, cache);
-
             // With zero upstream gradient and non-zero weight decay,
             // gradients should still be non-zero (from weight decay term)
             bool anyNonZero = false;
@@ -1953,9 +1890,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                     $"LogBaseDecayRate[{h}] mismatch after roundtrip");
         }
 
-        // =====================================================================
-        // Confidence Head
-        // =====================================================================
 
         public void Test_ConfidenceHead_Outputs_SigmoidRange()
         {
@@ -1986,10 +1920,6 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(MatrixChanged(confProjBefore, model.ConfidenceProjection),
                 "ConfidenceProjection should change after training");
         }
-
-        // =====================================================================
-        // Tokenizer Integration
-        // =====================================================================
 
         public void Test_Tokenizer_SetTokenizer_VocabMismatch_Throws()
         {
@@ -2028,7 +1958,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
         private float[,] RandomMatrix(int rows, int cols, Random rng, float scale = 1f) { var m = new float[rows, cols]; for (int i = 0; i < rows; i++) for (int j = 0; j < cols; j++) m[i, j] = ((float)rng.NextDouble() - 0.5f) * 2f * scale; return m; }
         private bool HasNaN(float[] v) { for (int i = 0; i < v.Length; i++) if (float.IsNaN(v[i]) || float.IsInfinity(v[i])) return true; return false; }
-        // === DIMENSIONAL CONSISTENCY ===
+
         public void Test_Dims_TextEmbedding_MatchesConfig() { var c = CreateConfig(textVocabSize: 100, embDim: 32); var m = new TACAMT_Model(c, new Random(42)); Assert(m.TextTokenEmbedding.GetLength(0) == 100, $"Rows {m.TextTokenEmbedding.GetLength(0)}"); Assert(m.TextTokenEmbedding.GetLength(1) == 32, $"Cols {m.TextTokenEmbedding.GetLength(1)}"); }
         public void Test_Dims_PriceInputProjection_MatchesConfig() { var c = CreateConfig(embDim: 32, inputFeatures: 7); var m = new TACAMT_Model(c, new Random(42)); Assert(m.PriceInputProjection.GetLength(0) == 32, "Rows"); Assert(m.PriceInputProjection.GetLength(1) == 7, "Cols"); }
         public void Test_Dims_OutputProjection_MatchesConfig() { var c = CreateConfig(embDim: 16, outputDim: 3); var m = new TACAMT_Model(c, new Random(42)); Assert(m.OutputProjection.GetLength(0) == 3, "Rows"); Assert(m.OutputProjection.GetLength(1) == 16, "Cols"); }
@@ -2156,27 +2086,82 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_Config_ZeroGradientClipThreshold_Throws() { var c = CreateConfig(); c.GradientClippingThreshold = 0f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
 
         // === DECAY NETWORK MATH ===
-        public void Test_Decay_LargerTimeDiff_StrongerDecay() { var rng = new Random(42); var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng); var qe = RandomMatrix(1, 16, rng, 0.5f); var ke = RandomMatrix(2, 16, rng, 0.5f); var kt = new float[] { -1f, -10f }; var td = new float[1, 2]; td[0, 0] = 1f; td[0, 1] = 10f; var (b, _) = net.Forward(qe, ke, td, kt); Assert(b[0, 1, 0] < b[0, 0, 0] || b[0, 1, 1] < b[0, 0, 1], "Larger td should be more negative"); }
-        public void Test_Decay_ZeroTimeDiff_NearZeroBias() 
-        { 
-            var rng = new Random(42); 
-            var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng); 
+        public void Test_Decay_LargerTimeDiff_StrongerDecay()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+            var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng);
             var qe = RandomMatrix(1, 16, rng, 0.5f);
-            var ke = RandomMatrix(1, 16, rng, 0.5f); 
-            var td = new float[1, 1]; 
-            var kt = new float[] { 0f }; 
-            var (b, _) = net.Forward(qe, ke, td, kt); 
+            var ke = RandomMatrix(2, 16, rng, 0.5f);
+            var kt = new float[] { -1f, -10f };
+            var td = new float[1, 2];
+            td[0, 0] = 1f;
+            td[0, 1] = 10f;
+            var (b, _) = accel.ContentAwareDecayForward(qe, ke, td, kt, net);
+            Assert(b[0, 1, 0] < b[0, 0, 0] || b[0, 1, 1] < b[0, 0, 1], "Larger td should be more negative");
+        }
+        public void Test_Decay_ZeroTimeDiff_NearZeroBias()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+            var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng);
+            var qe = RandomMatrix(1, 16, rng, 0.5f);
+            var ke = RandomMatrix(1, 16, rng, 0.5f);
+            var td = new float[1, 1];
+            var kt = new float[] { 0f };
+            var (b, _) = accel.ContentAwareDecayForward(qe, ke, td, kt, net);
             for (int h = 0; h < 2; h++)
             {
                 Assert(MathF.Abs(b[0, 0, h]) < 1e-5f, $"Bias {b[0, 0, h]} for head {h}");
             }
-        
         }
-        public void Test_Decay_GateOutputInSigmoidRange() { var rng = new Random(42); var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng); var qe = RandomMatrix(5, 16, rng, 2.0f); var ke = RandomMatrix(3, 16, rng, 2.0f); var td = new float[5, 3]; var kt = new float[] { -3f, -2f, -1f }; for (int i = 0; i < 5; i++) for (int j = 0; j < 3; j++) td[i, j] = MathF.Abs(i + 1); var (_, cache) = net.Forward(qe, ke, td, kt); for (int q = 0; q < 5; q++) for (int s = 0; s < 3; s++) for (int h = 0; h < 2; h++) Assert(cache.Gates[q, s, h] > 0f && cache.Gates[q, s, h] < 1f, $"Gate[{q},{s},{h}]={cache.Gates[q, s, h]}"); }
+        public void Test_Decay_GateOutputInSigmoidRange()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+            var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng);
+            var qe = RandomMatrix(5, 16, rng, 2.0f);
+            var ke = RandomMatrix(3, 16, rng, 2.0f);
+            var td = new float[5, 3];
+            var kt = new float[] { -3f, -2f, -1f };
+            for (int i = 0; i < 5; i++)
+                for (int j = 0; j < 3; j++)
+                    td[i, j] = MathF.Abs(i + 1);
+            var (_, cache) = accel.ContentAwareDecayForward(qe, ke, td, kt, net);
+            for (int q = 0; q < 5; q++)
+                for (int s = 0; s < 3; s++)
+                    for (int h = 0; h < 2; h++)
+                        Assert(cache.Gates[q, s, h] > 0f && cache.Gates[q, s, h] < 1f, $"Gate[{q},{s},{h}]={cache.Gates[q, s, h]}");
+        }
         public void Test_Decay_BaseDecayRate_AlwaysPositive() { var m = new TACAMT_Model(CreateConfig(numHeads: 4), new Random(42)); for (int l = 0; l < m.Config.PriceNumLayers; l++) for (int h = 0; h < 4; h++) Assert(MathF.Exp(m.PriceBlocks[l].DecayNetwork.LogBaseDecayRate[h]) > 0, $"L{l}H{h}"); }
         public void Test_Decay_MultiScale_TimeEncoding_DifferentPerBase() { var net = new ContentAwareDecayNetwork(1, 16, 8, 16, new Random(42), numTimeBases: 4); bool d = false; for (int b = 1; b < 4 && !d; b++) if (MathF.Abs(net.TimeLogFreq[0, 0] - net.TimeLogFreq[0, b]) > 1e-6f) d = true; Assert(d, "Should differ per base"); }
-        public void Test_Decay_MemoryInteraction_ChangesOutput() { var rng = new Random(42); var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng); var qe = RandomMatrix(2, 16, rng, 0.5f); var kt = new float[] { -5f, -3f, -1f }; var ke3 = RandomMatrix(3, 16, rng, 0.5f); var td3 = new float[2, 3]; for (int i = 0; i < 2; i++) for (int j = 0; j < 3; j++) td3[i, j] = MathF.Abs(i - kt[j]); var (b3, _) = net.Forward(qe, ke3, td3, kt); var ke1 = new float[1, 16]; for (int d = 0; d < 16; d++) ke1[0, d] = ke3[0, d]; var td1 = new float[2, 1]; for (int i = 0; i < 2; i++) td1[i, 0] = td3[i, 0]; var (b1, _) = net.Forward(qe, ke1, td1, new float[] { kt[0] }); bool df = false; for (int q = 0; q < 2 && !df; q++) for (int h = 0; h < 2 && !df; h++) if (MathF.Abs(b3[q, 0, h] - b1[q, 0, h]) > 1e-6f) df = true; Assert(df, "Memory interaction should change bias"); }
-
+        public void Test_Decay_MemoryInteraction_ChangesOutput()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+            var net = new ContentAwareDecayNetwork(2, 16, 8, 16, rng);
+            var qe = RandomMatrix(2, 16, rng, 0.5f);
+            var kt = new float[] { -5f, -3f, -1f };
+            var ke3 = RandomMatrix(3, 16, rng, 0.5f);
+            var td3 = new float[2, 3];
+            for (int i = 0; i < 2; i++)
+                for (int j = 0; j < 3; j++)
+                    td3[i, j] = MathF.Abs(i - kt[j]);
+            var (b3, _) = accel.ContentAwareDecayForward(qe, ke3, td3, kt, net);
+            var ke1 = new float[1, 16];
+            for (int d = 0; d < 16; d++)
+                ke1[0, d] = ke3[0, d];
+            var td1 = new float[2, 1];
+            for (int i = 0; i < 2; i++)
+                td1[i, 0] = td3[i, 0];
+            var (b1, _) = accel.ContentAwareDecayForward(qe, ke1, td1, new float[] { kt[0] }, net);
+            bool df = false;
+            for (int q = 0; q < 2 && !df; q++)
+                for (int h = 0; h < 2 && !df; h++)
+                    if (MathF.Abs(b3[q, 0, h] - b1[q, 0, h]) > 1e-6f)
+                        df = true;
+            Assert(df, "Memory interaction should change bias");
+        }
         // === SEQUENTIAL TRAINING ADVANCED ===
         public void Test_Sequential_PriceMemoryGrows_EachSample() { var (tok, st, pi, pt) = CreateTestData(3, priceSeqLen: 8); var c = CreateConfig(tok.VocabSize + 2, priceSeqLen: 8); var m = new TACAMT_Model(c, new Random(42)); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false }).TrainSequential(st, pi, pt, new double[] { 100, 200, 300 }, maxPriceMemory: 500); Assert(m.PriceMemory.Count > pi[0].GetLength(0) - 1, $"Got {m.PriceMemory.Count}"); }
         public void Test_Sequential_MultiplEpochs_MemoryReset_EachEpoch() { var (tok, st, pi, pt) = CreateTestData(2, priceSeqLen: 8); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, priceSeqLen: 8), new Random(42)); m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[m.Config.PriceEmbeddingDim], AbsoluteTimestamp = 1.0 }); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 2, Verbose = false }).TrainSequential(st, pi, pt, new double[] { 100, 200 }); Assert(m.NewsMemory.Count > 0, "Should have memory after"); }
@@ -3195,5 +3180,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(maxChange < 5.0f,
                 $"Max change {maxChange:F4} seems too large — gradient clipping may not be applied to type embeddings");
         }
+
+
+
     }
 }

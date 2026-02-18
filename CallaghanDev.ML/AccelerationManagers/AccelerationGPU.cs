@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.TACAMT;
 using ILGPU;
 using ILGPU.Algorithms;
 using ILGPU.Runtime;
@@ -54,6 +55,42 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> mat, MemoryBuffer1D<float, Stride1D.Dense> vec, MemoryBuffer1D<float, Stride1D.Dense> res)> _dotTransposedCache = new();
         private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
         private readonly Dictionary<(int outputDim, int inputDim, int seqLen),(MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _applyContextTypeEmbeddingKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _computeTimeDiffMatrixKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _meanPoolRowsKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _embedWithBiasAndPositionalKernel;
+        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _computeMemoryAttentionScoresKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _projectOutputBatchKernel;
+
+        // Add these to the AccelerationGPU class fields
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _decayProjectQueriesKernel;
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>> _decayProjectKeysKernel;
+        private readonly Action<Index2D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>> _decayTimeEncodingRawKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>> _decayTimeEncodingProjKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnQKInputKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float> _decayMemAttnScoresKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnSoftmaxKernel;
+        private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int> _decayMemAttnDropoutKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnWeightedSumKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnOutputProjKernel;
+
+
+        #region Content aware decay forward only
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>> _decayFinalBiasKernel;
+        private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>> _decayMLPInputKernel;
+        private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMLPHiddenKernel;
+        private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int> _decayMLPDropoutKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMLPOutputKernel;
+        #endregion
+
+        #region Content aware cross attention forward
+        private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, int> _extractHeadQKVKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float> _contentAwareScoresKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _addDecayBiasKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareSoftmaxKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareWeightedSumKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int, int> _assembleHeadOutputKernel;
+        #endregion
 
         public AccelerationGPU(AccelerationType accelerationType, int deviceIndex = 0)
         {
@@ -104,6 +141,41 @@ namespace CallaghanDev.ML.AccelerationManagers
             _vecAccumulateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>>(VecAccumulateKernel);
             _causalMaskKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<int, Stride2D.DenseX>>(CausalMaskKernel);
 
+            _applyContextTypeEmbeddingKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(ApplyContextTypeEmbeddingKernel);
+            _computeTimeDiffMatrixKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(ComputeTimeDiffMatrixKernel);
+            _meanPoolRowsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(MeanPoolRowsKernel);
+            _embedWithBiasAndPositionalKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(EmbedWithBiasAndPositionalKernel);
+            _computeMemoryAttentionScoresKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(ComputeMemoryAttentionScoresKernel);
+            _projectOutputBatchKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(ProjectOutputBatchKernel);
+
+
+            #region Content aware decay forward only
+
+            _decayProjectQueriesKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(DecayProjectQueriesKernel);
+            _decayProjectKeysKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayProjectKeysKernel);
+            _decayTimeEncodingRawKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayTimeEncodingRawKernel);
+            _decayTimeEncodingProjKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayTimeEncodingProjKernel);
+            _decayMemAttnQKInputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnQKInputKernel);
+            _decayMemAttnScoresKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float>(DecayMemAttnScoresKernel);
+            _decayMemAttnSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnSoftmaxKernel);
+            _decayMemAttnDropoutKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int>(DecayMemAttnDropoutKernel);
+            _decayMemAttnWeightedSumKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnWeightedSumKernel);
+            _decayMemAttnOutputProjKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnOutputProjKernel);
+            _decayMLPInputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMLPInputKernel);
+            _decayMLPHiddenKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMLPHiddenKernel);
+            _decayMLPDropoutKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int>(DecayMLPDropoutKernel);
+            _decayMLPOutputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMLPOutputKernel);
+            _decayFinalBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>>(DecayFinalBiasKernel);
+            #endregion
+
+            #region Content aware cross attention forward
+            _extractHeadQKVKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, int>(ExtractHeadQKVKernel);
+            _contentAwareScoresKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float>(ContentAwareScoresKernel);
+            _addDecayBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(AddDecayBiasKernel);
+            _contentAwareSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareSoftmaxKernel);
+            _contentAwareWeightedSumKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareWeightedSumKernel);
+            _assembleHeadOutputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int, int>(AssembleHeadOutputKernel);
+            #endregion
         }
 
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
@@ -457,6 +529,503 @@ namespace CallaghanDev.ML.AccelerationManagers
                 dInput[batch, j] = dNorm * invStd + dVar * 2.0f * xMinusMean * invN + dMean * invN;
             }
         }
+
+        #region ContentAwareDecayForward Kernels
+        private static void DecayProjectQueriesKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> queryEmbeddings, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView2D<float, Stride2D.DenseX> bias, ArrayView2D<float, Stride2D.DenseX> output)
+        {
+            int h = idx.X;
+            int q = idx.Y;
+            int projDim = (int)bias.Extent.Y;
+            int contentDim = (int)queryEmbeddings.Extent.Y;
+
+            for (int p = 0; p < projDim; p++)
+            {
+                float val = bias[h, p];
+                for (int d = 0; d < contentDim; d++)
+                    val += weights[h, p, d] * queryEmbeddings[q, d];
+                output[h * projDim + p, q] = val;
+            }
+        }
+
+        private static void DecayProjectKeysKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> keyEmbeddings, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView2D<float, Stride2D.DenseX> bias, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int h = idx.X;
+            int s = idx.Y;
+            int projDim = (int)bias.Extent.Y;
+            int contentDim = (int)keyEmbeddings.Extent.Y;
+
+            for (int p = 0; p < projDim; p++)
+            {
+                float val = bias[h, p];
+                for (int d = 0; d < contentDim; d++)
+                    val += weights[h, p, d] * keyEmbeddings[s, d];
+                output[h, s, p] = val;
+            }
+        }
+
+        private static void DecayTimeEncodingRawKernel(Index2D idx, ArrayView1D<float, Stride1D.Dense> keyTimesFromRef, ArrayView2D<float, Stride2D.DenseX> timeLogFreq, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int h = idx.X;
+            int s = idx.Y;
+            int numBases = (int)timeLogFreq.Extent.Y;
+            float t = keyTimesFromRef[s];
+
+            for (int b = 0; b < numBases; b++)
+            {
+                float freq = XMath.Exp(timeLogFreq[h, b]);
+                float angle = freq * t;
+                output[h, s, b * 2] = XMath.Sin(angle);
+                output[h, s, b * 2 + 1] = XMath.Cos(angle);
+            }
+        }
+
+        private static void DecayTimeEncodingProjKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> timeRawFeatures, ArrayView3D<float, Stride3D.DenseXY> timeProj, ArrayView2D<float, Stride2D.DenseX> timeProjBias, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int h = idx.X;
+            int s = idx.Y;
+            int projDim = (int)output.Extent.Z;
+            int rawDim = (int)timeRawFeatures.Extent.Z;
+
+            for (int p = 0; p < projDim; p++)
+            {
+                float val = timeProjBias[h, p];
+                for (int r = 0; r < rawDim; r++)
+                    val += timeProj[h, p, r] * timeRawFeatures[h, s, r];
+                output[h, s, p] = val;
+            }
+        }
+
+        private static void DecayMemAttnQKInputKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> keyProj, ArrayView3D<float, Stride3D.DenseXY> timeEncoding, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int h = idx.X;
+            int s = idx.Y;
+            int projDim = (int)output.Extent.Z;
+
+            for (int p = 0; p < projDim; p++)
+                output[h, s, p] = keyProj[h, s, p] + timeEncoding[h, s, p];
+        }
+
+        private static void DecayMemAttnScoresKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> qInput, ArrayView3D<float, Stride3D.DenseXY> kInput, ArrayView3D<float, Stride3D.DenseXY> scores, float scale)
+        {
+            int h = idx.X;
+            int i = idx.Y;
+            int keyLen = (int)kInput.Extent.Y;
+            int projDim = (int)qInput.Extent.Z;
+
+            for (int j = 0; j < keyLen; j++)
+            {
+                float dot = 0f;
+                for (int p = 0; p < projDim; p++)
+                    dot += qInput[h, i, p] * kInput[h, j, p];
+                scores[h, i, j] = dot * scale;
+            }
+        }
+
+        private static void DecayMemAttnSoftmaxKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> weights)
+        {
+            int h = idx.X;
+            int i = idx.Y;
+            int keyLen = (int)scores.Extent.Z;
+
+            float maxScore = float.MinValue;
+            for (int j = 0; j < keyLen; j++)
+                if (scores[h, i, j] > maxScore)
+                    maxScore = scores[h, i, j];
+
+            float sumExp = 0f;
+            for (int j = 0; j < keyLen; j++)
+            {
+                float e = XMath.Exp(scores[h, i, j] - maxScore);
+                weights[h, i, j] = e;
+                sumExp += e;
+            }
+
+            if (sumExp > 0f)
+                for (int j = 0; j < keyLen; j++)
+                    weights[h, i, j] /= sumExp;
+        }
+
+        private static void DecayMemAttnDropoutKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView3D<float, Stride3D.DenseXY> dropoutMask, ArrayView3D<float, Stride3D.DenseXY> output, float keepProb, float scale, int seed)
+        {
+            int h = idx.X;
+            int i = idx.Y;
+            int j = idx.Z;
+
+            int state = seed + h * 10007 + i * 997 + j * 101;
+            state = (state * 1103515245 + 12345) & 0x7fffffff;
+            float random = (float)state / 0x7fffffff;
+
+            float mask = random < keepProb ? scale : 0f;
+            dropoutMask[h, i, j] = mask;
+            output[h, i, j] = weights[h, i, j] * mask;
+        }
+
+        private static void DecayMemAttnWeightedSumKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView3D<float, Stride3D.DenseXY> keyProj, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int h = idx.X;
+            int i = idx.Y;
+            int keyLen = (int)keyProj.Extent.Y;
+            int projDim = (int)keyProj.Extent.Z;
+
+            for (int p = 0; p < projDim; p++)
+            {
+                float val = 0f;
+                for (int j = 0; j < keyLen; j++)
+                    val += weights[h, i, j] * keyProj[h, j, p];
+                output[h, i, p] = val;
+            }
+        }
+
+        private static void DecayMemAttnOutputProjKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> memAttnOutput, ArrayView3D<float, Stride3D.DenseXY> outputW, ArrayView2D<float, Stride2D.DenseX> outputB, ArrayView3D<float, Stride3D.DenseXY> refinedKey)
+        {
+            int h = idx.X;
+            int s = idx.Y;
+            int projDim = (int)refinedKey.Extent.Z;
+
+            for (int p = 0; p < projDim; p++)
+            {
+                float val = outputB[h, p];
+                for (int q = 0; q < projDim; q++)
+                    val += outputW[h, p, q] * memAttnOutput[h, s, q];
+                refinedKey[h, s, p] = val;
+            }
+        }
+
+        // Flatten 4D [queryLen, keyLen, numHeads, mlpInputDim] -> 3D [queryLen*keyLen, numHeads, mlpInputDim]
+        private static void DecayMLPInputKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> queryProj, ArrayView3D<float, Stride3D.DenseXY> refinedKey, ArrayView2D<float, Stride2D.DenseX> timeDiffs, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int flatIdx = idx.X;  // flattened qi*keyLen + si
+            int h = idx.Y;
+            int mlpInputDim = (int)output.Extent.Z;
+            int projDim = (int)queryProj.Extent.Z;
+
+            // Recover qi, si from flatIdx
+            int keyLen = (int)refinedKey.Extent.Y;
+            int qi = flatIdx / keyLen;
+            int si = flatIdx % keyLen;
+
+            float td = timeDiffs[qi, si];
+            float logTd = XMath.Log(1f + td);
+
+            int idx_out = 0;
+            for (int p = 0; p < projDim; p++)
+                output[flatIdx, h, idx_out++] = queryProj[h, qi, p];
+            for (int p = 0; p < projDim; p++)
+                output[flatIdx, h, idx_out++] = refinedKey[h, si, p];
+            for (int p = 0; p < projDim; p++)
+                output[flatIdx, h, idx_out++] = queryProj[h, qi, p] * refinedKey[h, si, p];
+            output[flatIdx, h, idx_out++] = td;
+            output[flatIdx, h, idx_out] = logTd;
+        }
+
+        private static void DecayMLPHiddenKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> mlpInput, ArrayView3D<float, Stride3D.DenseXY> W1, ArrayView2D<float, Stride2D.DenseX> B1, ArrayView3D<float, Stride3D.DenseXY> preAct, ArrayView3D<float, Stride3D.DenseXY> hidden)
+        {
+            int flatIdx = idx.X;
+            int h = idx.Y;
+            int j = idx.Z;  // hidden dim index
+            int mlpInputDim = (int)mlpInput.Extent.Z;
+
+            float val = B1[h, j];
+            for (int k = 0; k < mlpInputDim; k++)
+                val += W1[h, j, k] * mlpInput[flatIdx, h, k];
+
+            preAct[flatIdx, h, j] = val;
+            hidden[flatIdx, h, j] = val > 0f ? val : 0f;
+        }
+
+        private static void DecayMLPDropoutKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> hidden, ArrayView3D<float, Stride3D.DenseXY> dropoutMask, float keepProb, float scale, int seed)
+        {
+            int flatIdx = idx.X;
+            int h = idx.Y;
+            int j = idx.Z;
+
+            int state = seed + flatIdx * 10007 + h * 997 + j * 101;
+            state = (state * 1103515245 + 12345) & 0x7fffffff;
+            float random = (float)state / 0x7fffffff;
+
+            float mask = random < keepProb ? scale : 0f;
+            dropoutMask[flatIdx, h, j] = mask;
+            hidden[flatIdx, h, j] *= mask;
+        }
+
+        private static void DecayMLPOutputKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> mlpHidden, ArrayView2D<float, Stride2D.DenseX> W2, ArrayView1D<float, Stride1D.Dense> B2, ArrayView3D<float, Stride3D.DenseXY> gateLogits, ArrayView3D<float, Stride3D.DenseXY> gates)
+        {
+            int qi = idx.X;
+            int si = idx.Y;
+            int numHeads = (int)gateLogits.Extent.Z;
+            int hiddenDim = (int)mlpHidden.Extent.Z;
+            int keyLen = (int)gateLogits.Extent.Y;
+            int flatIdx = qi * keyLen + si;
+
+            for (int h = 0; h < numHeads; h++)
+            {
+                float logit = B2[h];
+                for (int j = 0; j < hiddenDim; j++)
+                    logit += W2[h, j] * mlpHidden[flatIdx, h, j];
+
+                gateLogits[qi, si, h] = logit;
+
+                float gate;
+                if (logit >= 0f)
+                {
+                    float ex = XMath.Exp(-logit);
+                    gate = 1f / (1f + ex);
+                }
+                else
+                {
+                    float ex = XMath.Exp(logit);
+                    gate = ex / (1f + ex);
+                }
+                gates[qi, si, h] = gate;
+            }
+        }
+
+        private static void DecayFinalBiasKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> gates, ArrayView2D<float, Stride2D.DenseX> timeDiffs, ArrayView1D<float, Stride1D.Dense> logBaseDecayRate, ArrayView3D<float, Stride3D.DenseXY> decayBias)
+        {
+            int qi = idx.X;
+            int si = idx.Y;
+            int numHeads = (int)gates.Extent.Z;
+            float td = timeDiffs[qi, si];
+
+            for (int h = 0; h < numHeads; h++)
+            {
+                float baseRate = XMath.Exp(logBaseDecayRate[h]);
+                decayBias[qi, si, h] = -(baseRate * gates[qi, si, h]) * td;
+            }
+        }
+
+        #endregion
+
+        #region GPU Kernels
+
+        private static void MatMulKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            int row = idx.X, col = idx.Y;
+            float sum = 0.0f;
+            int K = (int)A.Extent.Y;
+            for (int k = 0; k < K; k++)
+                sum += A[row, k] * B[k, col];
+            C[row, col] = sum;
+        }
+
+        private static void MatMulTransposeKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            int row = idx.X, col = idx.Y;
+            float sum = 0.0f;
+            int K = (int)A.Extent.Y;
+            for (int k = 0; k < K; k++)
+                sum += A[row, k] * B[col, k];  // B[col,k] not B[k,col]
+            C[row, col] = sum;
+        }
+
+        private static void MatScaleKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> mat, float scalar)
+        {
+            mat[idx] *= scalar;
+        }
+
+        private static void MatAddKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            C[idx] = A[idx] + B[idx];
+        }
+
+        private static void SoftmaxKernel(Index1D row, ArrayView2D<float, Stride2D.DenseX> input, ArrayView2D<float, Stride2D.DenseX> output, ArrayView2D<int, Stride2D.DenseX> mask)
+        {
+            int cols = (int)input.Extent.Y;
+            bool hasMask = mask.Extent.Size > 1;
+
+            float max = float.NegativeInfinity;
+            for (int j = 0; j < cols; j++)
+            {
+                // Convert int to bool: 0 = false, non-zero = true
+                if (!hasMask || mask[row, j] != 0)
+                    max = XMath.Max(max, input[row, j]);
+            }
+
+            float sum = 0.0f;
+            for (int j = 0; j < cols; j++)
+            {
+                if (hasMask && mask[row, j] == 0)
+                    output[row, j] = 0.0f;
+                else
+                {
+                    output[row, j] = XMath.Exp(input[row, j] - max);
+                    sum += output[row, j];
+                }
+            }
+
+            for (int j = 0; j < cols; j++)
+                output[row, j] /= sum;
+        }
+        private static void LayerNormKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, float epsilon)
+        {
+            int features = (int)input.Extent.Y;
+
+            float mean = 0.0f;
+            for (int j = 0; j < features; j++)
+                mean += input[batch, j];
+            mean /= features;
+
+            float variance = 0.0f;
+            for (int j = 0; j < features; j++)
+            {
+                float diff = input[batch, j] - mean;
+                variance += diff * diff;
+            }
+            variance /= features;
+
+            float stdDev = XMath.Sqrt(variance + epsilon);
+            for (int j = 0; j < features; j++)
+                output[batch, j] = gamma[j] * (input[batch, j] - mean) / stdDev + beta[j];
+        }
+
+        private static void MatAddBiasKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView1D<float, Stride1D.Dense> bias, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            result[idx] = matrix[idx] + bias[idx.Y];
+        }
+
+        private static void EmbedTokensKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> tokenEmbedding, ArrayView1D<int, Stride1D.Dense> tokenIds, ArrayView2D<float, Stride2D.DenseX> positionalEncoding, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int i = idx.X;
+            int j = idx.Y;
+            int tokenId = tokenIds[i];
+            result[idx] = tokenEmbedding[tokenId, j] + positionalEncoding[i, j];
+        }
+
+        private static void AddBiasPosKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> projected, ArrayView1D<float, Stride1D.Dense> bias, ArrayView2D<float, Stride2D.DenseX> positionalEncoding, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int j = idx.Y;
+            result[idx] = projected[idx] + bias[j] + positionalEncoding[idx];
+        }
+
+        private static void MatAccumulateKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> target, ArrayView2D<float, Stride2D.DenseX> source)
+        {
+            target[idx] += source[idx];
+        }
+
+        private static void SigmoidInPlaceKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix)
+        {
+            float x = matrix[idx];
+
+            if (x >= 0)
+            {
+                float ex = XMath.Exp(-x);
+                matrix[idx] = 1.0f / (1.0f + ex);
+            }
+            else
+            {
+                float ex = XMath.Exp(x);
+                matrix[idx] = ex / (1.0f + ex);
+            }
+        }
+
+        private static void ZeroVectorKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> vec)
+        {
+            vec[i] = 0.0f;
+        }
+
+        private static void VecAccumulateKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> target, ArrayView1D<float, Stride1D.Dense> source)
+        {
+            target[i] += source[i];
+        }
+
+        private static void CausalMaskKernel(Index1D i, ArrayView2D<int, Stride2D.DenseX> mask)
+        {
+            int cols = (int)mask.Extent.Y;
+            for (int j = 0; j < cols; j++)
+            {
+                mask[i, j] = j <= i ? 1 : 0;
+            }
+        }
+
+        #endregion
+
+        #region ContentAwareCrossAttention GPU Kernels
+
+        private static void ExtractHeadQKVKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> input, ArrayView3D<float, Stride3D.DenseXY> output, int headDim, int startIdx)
+        {
+            int i = idx.X;  // sequence position
+            int j = idx.Y;  // dimension within head
+            int h = 0;      // head index (kernel called per head)
+
+            output[h, i, j] = input[i, startIdx + j];
+        }
+
+        private static void ContentAwareScoresKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> Q_head, ArrayView3D<float, Stride3D.DenseXY> K_head, ArrayView3D<float, Stride3D.DenseXY> scores, float scale)
+        {
+            int i = idx.X;  // query position
+            int j = idx.Y;  // key position
+            int h = 0;      // head index
+            int headDim = (int)Q_head.Extent.Z;
+
+            float dot = 0f;
+            for (int d = 0; d < headDim; d++)
+                dot += Q_head[h, i, d] * K_head[h, j, d];
+
+            scores[h, i, j] = dot * scale;
+        }
+
+        private static void AddDecayBiasKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> decayBias, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int i = idx.X;
+            int j = idx.Y;
+            int h = 0;  // head index
+
+            output[h, i, j] = scores[h, i, j] + decayBias[h, i, j];
+        }
+
+        private static void ContentAwareSoftmaxKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> weights)
+        {
+            int h = 0;      // head index
+            int i = idx.X;  // query position
+            int seqLenK = (int)scores.Extent.Z;
+
+            // Find max
+            float maxScore = float.MinValue;
+            for (int j = 0; j < seqLenK; j++)
+                if (scores[h, i, j] > maxScore)
+                    maxScore = scores[h, i, j];
+
+            // Exp and sum
+            float sumExp = 0f;
+            for (int j = 0; j < seqLenK; j++)
+            {
+                float e = XMath.Exp(scores[h, i, j] - maxScore);
+                weights[h, i, j] = e;
+                sumExp += e;
+            }
+
+            // Normalize
+            if (sumExp > 0f)
+                for (int j = 0; j < seqLenK; j++)
+                    weights[h, i, j] /= sumExp;
+        }
+
+        private static void ContentAwareWeightedSumKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView3D<float, Stride3D.DenseXY> V_head, ArrayView3D<float, Stride3D.DenseXY> output)
+        {
+            int h = 0;      // head index
+            int i = idx.X;  // query position
+            int d = idx.Y;  // dimension
+            int seqLenK = (int)weights.Extent.Z;
+
+            float sum = 0f;
+            for (int j = 0; j < seqLenK; j++)
+                sum += weights[h, i, j] * V_head[h, j, d];
+
+            output[h, i, d] = sum;
+        }
+
+        private static void AssembleHeadOutputKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> headOutput, ArrayView2D<float, Stride2D.DenseX> concatenated, int headDim, int startIdx)
+        {
+            int i = idx.X;  // sequence position
+            int j = idx.Y;  // dimension within head
+            int h = 0;      // head index
+
+            concatenated[i, startIdx + j] = headOutput[h, i, j];
+        }
+
+        #endregion
+
+
         public float[,] MatrixMultiply(float[,] A, float[,] B)
         {
             int r1 = A.GetLength(0);
@@ -629,149 +1198,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                 bufIn.Dispose(); bufGamma.Dispose(); bufBeta.Dispose(); bufOut.Dispose();
             }
         }
-
-        #region GPU Kernels
-
-        private static void MatMulKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
-        {
-            int row = idx.X, col = idx.Y;
-            float sum = 0.0f;
-            int K = (int)A.Extent.Y;
-            for (int k = 0; k < K; k++)
-                sum += A[row, k] * B[k, col];
-            C[row, col] = sum;
-        }
-
-        private static void MatMulTransposeKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
-        {
-            int row = idx.X, col = idx.Y;
-            float sum = 0.0f;
-            int K = (int)A.Extent.Y;
-            for (int k = 0; k < K; k++)
-                sum += A[row, k] * B[col, k];  // B[col,k] not B[k,col]
-            C[row, col] = sum;
-        }
-
-        private static void MatScaleKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> mat, float scalar)
-        {
-            mat[idx] *= scalar;
-        }
-
-        private static void MatAddKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
-        {
-            C[idx] = A[idx] + B[idx];
-        }
-
-        private static void SoftmaxKernel(Index1D row, ArrayView2D<float, Stride2D.DenseX> input, ArrayView2D<float, Stride2D.DenseX> output, ArrayView2D<int, Stride2D.DenseX> mask)
-        {
-            int cols = (int)input.Extent.Y;
-            bool hasMask = mask.Extent.Size > 1;
-
-            float max = float.NegativeInfinity;
-            for (int j = 0; j < cols; j++)
-            {
-                // Convert int to bool: 0 = false, non-zero = true
-                if (!hasMask || mask[row, j] != 0)
-                    max = XMath.Max(max, input[row, j]);
-            }
-
-            float sum = 0.0f;
-            for (int j = 0; j < cols; j++)
-            {
-                if (hasMask && mask[row, j] == 0)
-                    output[row, j] = 0.0f;
-                else
-                {
-                    output[row, j] = XMath.Exp(input[row, j] - max);
-                    sum += output[row, j];
-                }
-            }
-
-            for (int j = 0; j < cols; j++)
-                output[row, j] /= sum;
-        }
-        private static void LayerNormKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, float epsilon)
-        {
-            int features = (int)input.Extent.Y;
-
-            float mean = 0.0f;
-            for (int j = 0; j < features; j++)
-                mean += input[batch, j];
-            mean /= features;
-
-            float variance = 0.0f;
-            for (int j = 0; j < features; j++)
-            {
-                float diff = input[batch, j] - mean;
-                variance += diff * diff;
-            }
-            variance /= features;
-
-            float stdDev = XMath.Sqrt(variance + epsilon);
-            for (int j = 0; j < features; j++)
-                output[batch, j] = gamma[j] * (input[batch, j] - mean) / stdDev + beta[j];
-        }
-
-        private static void MatAddBiasKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView1D<float, Stride1D.Dense> bias, ArrayView2D<float, Stride2D.DenseX> result)
-        {
-            result[idx] = matrix[idx] + bias[idx.Y];
-        }
-
-        private static void EmbedTokensKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> tokenEmbedding, ArrayView1D<int, Stride1D.Dense> tokenIds, ArrayView2D<float, Stride2D.DenseX> positionalEncoding, ArrayView2D<float, Stride2D.DenseX> result)
-        {
-            int i = idx.X;
-            int j = idx.Y;
-            int tokenId = tokenIds[i];
-            result[idx] = tokenEmbedding[tokenId, j] + positionalEncoding[i, j];
-        }
-
-        private static void AddBiasPosKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> projected, ArrayView1D<float, Stride1D.Dense> bias, ArrayView2D<float, Stride2D.DenseX> positionalEncoding, ArrayView2D<float, Stride2D.DenseX> result)
-        {
-            int j = idx.Y;
-            result[idx] = projected[idx] + bias[j] + positionalEncoding[idx];
-        }
-
-        private static void MatAccumulateKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> target, ArrayView2D<float, Stride2D.DenseX> source)
-        {
-            target[idx] += source[idx];
-        }
-
-        private static void SigmoidInPlaceKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix)
-        {
-            float x = matrix[idx];
-
-            if (x >= 0)
-            {
-                float ex = XMath.Exp(-x);
-                matrix[idx] = 1.0f / (1.0f + ex);
-            }
-            else
-            {
-                float ex = XMath.Exp(x);
-                matrix[idx] = ex / (1.0f + ex);
-            }
-        }
-
-        private static void ZeroVectorKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> vec)
-        {
-            vec[i] = 0.0f;
-        }
-
-        private static void VecAccumulateKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> target, ArrayView1D<float, Stride1D.Dense> source)
-        {
-            target[i] += source[i];
-        }
-
-        private static void CausalMaskKernel(Index1D i, ArrayView2D<int, Stride2D.DenseX> mask)
-        {
-            int cols = (int)mask.Extent.Y;
-            for (int j = 0; j < cols; j++)
-            {
-                mask[i, j] = j <= i ? 1 : 0;
-            }
-        }
-
-        #endregion
 
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
         {
@@ -1559,6 +1985,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         public bool[,] CreateCausalMask(int seqLen)
         {
             var mask = new bool[seqLen, seqLen];
+
             for (int i = 0; i < seqLen; i++)
             {
                 for (int j = 0; j <= i; j++)
@@ -1652,6 +2079,734 @@ namespace CallaghanDev.ML.AccelerationManagers
                 v.res.Dispose();
             }
             _accelerator.Dispose();
+        }
+
+        private static void ApplyContextTypeEmbeddingKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> contextHidden, ArrayView2D<float, Stride2D.DenseX> typeEmbedding, ArrayView1D<int, Stride1D.Dense> typeIndices, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int i = idx.X;
+            int d = idx.Y;
+            int t = typeIndices[i];
+            result[idx] = contextHidden[idx] + typeEmbedding[t, d];
+        }
+
+        private static void ComputeTimeDiffMatrixKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> result, ArrayView1D<float, Stride1D.Dense> keyArrivalTimes)
+        {
+            int p = idx.X;
+            int s = idx.Y;
+            result[idx] = XMath.Abs((float)p - keyArrivalTimes[s]);
+        }
+
+        private static void MeanPoolRowsKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> hidden, ArrayView1D<int, Stride1D.Dense> storyOffsets, ArrayView1D<int, Stride1D.Dense> storyCounts, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int s = idx.X;
+            int d = idx.Y;
+
+            int start = storyOffsets[s];
+            int count = storyCounts[s];
+
+            if (count <= 0)
+            {
+                result[idx] = 0f;
+                return;
+            }
+
+            float sum = 0f;
+            for (int t = start; t < start + count; t++)
+                sum += hidden[t, d];
+
+            result[idx] = sum / count;
+        }
+
+        private static void EmbedWithBiasAndPositionalKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> projected, ArrayView1D<float, Stride1D.Dense> bias, ArrayView2D<float, Stride2D.DenseX> positionalEncoding, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int j = idx.Y;
+            result[idx] = projected[idx] + bias[j] + positionalEncoding[idx];
+        }
+
+        private static void ComputeMemoryAttentionScoresKernel(Index1D s, ArrayView2D<float, Stride2D.DenseX> priceHidden, ArrayView2D<float, Stride2D.DenseX> contextHidden, ArrayView1D<float, Stride1D.Dense> scores)
+        {
+            int embDim = (int)priceHidden.Extent.Y;
+            int lastPos = (int)priceHidden.Extent.X - 1;
+
+            float dot = 0f;
+            for (int d = 0; d < embDim; d++)
+                dot += priceHidden[lastPos, d] * contextHidden[s, d];
+
+            scores[s] = dot;
+        }
+
+        private static void ProjectOutputBatchKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> hidden, ArrayView2D<float, Stride2D.DenseX> outputProjection, ArrayView1D<float, Stride1D.Dense> outputBias, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int i = idx.X;
+            int j = idx.Y;
+            int embDim = (int)hidden.Extent.Y;
+
+            float sum = outputBias[j];
+            for (int k = 0; k < embDim; k++)
+                sum += outputProjection[j, k] * hidden[i, k];
+
+            result[idx] = sum;
+        }
+
+        public void ApplyContextTypeEmbedding(float[,] contextHidden, float[,] typeEmbedding, int[] typeIndices)
+        {
+            int n = contextHidden.GetLength(0);
+            int embDim = contextHidden.GetLength(1);
+
+            var bufContext = _accelerator.Allocate2DDenseX<float>(new Index2D(n, embDim));
+            var bufType = _accelerator.Allocate2DDenseX<float>(new Index2D(typeEmbedding.GetLength(0), embDim));
+            var bufIndices = _accelerator.Allocate1D<int>(n);
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(n, embDim));
+
+            try
+            {
+                bufContext.CopyFromCPU(contextHidden);
+                bufType.CopyFromCPU(typeEmbedding);
+                bufIndices.CopyFromCPU(typeIndices);
+
+                _applyContextTypeEmbeddingKernel(new Index2D(n, embDim), bufContext.View, bufType.View, bufIndices.View, bufResult.View);
+
+                bufResult.CopyToCPU(contextHidden);
+            }
+            finally
+            {
+                bufContext.Dispose();
+                bufType.Dispose();
+                bufIndices.Dispose();
+                bufResult.Dispose();
+            }
+        }
+
+        public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
+        {
+            int numKeys = keyArrivalTimes.Length;
+
+            var bufKeys = _accelerator.Allocate1D<float>(numKeys);
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(priceSeqLen, numKeys));
+
+            try
+            {
+                bufKeys.CopyFromCPU(keyArrivalTimes);
+
+                _computeTimeDiffMatrixKernel(new Index2D(priceSeqLen, numKeys), bufResult.View, bufKeys.View);
+
+                var result = new float[priceSeqLen, numKeys];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufKeys.Dispose();
+                bufResult.Dispose();
+            }
+        }
+
+        public float[,] MeanPoolRows(float[,] hidden, int[] storyOffsets, int[] storyCounts, int numStories, int embeddingDim)
+        {
+            var bufHidden = _accelerator.Allocate2DDenseX<float>(new Index2D(hidden.GetLength(0), embeddingDim));
+            var bufOffsets = _accelerator.Allocate1D<int>(numStories);
+            var bufCounts = _accelerator.Allocate1D<int>(numStories);
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(numStories, embeddingDim));
+
+            try
+            {
+                bufHidden.CopyFromCPU(hidden);
+                bufOffsets.CopyFromCPU(storyOffsets);
+                bufCounts.CopyFromCPU(storyCounts);
+
+                _meanPoolRowsKernel(new Index2D(numStories, embeddingDim), bufHidden.View, bufOffsets.View, bufCounts.View, bufResult.View);
+
+                var result = new float[numStories, embeddingDim];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufHidden.Dispose();
+                bufOffsets.Dispose();
+                bufCounts.Dispose();
+                bufResult.Dispose();
+            }
+        }
+
+        public float[,] EmbedWithBiasAndPositional(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
+        {
+            var bufProj = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, embeddingDim));
+            var bufBias = _accelerator.Allocate1D<float>(embeddingDim);
+            var bufPos = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, embeddingDim));
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, embeddingDim));
+
+            try
+            {
+                bufProj.CopyFromCPU(projected);
+                bufBias.CopyFromCPU(bias);
+                bufPos.CopyFromCPU(positionalEncoding);
+
+                _embedWithBiasAndPositionalKernel(new Index2D(seqLen, embeddingDim), bufProj.View, bufBias.View, bufPos.View, bufResult.View);
+
+                var result = new float[seqLen, embeddingDim];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufProj.Dispose();
+                bufBias.Dispose();
+                bufPos.Dispose();
+                bufResult.Dispose();
+            }
+        }
+
+        public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos, float[,] contextHidden, int totalCtx, float scale)
+        {
+            int embDim = priceHidden.GetLength(1);
+
+            var bufPrice = _accelerator.Allocate2DDenseX<float>(new Index2D(priceHidden.GetLength(0), embDim));
+            var bufContext = _accelerator.Allocate2DDenseX<float>(new Index2D(totalCtx, embDim));
+            var bufScores = _accelerator.Allocate1D<float>(totalCtx);
+
+            try
+            {
+                bufPrice.CopyFromCPU(priceHidden);
+                bufContext.CopyFromCPU(contextHidden);
+
+                _computeMemoryAttentionScoresKernel(new Index1D(totalCtx), bufPrice.View, bufContext.View, bufScores.View);
+
+                var scores = new float[totalCtx];
+                bufScores.CopyToCPU(scores);
+
+                // Apply scale on CPU (simple element-wise)
+                for (int i = 0; i < totalCtx; i++)
+                    scores[i] *= scale;
+
+                return scores;
+            }
+            finally
+            {
+                bufPrice.Dispose();
+                bufContext.Dispose();
+                bufScores.Dispose();
+            }
+        }
+
+        public float[,] ProjectOutputBatch(float[,] hidden, float[,] outputProjection, float[] outputBias, int seqLen, int outputDim)
+        {
+            int embDim = hidden.GetLength(1);
+
+            var bufHidden = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, embDim));
+            var bufProj = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, embDim));
+            var bufBias = _accelerator.Allocate1D<float>(outputDim);
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, outputDim));
+
+            try
+            {
+                bufHidden.CopyFromCPU(hidden);
+                bufProj.CopyFromCPU(outputProjection);
+                bufBias.CopyFromCPU(outputBias);
+
+                _projectOutputBatchKernel(new Index2D(seqLen, outputDim), bufHidden.View, bufProj.View, bufBias.View, bufResult.View);
+
+                var result = new float[seqLen, outputDim];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufHidden.Dispose();
+                bufProj.Dispose();
+                bufBias.Dispose();
+                bufResult.Dispose();
+            }
+        }
+
+        public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
+        {
+            // FFN with arbitrary Func cannot be GPU-accelerated (function pointer not supported)
+            // Fall back to CPU implementation
+            var result = new float[seqLen, outputDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                var row = new float[input.GetLength(1)];
+                for (int j = 0; j < input.GetLength(1); j++)
+                    row[j] = input[i, j];
+
+                var outRow = forwardPassFn(row);
+
+                for (int j = 0; j < outputDim; j++)
+                    result[i, j] = outRow[j];
+            }
+
+            return result;
+        }
+
+        #region ContentAwareDecayForward
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
+    float[,] queryEmbeddings,
+    float[,] keyEmbeddings,
+    float[,] timeDiffs,
+    float[] keyTimesFromRef,
+    ContentAwareDecayNetwork network,
+    bool isTraining = false,
+    Random dropoutRng = null)
+        {
+            int queryLen = timeDiffs.GetLength(0);
+            int keyLen = timeDiffs.GetLength(1);
+            int numHeads = network.NumHeads;
+            int projDim = network.ProjectionDim;
+            int contentDim = network.ContentDim;
+            int hiddenDim = network.HiddenDim;
+            int mlpInputDim = network.MLPInputDim;
+            int numBases = network.NumTimeBases;
+            int rawDim = network.TimeRawDim;
+
+            bool useMemAttnDrop = isTraining && network.MemoryAttentionDropout > 0 && dropoutRng != null;
+            bool useMLPDrop = isTraining && network.MLPDropout > 0 && dropoutRng != null;
+            int dropoutSeed = dropoutRng?.Next() ?? 12345;
+
+            int flatSize = queryLen * keyLen;  // Flatten 4D arrays
+
+            // Allocate GPU buffers
+            var bufQueryEmb = _accelerator.Allocate2DDenseX<float>(new Index2D(queryLen, contentDim));
+            var bufKeyEmb = _accelerator.Allocate2DDenseX<float>(new Index2D(keyLen, contentDim));
+            var bufTimeDiffs = _accelerator.Allocate2DDenseX<float>(new Index2D(queryLen, keyLen));
+            var bufKeyTimes = _accelerator.Allocate1D<float>(keyLen);
+
+            // Network weights
+            var bufQProjW = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, projDim, contentDim));
+            var bufQProjB = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, projDim));
+            var bufKProjW = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, projDim, contentDim));
+            var bufKProjB = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, projDim));
+            var bufTimeLogFreq = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, numBases));
+            var bufTimeProj = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, projDim, rawDim));
+            var bufTimeProjB = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, projDim));
+            var bufMemAttnOutW = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, projDim, projDim));
+            var bufMemAttnOutB = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, projDim));
+            var bufW1 = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, hiddenDim, mlpInputDim));
+            var bufB1 = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, hiddenDim));
+            var bufW2 = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, hiddenDim));
+            var bufB2 = _accelerator.Allocate1D<float>(numHeads);
+            var bufLogBaseRate = _accelerator.Allocate1D<float>(numHeads);
+
+            // Intermediate results
+            var bufQueryProj = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads * projDim, queryLen));
+            var bufKeyProj = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
+            var bufTimeRaw = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, rawDim));
+            var bufTimeEnc = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
+            var bufMemAttnQ = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
+            var bufMemAttnK = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
+            var bufMemAttnScores = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen));
+            var bufMemAttnWeights = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen));
+            var bufMemAttnDropMask = useMemAttnDrop ? _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen)) : null;
+            var bufMemAttnOut = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
+            var bufRefinedKey = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
+
+            // MLP buffers - flattened from 4D to 3D
+            var bufMLPInput = _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, mlpInputDim));
+            var bufMLPPreAct = _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim));
+            var bufMLPHidden = _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim));
+            var bufMLPDropMask = useMLPDrop ? _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim)) : null;
+
+            var bufGateLogits = _accelerator.Allocate3DDenseXY<float>(new Index3D(queryLen, keyLen, numHeads));
+            var bufGates = _accelerator.Allocate3DDenseXY<float>(new Index3D(queryLen, keyLen, numHeads));
+            var bufDecayBias = _accelerator.Allocate3DDenseXY<float>(new Index3D(queryLen, keyLen, numHeads));
+
+            try
+            {
+                // Copy inputs to GPU
+                bufQueryEmb.CopyFromCPU(queryEmbeddings);
+                bufKeyEmb.CopyFromCPU(keyEmbeddings);
+                bufTimeDiffs.CopyFromCPU(timeDiffs);
+                bufKeyTimes.CopyFromCPU(keyTimesFromRef);
+
+                // Copy network weights to GPU
+                bufQProjW.CopyFromCPU(network.QueryProjection);
+                bufQProjB.CopyFromCPU(network.QueryProjectionBias);
+                bufKProjW.CopyFromCPU(network.KeyProjection);
+                bufKProjB.CopyFromCPU(network.KeyProjectionBias);
+                bufTimeLogFreq.CopyFromCPU(network.TimeLogFreq);
+                bufTimeProj.CopyFromCPU(network.TimeProj);
+                bufTimeProjB.CopyFromCPU(network.TimeProjBias);
+                bufMemAttnOutW.CopyFromCPU(network.MemAttnOutputW);
+                bufMemAttnOutB.CopyFromCPU(network.MemAttnOutputB);
+                bufW1.CopyFromCPU(network.W1);
+                bufB1.CopyFromCPU(network.B1);
+                bufW2.CopyFromCPU(network.W2);
+                bufB2.CopyFromCPU(network.B2);
+                bufLogBaseRate.CopyFromCPU(network.LogBaseDecayRate);
+
+                // Execute GPU kernels in sequence
+
+                // 1. Project queries and keys
+                _decayProjectQueriesKernel(new Index2D(numHeads, queryLen), bufQueryEmb.View, bufQProjW.View, bufQProjB.View, bufQueryProj.View);
+                _decayProjectKeysKernel(new Index2D(numHeads, keyLen), bufKeyEmb.View, bufKProjW.View, bufKProjB.View, bufKeyProj.View);
+
+                // 2. Time encoding
+                _decayTimeEncodingRawKernel(new Index2D(numHeads, keyLen), bufKeyTimes.View, bufTimeLogFreq.View, bufTimeRaw.View);
+                _decayTimeEncodingProjKernel(new Index2D(numHeads, keyLen), bufTimeRaw.View, bufTimeProj.View, bufTimeProjB.View, bufTimeEnc.View);
+
+                // 3. Memory attention Q/K inputs
+                _decayMemAttnQKInputKernel(new Index2D(numHeads, keyLen), bufKeyProj.View, bufTimeEnc.View, bufMemAttnQ.View);
+                _decayMemAttnQKInputKernel(new Index2D(numHeads, keyLen), bufKeyProj.View, bufTimeEnc.View, bufMemAttnK.View);
+
+                // 4. Memory attention scores
+                float memScale = 1.0f / MathF.Sqrt(projDim);
+                _decayMemAttnScoresKernel(new Index2D(numHeads, keyLen), bufMemAttnQ.View, bufMemAttnK.View, bufMemAttnScores.View, memScale);
+
+                // 5. Softmax
+                _decayMemAttnSoftmaxKernel(new Index2D(numHeads, keyLen), bufMemAttnScores.View, bufMemAttnWeights.View);
+
+                // 6. Dropout (if training)
+                if (useMemAttnDrop)
+                {
+                    float keepProb = 1.0f - network.MemoryAttentionDropout;
+                    float scale = 1.0f / keepProb;
+                    _decayMemAttnDropoutKernel(new Index3D(numHeads, keyLen, keyLen), bufMemAttnWeights.View, bufMemAttnDropMask.View, bufMemAttnWeights.View, keepProb, scale, dropoutSeed);
+                }
+
+                // 7. Weighted sum
+                _decayMemAttnWeightedSumKernel(new Index2D(numHeads, keyLen), bufMemAttnWeights.View, bufKeyProj.View, bufMemAttnOut.View);
+
+                // 8. Output projection (refined key) + residual
+                _decayMemAttnOutputProjKernel(new Index2D(numHeads, keyLen), bufMemAttnOut.View, bufMemAttnOutW.View, bufMemAttnOutB.View, bufRefinedKey.View);
+
+                // Add residual connection on GPU (keyProj already in bufRefinedKey via kernel)
+                // Actually the kernel needs updating - let me add that back
+
+                // Reshape query projection from flattened to 3D (CPU operation - small overhead)
+                var queryProj3D = new float[numHeads, queryLen, projDim];
+                var queryProjFlat = new float[numHeads * projDim, queryLen];
+                bufQueryProj.CopyToCPU(queryProjFlat);
+                for (int h = 0; h < numHeads; h++)
+                    for (int q = 0; q < queryLen; q++)
+                        for (int p = 0; p < projDim; p++)
+                            queryProj3D[h, q, p] = queryProjFlat[h * projDim + p, q];
+
+                var bufQueryProj3D = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, queryLen, projDim));
+                bufQueryProj3D.CopyFromCPU(queryProj3D);
+
+                // 9. MLP input construction
+                _decayMLPInputKernel(new Index3D(flatSize, numHeads, 1), bufQueryProj3D.View, bufRefinedKey.View, bufTimeDiffs.View, bufMLPInput.View);
+
+                // 10. MLP hidden layer
+                _decayMLPHiddenKernel(new Index3D(flatSize, numHeads, hiddenDim), bufMLPInput.View, bufW1.View, bufB1.View, bufMLPPreAct.View, bufMLPHidden.View);
+
+                // 11. MLP dropout (if training)
+                if (useMLPDrop)
+                {
+                    float keepProb = 1.0f - network.MLPDropout;
+                    float scale = 1.0f / keepProb;
+                    _decayMLPDropoutKernel(new Index3D(flatSize, numHeads, hiddenDim), bufMLPHidden.View, bufMLPDropMask.View, keepProb, scale, dropoutSeed + 1);
+                }
+
+                // 12. MLP output layer (gate logits and gates)
+                _decayMLPOutputKernel(new Index2D(queryLen, keyLen), bufMLPHidden.View, bufW2.View, bufB2.View, bufGateLogits.View, bufGates.View);
+
+                // 13. Final decay bias
+                _decayFinalBiasKernel(new Index2D(queryLen, keyLen), bufGates.View, bufTimeDiffs.View, bufLogBaseRate.View, bufDecayBias.View);
+
+                // Copy results back to CPU
+                var decayBias = new float[queryLen, keyLen, numHeads];
+                bufDecayBias.CopyToCPU(decayBias);
+
+                // Build cache (copy all intermediate results back)
+                var cache = new ContentAwareDecayCache
+                {
+                    QueryEmbeddings = queryEmbeddings,
+                    KeyEmbeddings = keyEmbeddings,
+                    TimeDiffs = timeDiffs,
+                    KeyTimesFromRef = keyTimesFromRef,
+                    QueryProj = queryProj3D,
+                    KeyProj = new float[numHeads, keyLen, projDim],
+                    TimeRawFeatures = new float[numHeads, keyLen, rawDim],
+                    TimeEncoding = new float[numHeads, keyLen, projDim],
+                    MemAttnQInput = new float[numHeads, keyLen, projDim],
+                    MemAttnKInput = new float[numHeads, keyLen, projDim],
+                    MemAttnWeights = new float[numHeads, keyLen, keyLen],
+                    MemAttnOutput = new float[numHeads, keyLen, projDim],
+                    RefinedKey = new float[numHeads, keyLen, projDim],
+                    MLPInput = new float[queryLen, keyLen, numHeads, mlpInputDim],
+                    MLPHiddenPreAct = new float[queryLen, keyLen, numHeads, hiddenDim],
+                    MLPHidden = new float[queryLen, keyLen, numHeads, hiddenDim],
+                    GateLogits = new float[queryLen, keyLen, numHeads],
+                    Gates = new float[queryLen, keyLen, numHeads],
+                    MemAttnDropoutMask = useMemAttnDrop ? new float[numHeads, keyLen, keyLen] : null,
+                    MLPDropoutMask = useMLPDrop ? new float[queryLen, keyLen, numHeads, hiddenDim] : null
+                };
+
+                bufKeyProj.CopyToCPU(cache.KeyProj);
+                bufTimeRaw.CopyToCPU(cache.TimeRawFeatures);
+                bufTimeEnc.CopyToCPU(cache.TimeEncoding);
+                bufMemAttnQ.CopyToCPU(cache.MemAttnQInput);
+                bufMemAttnK.CopyToCPU(cache.MemAttnKInput);
+                bufMemAttnWeights.CopyToCPU(cache.MemAttnWeights);
+                bufMemAttnOut.CopyToCPU(cache.MemAttnOutput);
+                bufRefinedKey.CopyToCPU(cache.RefinedKey);
+                bufGateLogits.CopyToCPU(cache.GateLogits);
+                bufGates.CopyToCPU(cache.Gates);
+
+                // Copy flattened MLP results and reshape to 4D for cache
+                var mlpInputFlat = new float[flatSize, numHeads, mlpInputDim];
+                var mlpPreActFlat = new float[flatSize, numHeads, hiddenDim];
+                var mlpHiddenFlat = new float[flatSize, numHeads, hiddenDim];
+
+                bufMLPInput.CopyToCPU(mlpInputFlat);
+                bufMLPPreAct.CopyToCPU(mlpPreActFlat);
+                bufMLPHidden.CopyToCPU(mlpHiddenFlat);
+
+                for (int qi = 0; qi < queryLen; qi++)
+                {
+                    for (int si = 0; si < keyLen; si++)
+                    {
+                        int flatIdx = qi * keyLen + si;
+                        for (int h = 0; h < numHeads; h++)
+                        {
+                            for (int k = 0; k < mlpInputDim; k++)
+                                cache.MLPInput[qi, si, h, k] = mlpInputFlat[flatIdx, h, k];
+                            for (int j = 0; j < hiddenDim; j++)
+                            {
+                                cache.MLPHiddenPreAct[qi, si, h, j] = mlpPreActFlat[flatIdx, h, j];
+                                cache.MLPHidden[qi, si, h, j] = mlpHiddenFlat[flatIdx, h, j];
+                            }
+                        }
+                    }
+                }
+
+                if (useMemAttnDrop)
+                    bufMemAttnDropMask.CopyToCPU(cache.MemAttnDropoutMask);
+
+                if (useMLPDrop)
+                {
+                    var mlpDropMaskFlat = new float[flatSize, numHeads, hiddenDim];
+                    bufMLPDropMask.CopyToCPU(mlpDropMaskFlat);
+                    for (int qi = 0; qi < queryLen; qi++)
+                        for (int si = 0; si < keyLen; si++)
+                        {
+                            int flatIdx = qi * keyLen + si;
+                            for (int h = 0; h < numHeads; h++)
+                                for (int j = 0; j < hiddenDim; j++)
+                                    cache.MLPDropoutMask[qi, si, h, j] = mlpDropMaskFlat[flatIdx, h, j];
+                        }
+                }
+
+                bufQueryProj3D.Dispose();
+
+                return (decayBias, cache);
+            }
+            finally
+            {
+                // Dispose all buffers
+                bufQueryEmb.Dispose();
+                bufKeyEmb.Dispose();
+                bufTimeDiffs.Dispose();
+                bufKeyTimes.Dispose();
+                bufQProjW.Dispose();
+                bufQProjB.Dispose();
+                bufKProjW.Dispose();
+                bufKProjB.Dispose();
+                bufTimeLogFreq.Dispose();
+                bufTimeProj.Dispose();
+                bufTimeProjB.Dispose();
+                bufMemAttnOutW.Dispose();
+                bufMemAttnOutB.Dispose();
+                bufW1.Dispose();
+                bufB1.Dispose();
+                bufW2.Dispose();
+                bufB2.Dispose();
+                bufLogBaseRate.Dispose();
+                bufQueryProj.Dispose();
+                bufKeyProj.Dispose();
+                bufTimeRaw.Dispose();
+                bufTimeEnc.Dispose();
+                bufMemAttnQ.Dispose();
+                bufMemAttnK.Dispose();
+                bufMemAttnScores.Dispose();
+                bufMemAttnWeights.Dispose();
+                bufMemAttnDropMask?.Dispose();
+                bufMemAttnOut.Dispose();
+                bufRefinedKey.Dispose();
+                bufMLPInput.Dispose();
+                bufMLPPreAct.Dispose();
+                bufMLPHidden.Dispose();
+                bufMLPDropMask?.Dispose();
+                bufGateLogits.Dispose();
+                bufGates.Dispose();
+                bufDecayBias.Dispose();
+            }
+        }
+
+        #endregion
+
+        #region Content aware cross attention forward 
+        public float[,] ContentAwareCrossAttentionForward(
+    float[,] Q,
+    float[,] K,
+    float[,] V,
+    int numHeads,
+    float scale,
+    float[,,] decayBias,
+    out float[][,] attentionWeights,
+    out float[][,] scoresPreSoftmax)
+        {
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);
+            int embeddingDim = Q.GetLength(1);
+            int headDim = embeddingDim / numHeads;
+
+            attentionWeights = new float[numHeads][,];
+            scoresPreSoftmax = new float[numHeads][,];
+
+            var concatenated = new float[seqLenQ, embeddingDim];
+
+
+            var bufQ = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, embeddingDim));
+            var bufK = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenK, embeddingDim));
+            var bufV = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenK, embeddingDim));
+            var bufConcatenated = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, embeddingDim));
+
+
+            var bufQ_head = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, headDim));
+            var bufK_head = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenK, headDim));
+            var bufV_head = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenK, headDim));
+            var bufScores = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, seqLenK));
+            var bufScoresWithBias = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, seqLenK));
+            var bufWeights = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, seqLenK));
+            var bufHeadOutput = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, headDim));
+            var bufDecayBias = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, seqLenK));
+
+            try
+            {
+
+                bufQ.CopyFromCPU(Q);
+                bufK.CopyFromCPU(K);
+                bufV.CopyFromCPU(V);
+
+
+                for (int head = 0; head < numHeads; head++)
+                {
+                    int startIdx = head * headDim;
+
+                    _extractHeadQKVKernel(new Index2D(seqLenQ, headDim), bufQ.View, bufQ_head.View, headDim, startIdx);
+                    _extractHeadQKVKernel(new Index2D(seqLenK, headDim), bufK.View, bufK_head.View, headDim, startIdx);
+                    _extractHeadQKVKernel(new Index2D(seqLenK, headDim), bufV.View, bufV_head.View, headDim, startIdx);
+
+
+                    _contentAwareScoresKernel(new Index2D(seqLenQ, seqLenK), bufQ_head.View, bufK_head.View, bufScores.View, scale);
+
+
+                    if (decayBias != null)
+                    {
+                        var decayBiasHead = new float[1, seqLenQ, seqLenK];
+                        for (int i = 0; i < seqLenQ; i++)
+                            for (int j = 0; j < seqLenK; j++)
+                                decayBiasHead[0, i, j] = decayBias[i, j, head];
+
+                        bufDecayBias.CopyFromCPU(decayBiasHead);
+
+
+                        _addDecayBiasKernel(new Index2D(seqLenQ, seqLenK), bufScores.View, bufDecayBias.View, bufScoresWithBias.View);
+                    }
+                    else
+                    {
+
+                        var scores = new float[1, seqLenQ, seqLenK];
+                        bufScores.CopyToCPU(scores);
+                        bufScoresWithBias.CopyFromCPU(scores);
+                    }
+
+                    _contentAwareSoftmaxKernel(new Index2D(seqLenQ, 1), bufScoresWithBias.View, bufWeights.View);
+
+                    _contentAwareWeightedSumKernel(new Index2D(seqLenQ, headDim), bufWeights.View, bufV_head.View, bufHeadOutput.View);
+
+                    _assembleHeadOutputKernel(new Index2D(seqLenQ, headDim), bufHeadOutput.View, bufConcatenated.View, headDim, startIdx);
+
+
+                    var weightsHead = new float[1, seqLenQ, seqLenK];
+                    var scoresHead = new float[1, seqLenQ, seqLenK];
+
+                    bufWeights.CopyToCPU(weightsHead);
+                    bufScoresWithBias.CopyToCPU(scoresHead);
+
+
+                    attentionWeights[head] = new float[seqLenQ, seqLenK];
+                    scoresPreSoftmax[head] = new float[seqLenQ, seqLenK];
+
+                    for (int i = 0; i < seqLenQ; i++)
+                    {
+                        for (int j = 0; j < seqLenK; j++)
+                        {
+                            attentionWeights[head][i, j] = weightsHead[0, i, j];
+                            scoresPreSoftmax[head][i, j] = scoresHead[0, i, j];
+                        }
+                    }
+                }
+
+                bufConcatenated.CopyToCPU(concatenated);
+
+                return concatenated;
+            }
+            finally
+            {
+                bufQ.Dispose();
+                bufK.Dispose();
+                bufV.Dispose();
+                bufConcatenated.Dispose();
+                bufQ_head.Dispose();
+                bufK_head.Dispose();
+                bufV_head.Dispose();
+                bufScores.Dispose();
+                bufScoresWithBias.Dispose();
+                bufWeights.Dispose();
+                bufHeadOutput.Dispose();
+                bufDecayBias.Dispose();
+            }
+        }
+        #endregion
+
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V,  float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings,  TransformerBlock block, BlockCache bc, int PriceEmbeddingDim,  int PriceNumHeads, bool isTraining = false, Random dropoutRng = null)
+        {
+            int psl = Q.GetLength(0);
+            int tsl = K.GetLength(0);
+            int ed = PriceEmbeddingDim;
+            int nh = PriceNumHeads;
+            int hd = ed / nh;
+            float scale = 1.0f / MathF.Sqrt(hd);
+
+            float[,,] decayBias = null;
+
+            if (timeDiffs != null)
+            {
+                var (bias, decayCache) = ContentAwareDecayForward(
+                    queryEmbeddings,
+                    keyEmbeddings,
+                    timeDiffs,
+                    keyTimesFromRef,
+                    block.DecayNetwork,
+                    isTraining,
+                    dropoutRng
+                );
+                decayBias = bias;
+                bc.DecayCache = decayCache;
+            }
+
+            float[][,] attentionWeights;
+            float[][,] scoresPreSoftmax;
+
+            var output = ContentAwareCrossAttentionForward(
+                Q,
+                K,
+                V,
+                nh,
+                scale,
+                decayBias,
+                out attentionWeights,
+                out scoresPreSoftmax
+            );
+
+            bc.CrossAttentionWeights = attentionWeights;
+            bc.CrossScoresPreSoftmax = scoresPreSoftmax;
+
+            return output;
         }
     }
 }

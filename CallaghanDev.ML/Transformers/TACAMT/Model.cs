@@ -144,13 +144,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             {
                 int numNews = sh.GetLength(0);
                 int ed = _config.PriceEmbeddingDim;
-                for (int i = 0; i < numNews; i++)
-                {
-                    for (int d = 0; d < ed; d++)
-                    {
-                        sh[i, d] += ContextTypeEmbedding[0, d];
-                    }
-                }
+                var typeIndices = new int[numNews];
+                _accel.ApplyContextTypeEmbedding(sh, ContextTypeEmbedding, typeIndices);
             }
 
             return ProjectToOutput(ForwardPriceDecoder(priceSequence, sh, st));
@@ -175,6 +170,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             {
                 int numNews = sh.GetLength(0);
                 int ed = _config.PriceEmbeddingDim;
+                /*
                 for (int i = 0; i < numNews; i++)
                 {
                     for (int d = 0; d < ed; d++)
@@ -182,6 +178,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         sh[i, d] += ContextTypeEmbedding[0, d];
                     }
                 }
+                */
+                var typeIndices = new int[numNews]; // all zeros for news
+                _accel.ApplyContextTypeEmbedding(sh, ContextTypeEmbedding, typeIndices);
             }
 
             var ph = ForwardPriceDecoderWithCache(priceSequence, sh, st, cache, isTraining, dropoutRng);
@@ -282,13 +281,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
 
                 // Apply context type embeddings
-                for (int i = 0; i < ctxH.Count; i++)
+                /*for (int i = 0; i < ctxH.Count; i++)
                 {
                     for (int d = 0; d < embDim; d++)
                     {
                         cH[i, d] += ContextTypeEmbedding[ctxTypes[i], d];
                     }
-                }
+                }*/
+                _accel.ApplyContextTypeEmbedding(cH, ContextTypeEmbedding, ctxTypes.ToArray());
             }
 
             var priceHidden = ForwardPriceDecoder(priceSequence, cH, cT);
@@ -345,7 +345,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             float alpha = PruningConfig.AttentionScoreAlpha;
 
             // Compute approximate attention weights from last price position to each context entry
-            var scores = new float[totalCtx];
+            /*var scores = new float[totalCtx];
             float maxScore = float.MinValue;
             float scale = 1.0f / MathF.Sqrt(embDim);
 
@@ -361,7 +361,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 { 
                     maxScore = scores[s];
                 }
-            }
+            }*/
+
+            float scale = 1.0f / MathF.Sqrt(embDim);
+            var scores = _accel.ComputeMemoryAttentionScores(priceHidden, lastPos, contextHidden, totalCtx, scale);
+            float maxScore = scores.Length > 0 ? scores.Max() : float.MinValue;
 
             // Softmax
             float sumExp = 0;
@@ -575,13 +579,18 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             for (int layer = 0; layer < _config.PriceNumLayers; layer++)
             {
                 var block = PriceBlocks[layer]; var bc = cache.PriceBlockCaches[layer]; bc.BlockInput = x;
+
                 var sQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
                 var sK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
                 var sV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
+
                 bc.SelfQ = sQ; bc.SelfK = sK; bc.SelfV = sV;
+
                 var sao = _accel.MultiHeadAttentionForward(sQ, sK, sV, nh, scale, selfMask); bc.SelfAttnOutput = sao;
                 var sp = ComputeProjection(sao, block.SelfAttention.WO, block.SelfAttention.BiasO);
                 var sr = _accel.MatrixAdd(x, sp); bc.SelfResidualInput = sr;
+
+
                 var (ns, sm, sv, sn) = _accel.LayerNormForward(sr, block.LNSelfGamma, block.LNSelfBeta);
                 bc.LNSelfCache.Input = sr; bc.LNSelfCache.Mean = sm; bc.LNSelfCache.Variance = sv; bc.LNSelfCache.Normalized = sn; bc.NormedSelf = ns;
 
@@ -590,21 +599,28 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 {
                     float[,] td = null; float[] ktr = null;
                     if (storyTimes != null)
-                    { 
-                        td = block.ComputeTimeDiffMatrix(sl, storyTimes); 
-                        ktr = storyTimes; 
-                        bc.TimeDiffs = td; 
+                    {
+                        td = block.ComputeTimeDiffMatrix(sl, storyTimes);
+                        ktr = storyTimes;
+                        bc.TimeDiffs = td;
                         bc.KeyTimesFromRef = ktr;
                     }
 
                     var cQ = ComputeProjection(ns, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
                     var cK = ComputeProjection(storyHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
                     var cV = ComputeProjection(storyHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+
                     bc.CrossQ = cQ; bc.CrossK = cK; bc.CrossV = cV;
+
                     var cao = ContentAwareCrossAttentionWithCache(cQ, cK, cV, td, ktr, ns, storyHidden, block, bc, isTraining, dropoutRng);
+
                     bc.CrossAttnOutput = cao;
+
                     var cp = ComputeProjection(cao, block.CrossAttention.WO, block.CrossAttention.BiasO);
-                    var cr = _accel.MatrixAdd(ns, cp); bc.CrossResidualInput = cr;
+                    var cr = _accel.MatrixAdd(ns, cp);
+
+                    bc.CrossResidualInput = cr;
+
                     var (ncr, cm, cvr, cn) = _accel.LayerNormForward(cr, block.LNCrossGamma, block.LNCrossBeta);
                     bc.LNCrossCache.Input = cr; bc.LNCrossCache.Mean = cm; bc.LNCrossCache.Variance = cvr; bc.LNCrossCache.Normalized = cn; bc.NormedCross = ncr; nc = ncr;
                 }
@@ -614,33 +630,74 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     var (ncr, cm, cvr, cn) = _accel.LayerNormForward(ns, block.LNCrossGamma, block.LNCrossBeta);
                     bc.LNCrossCache.Input = ns; bc.LNCrossCache.Mean = cm; bc.LNCrossCache.Variance = cvr; bc.LNCrossCache.Normalized = cn; bc.NormedCross = ncr; nc = ncr;
                 }
+                /*
+                var ffnIn = new float[sl][];
+                var ffOut = new float[sl, ed];
 
-                var ffnIn = new float[sl][]; var ffOut = new float[sl, ed];
                 for (int i = 0; i < sl; i++)
                 {
-                    var ir = new float[ed]; for (int j = 0; j < ed; j++) ir[j] = nc[i, j]; ffnIn[i] = ir;
-                    var or2 = block.FeedForwardNetwork.ForwardPassOnly(ir); for (int j = 0; j < ed; j++) ffOut[i, j] = or2[j];
+                    var ir = new float[ed]; 
+                    for (int j = 0; j < ed; j++) 
+                        ir[j] = nc[i, j]; ffnIn[i] = ir;
+
+                    var or2 = block.FeedForwardNetwork.ForwardPassOnly(ir);
+
+                    for (int j = 0; j < ed; j++) 
+                        ffOut[i, j] = or2[j];
                 }
-                bc.FFNInputRows = ffnIn; bc.FFNOutput = ffOut;
+                */
+
+
+                var ffnIn = new float[sl][];
+
+                for (int i = 0; i < sl; i++)
+                {
+                    var ir = new float[ed];
+                    for (int j = 0; j < ed; j++)
+                    {
+                        ir[j] = nc[i, j];
+                    }
+                    ffnIn[i] = ir;
+                }
+
+                // Batched parallel forward pass
+                var ffOut = _accel.FFNForwardBatch(nc, sl, ed, block.FeedForwardNetwork.ForwardPassOnly);
+
+                bc.FFNInputRows = ffnIn;
+                bc.FFNOutput = ffOut;
+
                 var fr = _accel.MatrixAdd(nc, ffOut); bc.FFNResidualInput = fr;
+
                 var (nf, fm, fv, fn) = _accel.LayerNormForward(fr, block.LNFFNGamma, block.LNFFNBeta);
+
                 bc.LNFFNCache.Input = fr; bc.LNFFNCache.Mean = fm; bc.LNFFNCache.Variance = fv; bc.LNFFNCache.Normalized = fn;
+
                 x = nf;
             }
             return x;
         }
 
-        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc, bool isTraining = false, Random dropoutRng = null)
+        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc,  bool isTraining = false, Random dropoutRng = null)
         {
-            int psl = Q.GetLength(0), tsl = K.GetLength(0), ed = _config.PriceEmbeddingDim, nh = _config.PriceNumHeads, hd = ed / nh;
+            int psl = Q.GetLength(0);
+            int tsl = K.GetLength(0);
+
+            int PriceEmbeddingDim = _config.PriceEmbeddingDim; 
+            int PriceNumHeads = _config.PriceNumHeads;
+
+            return _accel.ContentAwareCrossAttentionWithCache(Q, K,V,timeDiffs,  keyTimesFromRef,  queryEmbeddings, keyEmbeddings,  block,  bc,  PriceEmbeddingDim,  PriceNumHeads,  isTraining ,  dropoutRng );
+            /*
+            int hd = ed / nh;
+
             float scale = 1.0f / MathF.Sqrt(hd);
+
             var output = new float[psl, ed];
 
             float[,,] decayBias = null;
             if (timeDiffs != null)
             {
-                var (bias, decayCache) = block.DecayNetwork.Forward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, isTraining, dropoutRng);
-
+                //var (bias, decayCache) = block.DecayNetwork.Forward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, isTraining, dropoutRng);
+                var (bias, decayCache) = _accel.ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, block.DecayNetwork, isTraining, dropoutRng);
                 decayBias = bias; bc.DecayCache = decayCache;
             }
 
@@ -681,10 +738,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     }
                 }
                 bc.CrossAttentionWeights[h] = weights; bc.CrossScoresPreSoftmax[h] = scores;
-            }
-            return output;
+            }*/
+           // return output;
         }
-
+        /*
         internal (float[,], float[,]) ProjectToOutput(float[,] hidden)
         {
             int sl = hidden.GetLength(0), ed = _config.PriceEmbeddingDim;
@@ -713,6 +770,31 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     }
                 }
             }
+            return (pred, conf);
+        }*/
+        internal (float[,], float[,]) ProjectToOutput(float[,] hidden)
+        {
+            int sl = hidden.GetLength(0);
+
+            var pred = _accel.ProjectOutputBatch(hidden, OutputProjection, OutputBias, sl, _config.OutputDim);
+
+            float[,] conf = null;
+
+            if (_config.UseConfidenceHead)
+            {
+                conf = new float[sl, 1];
+
+                for (int i = 0; i < sl; i++)
+                {
+                    float l = ConfidenceBias[0];
+                    for (int k = 0; k < _config.PriceEmbeddingDim; k++)
+                    {
+                        l += ConfidenceProjection[0, k] * hidden[i, k];
+                    }
+                    conf[i, 0] = Sigmoid(l);
+                }
+            }
+
             return (pred, conf);
         }
 
@@ -747,6 +829,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 l1c.Input = ar; l1c.Mean = m1; l1c.Variance = v1; l1c.Normalized = nr1;
 
+                /*
                 var fi = new float[sl][]; var fo = new float[sl, ed];
 
                 for (int i = 0; i < sl; i++)
@@ -762,7 +845,23 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     {
                         fo[i, j] = or2[j]; 
                     }
+                }*/
+
+                var fi = new float[sl][];
+
+                for (int i = 0; i < sl; i++)
+                {
+                    var ir = new float[ed];
+
+                    for (int j = 0; j < ed; j++)
+                    { 
+                        ir[j] = n1[i, j];
+                    }
+
+                    fi[i] = ir;
                 }
+
+                var fo = _accel.FFNForwardBatch(n1, sl, ed, b.FeedForwardNetwork.ForwardPassOnly);
 
                 cache.TextFFNInputs.Add(fi); cache.TextFFNOutputs.Add(fo);
 
@@ -878,7 +977,17 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         }
 
         private float[,] EmbedTextTokens(int[] ids, int sl) { var e = new float[sl, _config.TextEmbeddingDim]; for (int i = 0; i < sl; i++) for (int j = 0; j < _config.TextEmbeddingDim; j++) e[i, j] = TextTokenEmbedding[ids[i], j] + TextPositionalEncoding[i, j]; return e; }
-        private float[,] EmbedPriceSequence(float[,] ps, int sl) { var p = _accel.BatchDotProduct(PriceInputProjection, ps); var e = new float[sl, _config.PriceEmbeddingDim]; for (int i = 0; i < sl; i++) for (int j = 0; j < _config.PriceEmbeddingDim; j++) e[i, j] = p[i, j] + PriceInputProjectionBias[j] + PricePositionalEncoding[i, j]; return e; }
+        private float[,] EmbedPriceSequence(float[,] ps, int sl)
+        {
+            var projected = _accel.BatchDotProduct(PriceInputProjection, ps);
+            return _accel.EmbedWithBiasAndPositional(
+                projected,
+                PriceInputProjectionBias,
+                PricePositionalEncoding,
+                sl,
+                _config.PriceEmbeddingDim);
+        }
+
         private float[,] CreatePositionalEncoding(int ml, int d) { var pe = new float[ml, d]; for (int p = 0; p < ml; p++) for (int i = 0; i < d; i++) { float a = p / MathF.Pow(10000, 2.0f * (i / 2) / d); pe[p, i] = (i % 2 == 0) ? MathF.Sin(a) : MathF.Cos(a); } return pe; }
         private bool[,] CreateCausalMask(int sl) { var m = new bool[sl, sl]; for (int i = 0; i < sl; i++) for (int j = 0; j <= i; j++) m[i, j] = true; return m; }
         private float[,] ComputeProjection(float[,] input, float[,] w, float[] b) { var p = _accel.BatchDotProduct(w, input); int r = p.GetLength(0), c = p.GetLength(1); var res = new float[r, c]; for (int i = 0; i < r; i++) for (int j = 0; j < c; j++) res[i, j] = p[i, j] + b[j]; return res; }

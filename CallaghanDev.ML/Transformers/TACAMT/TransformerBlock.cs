@@ -29,8 +29,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private readonly int _numHeads;
         private readonly int _headDim;
 
+        private readonly IAccelerationManager _accel;
+
         public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random, AccelerationType accelType = AccelerationType.CPU, int accelDeviceId = 0, float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8)
         {
+            _accel = accel;
             _numHeads = numHeads;
             _embeddingDim = embeddingDim;
             _headDim = embeddingDim / numHeads;
@@ -79,7 +82,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// <param name="keyTimesFromRef">[numKeys] each key's time relative to reference, for memory interaction</param>
         /// <param name="isTraining">Whether to apply dropout (true during training, false at inference)</param>
         /// <param name="dropoutRng">Random number generator for dropout masks</param>
-        public float[,] Forward(float[,] x, float[,] contextHidden,  bool[,] selfAttnMask, IAccelerationManager accel, float[,] timeDiffs = null, float[] keyTimesFromRef = null, bool isTraining = false,  Random dropoutRng = null)
+        public float[,] Forward(float[,] x, float[,] contextHidden, bool[,] selfAttnMask, IAccelerationManager accel, float[,] timeDiffs = null, float[] keyTimesFromRef = null, bool isTraining = false, Random dropoutRng = null)
         {
             int priceSeqLen = x.GetLength(0);
             int numHeads = _numHeads;
@@ -91,14 +94,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var selfK = ComputeProjection(x, SelfAttention.WK, SelfAttention.BiasK, accel);
             var selfV = ComputeProjection(x, SelfAttention.WV, SelfAttention.BiasV, accel);
 
-            var selfAttnOut = accel.MultiHeadAttentionForward(
-                selfQ,
-                selfK,
-                selfV,
-                numHeads,
-                scale,
-                selfAttnMask
-            );
+            var selfAttnOut = accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfAttnMask);
 
             var selfProjected = ComputeProjection(selfAttnOut, SelfAttention.WO, SelfAttention.BiasO, accel);
             var selfResidual = accel.MatrixAdd(x, selfProjected);
@@ -117,15 +113,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 if (timeDiffs != null)
                 {
-                    crossAttnOut = ContentAwareCrossAttention(
-                        normedSelf,
-                        contextHidden,
-                        timeDiffs,
-                        keyTimesFromRef,
-                        accel,
-                        isTraining,
-                        dropoutRng
-                    );
+                    crossAttnOut = ContentAwareCrossAttention(normedSelf, contextHidden, timeDiffs, keyTimesFromRef, accel, isTraining, dropoutRng);
                 }
                 else
                 {
@@ -156,16 +144,12 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
             else
             {
-                var (nc, _, _, _) = accel.LayerNormForward(
-                    normedSelf,
-                    LNCrossGamma,
-                    LNCrossBeta
-                );
+                var (nc, _, _, _) = accel.LayerNormForward(normedSelf, LNCrossGamma, LNCrossBeta);
 
                 normedCross = nc;
             }
 
-            var ffOutput = new float[priceSeqLen, _embeddingDim];
+            /*var ffOutput = new float[priceSeqLen, _embeddingDim];
 
             for (int i = 0; i < priceSeqLen; i++)
             {
@@ -181,16 +165,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 for (int j = 0; j < _embeddingDim; j++)
                 {
                     ffOutput[i, j] = outputRow[j];
-                }
-            }
+                }ComputeTimeDiffMatrix
+            }*/
+
+            var ffOutput = accel.FFNForwardBatch(normedCross, priceSeqLen, _embeddingDim, FeedForwardNetwork.ForwardPassOnly);
 
             var ffResidual = accel.MatrixAdd(normedCross, ffOutput);
 
-            var (normedFF, _, _, _) = accel.LayerNormForward(
-                ffResidual,
-                LNFFNGamma,
-                LNFFNBeta
-            );
+            var (normedFF, _, _, _) = accel.LayerNormForward(ffResidual, LNFFNGamma, LNFFNBeta);
 
             return normedFF;
         }
@@ -198,6 +180,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
         {
+            return _accel.ComputeTimeDiffMatrix(priceSeqLen, keyArrivalTimes);
+            /*
             int numKeys = keyArrivalTimes.Length;
             var timeDiffs = new float[priceSeqLen, numKeys];
 
@@ -209,7 +193,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
 
-            return timeDiffs;
+            return timeDiffs;*/
         }
 
         private float[,] ContentAwareCrossAttention(float[,] priceHidden, float[,] contextHidden, float[,] timeDiffs, float[] keyTimesFromRef, IAccelerationManager accel, bool isTraining = false, Random dropoutRng = null)
@@ -226,17 +210,12 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var K = ComputeProjection(contextHidden, CrossAttention.WK, CrossAttention.BiasK, accel);
             var V = ComputeProjection(contextHidden, CrossAttention.WV, CrossAttention.BiasV, accel);
 
-            var (decayBias, _) = DecayNetwork.Forward(
-                priceHidden,
-                contextHidden,
-                timeDiffs,
-                keyTimesFromRef,
-                isTraining,
-                dropoutRng
-            );
+            //var (decayBias, _) = DecayNetwork.Forward(priceHidden, contextHidden, timeDiffs, keyTimesFromRef, isTraining, dropoutRng);
 
-            var output = new float[priceSeqLen, embDim];
+            var (decayBias, _) = accel.ContentAwareDecayForward(priceHidden, contextHidden, timeDiffs, keyTimesFromRef, DecayNetwork, isTraining, dropoutRng);
 
+            /* var output = new float[priceSeqLen, embDim];
+           
             for (int h = 0; h < numHeads; h++)
             {
                 int startIdx = h * headDim;
@@ -293,10 +272,12 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     }
                 }
             }
+            */
 
-            return output;
+            return accel.ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, out _, out _);
+
+            //return output;
         }
-
 
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias, IAccelerationManager accel)
         {

@@ -9,13 +9,13 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main()
         {
+            AccelerationConsistencyTests accelerationConsistencyTests = new AccelerationConsistencyTests();
+            accelerationConsistencyTests.RunAllTests();
+
             TACMATests tACMATests = new TACMATests();
 
             tACMATests.RunAllTests();
 
-           
-            AccelerationConsistencyTests accelerationConsistencyTests = new AccelerationConsistencyTests();
-            accelerationConsistencyTests.RunAllTests();
 
             Tests tt = new Tests();
             tt.RunAllTests();

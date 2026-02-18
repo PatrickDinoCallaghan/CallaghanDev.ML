@@ -1,12 +1,6 @@
-﻿using ILGPU.Runtime;
-using ILGPU;
-using ILGPU.Runtime.OpenCL;
-using ILGPU.Runtime.CPU;
-using ILGPU.Algorithms;
-using CallaghanDev.ML.Enums;
-using System;
+﻿using CallaghanDev.ML.Enums;
 using static CallaghanDev.ML.Functions;
-using System.Numerics;
+using CallaghanDev.ML.Transformers.TACAMT;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
@@ -15,7 +9,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         public AccelerationCPU()
         {
         }
-        
+
         // I realize this behaves like a transpose rather than a plain dot product—but that’s exactly what we want, and it’s correct.
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
@@ -92,7 +86,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return delta;
         }
 
-        public float[,] UpdateWeights(float[,] weights,float[] deltas, float[] prevActivations, float learningRate, float lambda )
+        public float[,] UpdateWeights(float[,] weights, float[] deltas, float[] prevActivations, float learningRate, float lambda)
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
@@ -1005,6 +999,496 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
         public void Dispose() { }
+        public float[,] ContentAwareCrossAttentionForward(
+           float[,] Q,
+           float[,] K,
+           float[,] V,
+           int numHeads,
+           float scale,
+           float[,,] decayBias,
+           out float[][,] attentionWeights,
+           out float[][,] scoresPreSoftmax)
+        {
+            int psl = Q.GetLength(0);
+            int tsl = K.GetLength(0);
+            int embDim = Q.GetLength(1);
+            int headDim = embDim / numHeads;
 
+            var output = new float[psl, embDim];
+            attentionWeights = new float[numHeads][,];
+            scoresPreSoftmax = new float[numHeads][,];
+
+            for (int h = 0; h < numHeads; h++)
+            {
+                int si = h * headDim;
+                var scores = new float[psl, tsl];
+                var weights = new float[psl, tsl];
+
+                for (int p = 0; p < psl; p++)
+                {
+                    float mx = float.MinValue;
+
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        float dot = 0f;
+                        for (int d = 0; d < headDim; d++)
+                            dot += Q[p, si + d] * K[s, si + d];
+
+                        float sc = dot * scale;
+                        if (decayBias != null) sc += decayBias[p, s, h];
+                        scores[p, s] = sc;
+                        if (sc > mx) mx = sc;
+                    }
+
+                    float se = 0f;
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        weights[p, s] = MathF.Exp(scores[p, s] - mx);
+                        se += weights[p, s];
+                    }
+
+                    if (se > 0f)
+                        for (int s = 0; s < tsl; s++)
+                            weights[p, s] /= se;
+
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        float v = 0f;
+                        for (int s = 0; s < tsl; s++)
+                            v += weights[p, s] * V[s, si + d];
+                        output[p, si + d] = v;
+                    }
+                }
+
+                attentionWeights[h] = weights;
+                scoresPreSoftmax[h] = scores;
+            }
+
+            return output;
+        }
+
+        public float[,] FFNForwardBatch(
+            float[,] input,
+            int seqLen,
+            int outputDim,
+            Func<float[], float[]> forwardPassFn)
+        {
+            var result = new float[seqLen, outputDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                var row = new float[input.GetLength(1)];
+                for (int j = 0; j < input.GetLength(1); j++)
+                    row[j] = input[i, j];
+
+                var out_row = forwardPassFn(row);
+
+                for (int j = 0; j < outputDim; j++)
+                    result[i, j] = out_row[j];
+            }
+
+            return result;
+        }
+
+        public void ApplyContextTypeEmbedding(
+            float[,] contextHidden,
+            float[,] typeEmbedding,
+            int[] typeIndices)
+        {
+            int n = contextHidden.GetLength(0);
+            int embDim = contextHidden.GetLength(1);
+
+            for (int i = 0; i < n; i++)
+            {
+                int t = typeIndices[i];
+                for (int d = 0; d < embDim; d++)
+                    contextHidden[i, d] += typeEmbedding[t, d];
+            }
+        }
+
+        public float[,] ComputeTimeDiffMatrix(
+            int priceSeqLen,
+            float[] keyArrivalTimes)
+        {
+            int numKeys = keyArrivalTimes.Length;
+            var td = new float[priceSeqLen, numKeys];
+
+            for (int p = 0; p < priceSeqLen; p++)
+                for (int s = 0; s < numKeys; s++)
+                    td[p, s] = MathF.Abs(p - keyArrivalTimes[s]);
+
+            return td;
+        }
+
+        public float[,] MeanPoolRows(
+            float[,] hidden,
+            int[] storyOffsets,
+            int[] storyCounts,
+            int numStories,
+            int embeddingDim)
+        {
+            var result = new float[numStories, embeddingDim];
+
+            for (int s = 0; s < numStories; s++)
+            {
+                int start = storyOffsets[s];
+                int count = storyCounts[s];
+
+                if (count <= 0) continue;
+
+                float inv = 1f / count;
+
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    float sum = 0f;
+                    for (int t = start; t < start + count; t++)
+                        sum += hidden[t, d];
+                    result[s, d] = sum * inv;
+                }
+            }
+
+            return result;
+        }
+
+        public float[,] EmbedWithBiasAndPositional(
+            float[,] projected,
+            float[] bias,
+            float[,] positionalEncoding,
+            int seqLen,
+            int embeddingDim)
+        {
+            var result = new float[seqLen, embeddingDim];
+
+            for (int i = 0; i < seqLen; i++)
+                for (int j = 0; j < embeddingDim; j++)
+                    result[i, j] = projected[i, j] + bias[j] + positionalEncoding[i, j];
+
+            return result;
+        }
+
+        public float[] ComputeMemoryAttentionScores(
+            float[,] priceHidden,
+            int lastPos,
+            float[,] contextHidden,
+            int totalCtx,
+            float scale)
+        {
+            int embDim = priceHidden.GetLength(1);
+            var scores = new float[totalCtx];
+
+            for (int s = 0; s < totalCtx; s++)
+            {
+                float dot = 0f;
+                for (int d = 0; d < embDim; d++)
+                    dot += priceHidden[lastPos, d] * contextHidden[s, d];
+                scores[s] = dot * scale;
+            }
+
+            return scores;
+        }
+
+        public float[,] ProjectOutputBatch(
+            float[,] hidden,
+            float[,] outputProjection,
+            float[] outputBias,
+            int seqLen,
+            int outputDim)
+        {
+            int embDim = hidden.GetLength(1);
+            var pred = new float[seqLen, outputDim];
+
+            for (int i = 0; i < seqLen; i++)
+                for (int j = 0; j < outputDim; j++)
+                {
+                    float sum = outputBias[j];
+                    for (int k = 0; k < embDim; k++)
+                        sum += outputProjection[j, k] * hidden[i, k];
+                    pred[i, j] = sum;
+                }
+
+            return pred;
+        }
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
+    float[,] queryEmbeddings,
+    float[,] keyEmbeddings,
+    float[,] timeDiffs,
+    float[] keyTimesFromRef,
+    ContentAwareDecayNetwork network,
+    bool isTraining = false, Random dropoutRng = null)
+        {
+            int queryLen = timeDiffs.GetLength(0);
+            int keyLen = timeDiffs.GetLength(1);
+            int numHeads = network.NumHeads;
+            int projDim = network.ProjectionDim;
+            int contentDim = network.ContentDim;
+            int hiddenDim = network.HiddenDim;
+            int mlpInputDim = network.MLPInputDim;
+            int numBases = network.NumTimeBases;
+            int rawDim = network.TimeRawDim;
+
+            // Allocate cache
+            var cache = new ContentAwareDecayCache
+            {
+                QueryEmbeddings = queryEmbeddings,
+                KeyEmbeddings = keyEmbeddings,
+                TimeDiffs = timeDiffs,
+                KeyTimesFromRef = keyTimesFromRef,
+                QueryProj = new float[numHeads, queryLen, projDim],
+                KeyProj = new float[numHeads, keyLen, projDim],
+                TimeRawFeatures = new float[numHeads, keyLen, rawDim],
+                TimeEncoding = new float[numHeads, keyLen, projDim],
+                MemAttnQInput = new float[numHeads, keyLen, projDim],
+                MemAttnKInput = new float[numHeads, keyLen, projDim],
+                MemAttnWeights = new float[numHeads, keyLen, keyLen],
+                MemAttnOutput = new float[numHeads, keyLen, projDim],
+                RefinedKey = new float[numHeads, keyLen, projDim],
+                MLPInput = new float[queryLen, keyLen, numHeads, mlpInputDim],
+                MLPHiddenPreAct = new float[queryLen, keyLen, numHeads, hiddenDim],
+                MLPHidden = new float[queryLen, keyLen, numHeads, hiddenDim],
+                GateLogits = new float[queryLen, keyLen, numHeads],
+                Gates = new float[queryLen, keyLen, numHeads],
+                MemAttnDropoutMask = null,
+                MLPDropoutMask = null
+            };
+
+            bool useMemAttnDrop = isTraining && network.MemoryAttentionDropout > 0 && dropoutRng != null;
+            bool useMLPDrop = isTraining && network.MLPDropout > 0 && dropoutRng != null;
+
+            if (useMemAttnDrop)
+                cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
+            if (useMLPDrop)
+                cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
+
+            var decayBias = new float[queryLen, keyLen, numHeads];
+
+            // Process each head sequentially
+            for (int h = 0; h < numHeads; h++)
+            {
+                // 1. Project queries
+                for (int q = 0; q < queryLen; q++)
+                {
+                    for (int p = 0; p < projDim; p++)
+                    {
+                        float val = network.QueryProjectionBias[h, p];
+                        for (int d = 0; d < contentDim; d++)
+                            val += network.QueryProjection[h, p, d] * queryEmbeddings[q, d];
+                        cache.QueryProj[h, q, p] = val;
+                    }
+                }
+
+                // 2. Project keys
+                for (int s = 0; s < keyLen; s++)
+                {
+                    for (int p = 0; p < projDim; p++)
+                    {
+                        float val = network.KeyProjectionBias[h, p];
+                        for (int d = 0; d < contentDim; d++)
+                            val += network.KeyProjection[h, p, d] * keyEmbeddings[s, d];
+                        cache.KeyProj[h, s, p] = val;
+                    }
+                }
+
+                // 3. Multi-scale sinusoidal time encoding
+                for (int s = 0; s < keyLen; s++)
+                {
+                    float t = keyTimesFromRef != null ? keyTimesFromRef[s] : 0f;
+                    for (int b = 0; b < numBases; b++)
+                    {
+                        float freq = MathF.Exp(network.TimeLogFreq[h, b]);
+                        float angle = freq * t;
+                        cache.TimeRawFeatures[h, s, b * 2] = MathF.Sin(angle);
+                        cache.TimeRawFeatures[h, s, b * 2 + 1] = MathF.Cos(angle);
+                    }
+                    for (int p = 0; p < projDim; p++)
+                    {
+                        float val = network.TimeProjBias[h, p];
+                        for (int r = 0; r < rawDim; r++)
+                            val += network.TimeProj[h, p, r] * cache.TimeRawFeatures[h, s, r];
+                        cache.TimeEncoding[h, s, p] = val;
+                    }
+                }
+
+                // 4. Memory interaction attention
+                float memScale = 1.0f / MathF.Sqrt(projDim);
+
+                for (int s = 0; s < keyLen; s++)
+                {
+                    for (int p = 0; p < projDim; p++)
+                    {
+                        cache.MemAttnQInput[h, s, p] = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
+                        cache.MemAttnKInput[h, s, p] = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
+                    }
+                }
+
+                for (int i = 0; i < keyLen; i++)
+                {
+                    float maxScore = float.MinValue;
+                    var scores = new float[keyLen];
+
+                    for (int j = 0; j < keyLen; j++)
+                    {
+                        float dot = 0;
+                        for (int p = 0; p < projDim; p++)
+                            dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+                        scores[j] = dot * memScale;
+                        if (scores[j] > maxScore) maxScore = scores[j];
+                    }
+
+                    float sumExp = 0;
+                    for (int j = 0; j < keyLen; j++)
+                    {
+                        cache.MemAttnWeights[h, i, j] = MathF.Exp(scores[j] - maxScore);
+                        sumExp += cache.MemAttnWeights[h, i, j];
+                    }
+                    if (sumExp > 0)
+                    {
+                        for (int j = 0; j < keyLen; j++)
+                            cache.MemAttnWeights[h, i, j] /= sumExp;
+                    }
+
+                    // Dropout on memory attention
+                    if (useMemAttnDrop)
+                    {
+                        float keepProb = 1.0f - network.MemoryAttentionDropout;
+                        float dscale = 1.0f / keepProb;
+                        for (int j = 0; j < keyLen; j++)
+                        {
+                            float mask = dropoutRng.NextSingle() < keepProb ? dscale : 0f;
+                            cache.MemAttnDropoutMask[h, i, j] = mask;
+                            cache.MemAttnWeights[h, i, j] *= mask;
+                        }
+                    }
+
+                    // Weighted sum
+                    for (int p = 0; p < projDim; p++)
+                    {
+                        float val = 0;
+                        for (int j = 0; j < keyLen; j++)
+                            val += cache.MemAttnWeights[h, i, j] * cache.KeyProj[h, j, p];
+                        cache.MemAttnOutput[h, i, p] = val;
+                    }
+                }
+
+                // 5. Output projection (refined key)
+                for (int s = 0; s < keyLen; s++)
+                {
+                    for (int p = 0; p < projDim; p++)
+                    {
+                        float val = network.MemAttnOutputB[h, p];
+                        for (int q = 0; q < projDim; q++)
+                            val += network.MemAttnOutputW[h, p, q] * cache.MemAttnOutput[h, s, q];
+                        cache.RefinedKey[h, s, p] = val + cache.KeyProj[h, s, p];
+                    }
+                }
+
+                // 6. Gating MLP
+                for (int qi = 0; qi < queryLen; qi++)
+                {
+                    for (int si = 0; si < keyLen; si++)
+                    {
+                        float td = timeDiffs[qi, si];
+                        float logTd = MathF.Log(1f + td);
+
+                        // Build MLP input
+                        int idx = 0;
+                        for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
+                        for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
+                        for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p] * cache.RefinedKey[h, si, p];
+                        cache.MLPInput[qi, si, h, idx++] = td;
+                        cache.MLPInput[qi, si, h, idx++] = logTd;
+
+                        // Hidden layer (ReLU)
+                        for (int j = 0; j < hiddenDim; j++)
+                        {
+                            float val = network.B1[h, j];
+                            for (int k = 0; k < mlpInputDim; k++)
+                                val += network.W1[h, j, k] * cache.MLPInput[qi, si, h, k];
+                            cache.MLPHiddenPreAct[qi, si, h, j] = val;
+                            float activated = val > 0 ? val : 0;
+
+                            // Dropout on MLP hidden
+                            if (useMLPDrop)
+                            {
+                                float keepProb = 1.0f - network.MLPDropout;
+                                float mask = dropoutRng.NextSingle() < keepProb ? (1.0f / keepProb) : 0f;
+                                cache.MLPDropoutMask[qi, si, h, j] = mask;
+                                activated *= mask;
+                            }
+                            cache.MLPHidden[qi, si, h, j] = activated;
+                        }
+
+                        // Output layer
+                        float logit = network.B2[h];
+                        for (int j = 0; j < hiddenDim; j++)
+                            logit += network.W2[h, j] * cache.MLPHidden[qi, si, h, j];
+                        cache.GateLogits[qi, si, h] = logit;
+
+                        float gate = StableSigmoid(logit);
+                        cache.Gates[qi, si, h] = gate;
+
+                        float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
+                        decayBias[qi, si, h] = -(baseRate * gate) * td;
+                    }
+                }
+            }
+
+            return (decayBias, cache);
+        }
+
+        private static float StableSigmoid(float x)
+        {
+            if (x >= 0)
+            {
+                float ex = MathF.Exp(-x);
+                return 1f / (1f + ex);
+            }
+            else
+            {
+                float ex = MathF.Exp(x);
+                return ex / (1f + ex);
+            }
+        }
+
+        public float[,] ContentAwareCrossAttentionWithCache(
+            float[,] Q,
+            float[,] K,
+            float[,] V,
+            float[,] timeDiffs,
+            float[] keyTimesFromRef,
+            float[,] queryEmbeddings,
+            float[,] keyEmbeddings,
+    CallaghanDev.ML.Transformers.TACAMT.TransformerBlock block,
+            BlockCache bc,
+            int PriceEmbeddingDim,
+            int PriceNumHeads,
+            bool isTraining = false,
+            Random dropoutRng = null)
+        {
+            int psl = Q.GetLength(0);
+            int tsl = K.GetLength(0);
+            int ed = PriceEmbeddingDim;
+            int nh = PriceNumHeads;
+            int hd = ed / nh;
+            float scale = 1.0f / MathF.Sqrt(hd);
+
+            float[,,] decayBias = null;
+
+            if (timeDiffs != null)
+            {
+                var (bias, decayCache) = ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, block.DecayNetwork, isTraining, dropoutRng);
+                decayBias = bias;
+                bc.DecayCache = decayCache;
+            }
+
+            float[][,] attentionWeights;
+            float[][,] scoresPreSoftmax;
+
+            var output = ContentAwareCrossAttentionForward(Q, K, V, nh, scale, decayBias,out attentionWeights, out scoresPreSoftmax);
+
+            bc.CrossAttentionWeights = attentionWeights;
+            bc.CrossScoresPreSoftmax = scoresPreSoftmax;
+
+            return output;
+        }
     }
 }
