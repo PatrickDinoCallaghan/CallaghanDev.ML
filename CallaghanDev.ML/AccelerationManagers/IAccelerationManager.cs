@@ -194,7 +194,11 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null);
 
+        void VectorAccumulate(float[] target, float[] source);
+        void MatrixAddInPlace(float[,] target, float[,] addend);
+        void Matrix3DScaleInPlace(float[,,] matrix, float scale);
 
+        public float MatrixSquaredNorm3D(float[,,] matrix);
         void Dispose();
     }
 }

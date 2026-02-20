@@ -33,6 +33,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random, AccelerationType accelType = AccelerationType.CPU, int accelDeviceId = 0, float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8)
         {
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
+            }
+
             _accel = accel;
             _numHeads = numHeads;
             _embeddingDim = embeddingDim;

@@ -23,6 +23,10 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private readonly int _numHeads;
         public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random, AccelerationType accelType = AccelerationType.CPU, int accelDeviceId = 0, float l2Lambda = 0.01f)
         {
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
+            }
             _numHeads = numHeads;
             _embeddingDim = embeddingDim;
 

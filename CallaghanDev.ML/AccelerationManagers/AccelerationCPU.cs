@@ -1495,5 +1495,50 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return output;
         }
+
+
+        public void VectorAccumulate(float[] target, float[] source) => AccumulateVectorGradients(target, source);
+
+        public void MatrixAddInPlace(float[,] target, float[,] addend) => MatrixAccumulate(target, addend);
+
+        public void Matrix3DScaleInPlace(float[,,] matrix, float scale)
+        {
+            int d0 = matrix.GetLength(0);
+            int d1 = matrix.GetLength(1);
+            int d2 = matrix.GetLength(2);
+
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    for (int k = 0; k < d2; k++)
+                    {
+
+                        matrix[i, j, k] *= scale;
+                    }
+                }
+            }
+        }
+
+        public float MatrixSquaredNorm3D(float[,,] matrix)
+        {
+            float sum = 0;
+            int d0 = matrix.GetLength(0);
+            int d1 = matrix.GetLength(1);
+            int d2 = matrix.GetLength(2);
+            for (int i = 0; i < d0; i++)
+            {
+
+                for (int j = 0; j < d1; j++)
+                {
+                    for (int k = 0; k < d2; k++)
+                    {
+                        sum += matrix[i, j, k] * matrix[i, j, k];
+                    }
+                }
+            }
+            return sum;
+        }
     }
+
 }

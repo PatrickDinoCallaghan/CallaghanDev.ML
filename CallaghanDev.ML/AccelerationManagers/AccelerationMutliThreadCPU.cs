@@ -16,7 +16,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         // Parallel.For on tiny arrays.
         private const int PARALLEL_THRESHOLD = 512;
 
-        private const bool AlwaysParallel = true;
+        private const bool AlwaysParallel = false; //Just for testing purposes. Forgot to turn it off.
 
         private AccelerationCPU _singleThreadCPU = null;
         public AccelerationMutliThreadCPU()
@@ -2257,8 +2257,59 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return output;
         }
+        public void VectorAccumulate(float[] target, float[] source)  => AccumulateVectorGradients(target, source);
 
+        public void MatrixAddInPlace(float[,] target, float[,] addend)  => MatrixAccumulate(target, addend);
         public void Dispose() { }
+
+        public void Matrix3DScaleInPlace(float[,,] matrix, float scale)
+        {
+            int d0 = matrix.GetLength(0);
+            int d1 = matrix.GetLength(1);
+            int d2 = matrix.GetLength(2);
+            int total = d0 * d1 * d2;
+
+            if (!ShouldParallelize(total))
+            {
+                _singleThreadCPU.Matrix3DScaleInPlace(matrix, scale);
+                return;
+            }
+
+            Parallel.For(0, d0, _parallelOptions, i =>
+            {
+                for (int j = 0; j < d1; j++)
+                    for (int k = 0; k < d2; k++)
+                        matrix[i, j, k] *= scale;
+            });
+        }
+        public float MatrixSquaredNorm3D(float[,,] matrix)
+        {
+            int d0 = matrix.GetLength(0);
+            int d1 = matrix.GetLength(1);
+            int d2 = matrix.GetLength(2);
+            int total = d0 * d1 * d2;
+
+            if (!ShouldParallelize(total))
+                return _singleThreadCPU.MatrixSquaredNorm3D(matrix);
+
+            float sum = 0;
+            object lockObj = new object();
+
+            Parallel.For(0, d0, _parallelOptions,
+                () => 0.0f,
+                (i, state, localSum) =>
+                {
+                    for (int j = 0; j < d1; j++)
+                        for (int k = 0; k < d2; k++)
+                            localSum += matrix[i, j, k] * matrix[i, j, k];
+                    return localSum;
+                },
+                localSum => { lock (lockObj) { sum += localSum; } }
+            );
+
+            return sum;
+        }
+
 
     }
 }

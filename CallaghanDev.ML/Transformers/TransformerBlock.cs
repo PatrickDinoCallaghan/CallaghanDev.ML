@@ -26,6 +26,11 @@ namespace CallaghanDev.ML.Transformers
             _embeddingDim = config.EmbeddingDim;
             _accel = accel;
 
+            if (_embeddingDim % config.NumHeads != 0)
+            {
+                throw new InvalidOperationException($"EmbeddingDim ({_embeddingDim}) must be divisible by NumHeads ({config.NumHeads})");
+            }
+
             Attention = new MultiHeadAttention(config.EmbeddingDim, config.NumHeads, accel, random);
 
             var ffnParams = new Parameters

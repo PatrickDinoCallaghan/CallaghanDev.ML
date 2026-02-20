@@ -73,7 +73,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int> _decayMemAttnDropoutKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnWeightedSumKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnOutputProjKernel;
-
+        private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, float> _mat3DScaleInPlaceKernel;
 
         #region Content aware decay forward only
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>> _decayFinalBiasKernel;
@@ -107,7 +107,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 _accelerator = context.CreateCudaAccelerator(deviceIndex);
             }
-
 
             _dotKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>>(DotKernel);
             _dotTransposedKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(DotTransposedKernel);
@@ -148,6 +147,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             _computeMemoryAttentionScoresKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(ComputeMemoryAttentionScoresKernel);
             _projectOutputBatchKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(ProjectOutputBatchKernel);
 
+            _mat3DScaleInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, float>(Mat3DScaleInPlaceKernel);
 
             #region Content aware decay forward only
 
@@ -537,6 +537,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                 float xMinusMean = input[batch, j] - mean[batch];
                 dInput[batch, j] = dNorm * invStd + dVar * 2.0f * xMinusMean * invN + dMean * invN;
             }
+        }
+        private static void Mat3DScaleInPlaceKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> mat, float scale)
+        {
+            mat[idx] *= scale;
         }
 
         #region ContentAwareDecayForward Kernels
@@ -2844,6 +2848,60 @@ namespace CallaghanDev.ML.AccelerationManagers
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
 
             return output;
+        }
+
+        public void VectorAccumulate(float[] target, float[] source) => AccumulateVectorGradients(target, source);
+
+        public void MatrixAddInPlace(float[,] target, float[,] addend) => MatrixAccumulate(target, addend);
+
+
+        public void Matrix3DScaleInPlace(float[,,] matrix, float scale)
+        {
+            int d0 = matrix.GetLength(0);
+            int d1 = matrix.GetLength(1);
+            int d2 = matrix.GetLength(2);
+
+            var buf = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
+            try
+            {
+                buf.CopyFromCPU(matrix);
+                _mat3DScaleInPlaceKernel(new Index3D(d0, d1, d2), buf.View, scale);
+                buf.CopyToCPU(matrix);
+            }
+            finally
+            {
+                buf.Dispose();
+            }
+        }
+
+        public float MatrixSquaredNorm3D(float[,,] matrix)
+        {
+            int d0 = matrix.GetLength(0);
+            int d1 = matrix.GetLength(1);
+            int d2 = matrix.GetLength(2);
+
+            // Mirrors the existing MatrixSquaredNorm pattern (line ~1639):
+            // ILGPU doesn't expose a single-pass parallel reduction with the existing kernel
+            // convention, so we upload to verify transfer overhead is accounted for in the
+            // pipeline, then copy back and reduce on the CPU — consistent with the 2D version.
+            var buf = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
+            try
+            {
+                buf.CopyFromCPU(matrix);
+                var data = new float[d0, d1, d2];
+                buf.CopyToCPU(data);
+
+                float sum = 0;
+                for (int i = 0; i < d0; i++)
+                    for (int j = 0; j < d1; j++)
+                        for (int k = 0; k < d2; k++)
+                            sum += data[i, j, k] * data[i, j, k];
+                return sum;
+            }
+            finally
+            {
+                buf.Dispose();
+            }
         }
     }
 }
