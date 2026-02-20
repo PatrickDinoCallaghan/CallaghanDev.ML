@@ -8,7 +8,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 {
     public class MultimodalTrainingConfig
     {
-        public float LearningRate { get; set; } = 0.0005f;
+        public float LearningRate { get; set; } = 0; // auto-calculated from Epochs
+        //public int WarmUpEpochs { get; set; } = 5;
         public int BatchSize { get; set; } = 4;
         public int Epochs { get; set; } = 50;
         public bool UseGradientClipping { get; set; } = true;

@@ -12,9 +12,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             AccelerationConsistencyTests accelerationConsistencyTests = new AccelerationConsistencyTests();
             accelerationConsistencyTests.RunAllTests();
 
+
             TACMATests tACMATests = new TACMATests();
 
             tACMATests.RunAllTests();
+
 
 
             Tests tt = new Tests();

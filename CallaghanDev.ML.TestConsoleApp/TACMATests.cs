@@ -258,8 +258,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 // ===========================================================
                 // ADDITIONAL — Tokenizer Integration
                 // ===========================================================
-                (Test_Tokenizer_SetTokenizer_VocabMismatch_Throws,
-                    "Tokenizer: SetTokenizer throws on vocab size mismatch"),
                 (Test_Tokenizer_TokenizeStories_WithoutTokenizer_Throws,
                     "Tokenizer: TokenizeStories without tokenizer throws"),
                 

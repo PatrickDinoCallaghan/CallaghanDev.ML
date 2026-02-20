@@ -72,7 +72,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnSoftmaxKernel;
         private readonly Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int> _decayMemAttnDropoutKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnWeightedSumKernel;
-        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnOutputProjKernel;
+        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _decayMemAttnOutputProjKernel;
 
 
         #region Content aware decay forward only
@@ -87,7 +87,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, int> _extractHeadQKVKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float> _contentAwareScoresKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _addDecayBiasKernel;
-        private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareSoftmaxKernel;
+        private readonly Action<Index1D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareSoftmaxKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareWeightedSumKernel;
         private readonly Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int, int> _assembleHeadOutputKernel;
         #endregion
@@ -160,19 +160,28 @@ namespace CallaghanDev.ML.AccelerationManagers
             _decayMemAttnSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnSoftmaxKernel);
             _decayMemAttnDropoutKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int>(DecayMemAttnDropoutKernel);
             _decayMemAttnWeightedSumKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnWeightedSumKernel);
-            _decayMemAttnOutputProjKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnOutputProjKernel);
+            //_decayMemAttnOutputProjKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnOutputProjKernel);
             _decayMLPInputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMLPInputKernel);
             _decayMLPHiddenKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMLPHiddenKernel);
             _decayMLPDropoutKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float, float, int>(DecayMLPDropoutKernel);
             _decayMLPOutputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMLPOutputKernel);
             _decayFinalBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView3D<float, Stride3D.DenseXY>>(DecayFinalBiasKernel);
+            _decayMemAttnOutputProjKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(DecayMemAttnOutputProjKernel);
+
             #endregion
 
             #region Content aware cross attention forward
             _extractHeadQKVKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, int>(ExtractHeadQKVKernel);
             _contentAwareScoresKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float>(ContentAwareScoresKernel);
+           
+            
+           
             _addDecayBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(AddDecayBiasKernel);
-            _contentAwareSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareSoftmaxKernel);
+            
+            
+            _contentAwareSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareSoftmaxKernel);
+            
+            
             _contentAwareWeightedSumKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareWeightedSumKernel);
             _assembleHeadOutputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int, int>(AssembleHeadOutputKernel);
             #endregion
@@ -676,7 +685,13 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
 
-        private static void DecayMemAttnOutputProjKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> memAttnOutput, ArrayView3D<float, Stride3D.DenseXY> outputW, ArrayView2D<float, Stride2D.DenseX> outputB, ArrayView3D<float, Stride3D.DenseXY> refinedKey)
+        private static void DecayMemAttnOutputProjKernel(
+            Index2D idx,
+            ArrayView3D<float, Stride3D.DenseXY> memAttnOutput,
+            ArrayView3D<float, Stride3D.DenseXY> outputW,
+            ArrayView2D<float, Stride2D.DenseX> outputB,
+            ArrayView3D<float, Stride3D.DenseXY> keyProj,
+            ArrayView3D<float, Stride3D.DenseXY> refinedKey)
         {
             int h = idx.X;
             int s = idx.Y;
@@ -687,7 +702,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 float val = outputB[h, p];
                 for (int q = 0; q < projDim; q++)
                     val += outputW[h, p, q] * memAttnOutput[h, s, q];
-                refinedKey[h, s, p] = val;
+                refinedKey[h, s, p] = val + keyProj[h, s, p];
             }
         }
 
@@ -836,9 +851,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             float max = float.NegativeInfinity;
             for (int j = 0; j < cols; j++)
             {
-                // Convert int to bool: 0 = false, non-zero = true
+
                 if (!hasMask || mask[row, j] != 0)
+                {
                     max = XMath.Max(max, input[row, j]);
+                }
             }
 
             float sum = 0.0f;
@@ -854,7 +871,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             for (int j = 0; j < cols; j++)
+            {
                 output[row, j] /= sum;
+            }
         }
         private static void LayerNormKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, float epsilon)
         {
@@ -973,7 +992,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             output[h, i, j] = scores[h, i, j] + decayBias[h, i, j];
         }
 
-        private static void ContentAwareSoftmaxKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> weights)
+        /*private static void ContentAwareSoftmaxKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> weights)
         {
             int h = 0;      // head index
             int i = idx.X;  // query position
@@ -998,8 +1017,37 @@ namespace CallaghanDev.ML.AccelerationManagers
             if (sumExp > 0f)
                 for (int j = 0; j < seqLenK; j++)
                     weights[h, i, j] /= sumExp;
-        }
+        }*/
+        static void ContentAwareSoftmaxKernel(Index1D q, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> weights)
+        {
+            int h = 0; // because your buffers are [1, seqLenQ, seqLenK]
+            int seqLenK = (int)scores.Extent.Z;
 
+            float maxVal = float.NegativeInfinity;
+            for (int k = 0; k < seqLenK; k++)
+            {
+                float v = scores[h, q, k];
+                if (v > maxVal)
+                {
+                    maxVal = v;
+
+                }
+            }
+                float sum = 0.0f;
+            for (int k = 0; k < seqLenK; k++)
+            {
+                float e = XMath.Exp(scores[h, q, k] - maxVal);
+                weights[h, q, k] = e;
+                sum += e;
+            }
+
+            float inv = 1.0f / XMath.Max(sum, 1e-20f);
+
+            for (int k = 0; k < seqLenK; k++)
+            {
+                weights[h, q, k] *= inv;
+            }
+        }
         private static void ContentAwareWeightedSumKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView3D<float, Stride3D.DenseXY> V_head, ArrayView3D<float, Stride3D.DenseXY> output)
         {
             int h = 0;      // head index
@@ -1009,7 +1057,9 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             float sum = 0f;
             for (int j = 0; j < seqLenK; j++)
+            {
                 sum += weights[h, i, j] * V_head[h, j, d];
+            }
 
             output[h, i, d] = sum;
         }
@@ -1235,6 +1285,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
 
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
+            }
+
             int headDim = embeddingDim / numHeads;
 
             var concatenated = new float[seqLenQ, embeddingDim];
@@ -1295,6 +1350,9 @@ namespace CallaghanDev.ML.AccelerationManagers
 
 
             int headDim = embeddingDim / numHeads;
+
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
 
             var dQ_full = new float[seqLenQ, embeddingDim];
             var dK_full = new float[seqLenK, embeddingDim];
@@ -2341,14 +2399,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
         #region ContentAwareDecayForward
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
-    float[,] queryEmbeddings,
-    float[,] keyEmbeddings,
-    float[,] timeDiffs,
-    float[] keyTimesFromRef,
-    ContentAwareDecayNetwork network,
-    bool isTraining = false,
-    Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
         {
             int queryLen = timeDiffs.GetLength(0);
             int keyLen = timeDiffs.GetLength(1);
@@ -2364,15 +2415,12 @@ namespace CallaghanDev.ML.AccelerationManagers
             bool useMLPDrop = isTraining && network.MLPDropout > 0 && dropoutRng != null;
             int dropoutSeed = dropoutRng?.Next() ?? 12345;
 
-            int flatSize = queryLen * keyLen;  // Flatten 4D arrays
+            int flatSize = queryLen * keyLen;
 
-            // Allocate GPU buffers
             var bufQueryEmb = _accelerator.Allocate2DDenseX<float>(new Index2D(queryLen, contentDim));
             var bufKeyEmb = _accelerator.Allocate2DDenseX<float>(new Index2D(keyLen, contentDim));
             var bufTimeDiffs = _accelerator.Allocate2DDenseX<float>(new Index2D(queryLen, keyLen));
             var bufKeyTimes = _accelerator.Allocate1D<float>(keyLen);
-
-            // Network weights
             var bufQProjW = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, projDim, contentDim));
             var bufQProjB = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, projDim));
             var bufKProjW = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, projDim, contentDim));
@@ -2387,8 +2435,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             var bufW2 = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads, hiddenDim));
             var bufB2 = _accelerator.Allocate1D<float>(numHeads);
             var bufLogBaseRate = _accelerator.Allocate1D<float>(numHeads);
-
-            // Intermediate results
             var bufQueryProj = _accelerator.Allocate2DDenseX<float>(new Index2D(numHeads * projDim, queryLen));
             var bufKeyProj = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
             var bufTimeRaw = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, rawDim));
@@ -2397,29 +2443,25 @@ namespace CallaghanDev.ML.AccelerationManagers
             var bufMemAttnK = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
             var bufMemAttnScores = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen));
             var bufMemAttnWeights = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen));
-            var bufMemAttnDropMask = useMemAttnDrop ? _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen)) : null;
+            var bufMemAttnDropMask = useMemAttnDrop
+                ? _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, keyLen)) : null;
             var bufMemAttnOut = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
             var bufRefinedKey = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, keyLen, projDim));
-
-            // MLP buffers - flattened from 4D to 3D
             var bufMLPInput = _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, mlpInputDim));
             var bufMLPPreAct = _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim));
             var bufMLPHidden = _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim));
-            var bufMLPDropMask = useMLPDrop ? _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim)) : null;
-
+            var bufMLPDropMask = useMLPDrop
+                ? _accelerator.Allocate3DDenseXY<float>(new Index3D(flatSize, numHeads, hiddenDim)) : null;
             var bufGateLogits = _accelerator.Allocate3DDenseXY<float>(new Index3D(queryLen, keyLen, numHeads));
             var bufGates = _accelerator.Allocate3DDenseXY<float>(new Index3D(queryLen, keyLen, numHeads));
             var bufDecayBias = _accelerator.Allocate3DDenseXY<float>(new Index3D(queryLen, keyLen, numHeads));
 
             try
             {
-                // Copy inputs to GPU
                 bufQueryEmb.CopyFromCPU(queryEmbeddings);
                 bufKeyEmb.CopyFromCPU(keyEmbeddings);
                 bufTimeDiffs.CopyFromCPU(timeDiffs);
                 bufKeyTimes.CopyFromCPU(keyTimesFromRef);
-
-                // Copy network weights to GPU
                 bufQProjW.CopyFromCPU(network.QueryProjection);
                 bufQProjB.CopyFromCPU(network.QueryProjectionBias);
                 bufKProjW.CopyFromCPU(network.KeyProjection);
@@ -2435,45 +2477,48 @@ namespace CallaghanDev.ML.AccelerationManagers
                 bufB2.CopyFromCPU(network.B2);
                 bufLogBaseRate.CopyFromCPU(network.LogBaseDecayRate);
 
-                // Execute GPU kernels in sequence
+                _decayProjectQueriesKernel(new Index2D(numHeads, queryLen),
+                    bufQueryEmb.View, bufQProjW.View, bufQProjB.View, bufQueryProj.View);
+                _decayProjectKeysKernel(new Index2D(numHeads, keyLen),
+                    bufKeyEmb.View, bufKProjW.View, bufKProjB.View, bufKeyProj.View);
 
-                // 1. Project queries and keys
-                _decayProjectQueriesKernel(new Index2D(numHeads, queryLen), bufQueryEmb.View, bufQProjW.View, bufQProjB.View, bufQueryProj.View);
-                _decayProjectKeysKernel(new Index2D(numHeads, keyLen), bufKeyEmb.View, bufKProjW.View, bufKProjB.View, bufKeyProj.View);
+                _decayTimeEncodingRawKernel(new Index2D(numHeads, keyLen),
+                    bufKeyTimes.View, bufTimeLogFreq.View, bufTimeRaw.View);
+                _decayTimeEncodingProjKernel(new Index2D(numHeads, keyLen),
+                    bufTimeRaw.View, bufTimeProj.View, bufTimeProjB.View, bufTimeEnc.View);
 
-                // 2. Time encoding
-                _decayTimeEncodingRawKernel(new Index2D(numHeads, keyLen), bufKeyTimes.View, bufTimeLogFreq.View, bufTimeRaw.View);
-                _decayTimeEncodingProjKernel(new Index2D(numHeads, keyLen), bufTimeRaw.View, bufTimeProj.View, bufTimeProjB.View, bufTimeEnc.View);
+                _decayMemAttnQKInputKernel(new Index2D(numHeads, keyLen),
+                    bufKeyProj.View, bufTimeEnc.View, bufMemAttnQ.View);
+                _decayMemAttnQKInputKernel(new Index2D(numHeads, keyLen),
+                    bufKeyProj.View, bufTimeEnc.View, bufMemAttnK.View);
 
-                // 3. Memory attention Q/K inputs
-                _decayMemAttnQKInputKernel(new Index2D(numHeads, keyLen), bufKeyProj.View, bufTimeEnc.View, bufMemAttnQ.View);
-                _decayMemAttnQKInputKernel(new Index2D(numHeads, keyLen), bufKeyProj.View, bufTimeEnc.View, bufMemAttnK.View);
-
-                // 4. Memory attention scores
                 float memScale = 1.0f / MathF.Sqrt(projDim);
-                _decayMemAttnScoresKernel(new Index2D(numHeads, keyLen), bufMemAttnQ.View, bufMemAttnK.View, bufMemAttnScores.View, memScale);
+                _decayMemAttnScoresKernel(new Index2D(numHeads, keyLen),
+                    bufMemAttnQ.View, bufMemAttnK.View, bufMemAttnScores.View, memScale);
 
-                // 5. Softmax
-                _decayMemAttnSoftmaxKernel(new Index2D(numHeads, keyLen), bufMemAttnScores.View, bufMemAttnWeights.View);
+                _decayMemAttnSoftmaxKernel(new Index2D(numHeads, keyLen),
+                    bufMemAttnScores.View, bufMemAttnWeights.View);
 
-                // 6. Dropout (if training)
                 if (useMemAttnDrop)
                 {
                     float keepProb = 1.0f - network.MemoryAttentionDropout;
                     float scale = 1.0f / keepProb;
-                    _decayMemAttnDropoutKernel(new Index3D(numHeads, keyLen, keyLen), bufMemAttnWeights.View, bufMemAttnDropMask.View, bufMemAttnWeights.View, keepProb, scale, dropoutSeed);
+                    _decayMemAttnDropoutKernel(new Index3D(numHeads, keyLen, keyLen),
+                        bufMemAttnWeights.View, bufMemAttnDropMask.View,
+                        bufMemAttnWeights.View, keepProb, scale, dropoutSeed);
                 }
 
-                // 7. Weighted sum
-                _decayMemAttnWeightedSumKernel(new Index2D(numHeads, keyLen), bufMemAttnWeights.View, bufKeyProj.View, bufMemAttnOut.View);
+                _decayMemAttnWeightedSumKernel(new Index2D(numHeads, keyLen),
+                    bufMemAttnWeights.View, bufKeyProj.View, bufMemAttnOut.View);
 
-                // 8. Output projection (refined key) + residual
-                _decayMemAttnOutputProjKernel(new Index2D(numHeads, keyLen), bufMemAttnOut.View, bufMemAttnOutW.View, bufMemAttnOutB.View, bufRefinedKey.View);
+                // FIX: pass bufKeyProj.View so the kernel adds the residual connection
+                _decayMemAttnOutputProjKernel(new Index2D(numHeads, keyLen),
+                    bufMemAttnOut.View,
+                    bufMemAttnOutW.View,
+                    bufMemAttnOutB.View,
+                    bufKeyProj.View,
+                    bufRefinedKey.View);
 
-                // Add residual connection on GPU (keyProj already in bufRefinedKey via kernel)
-                // Actually the kernel needs updating - let me add that back
-
-                // Reshape query projection from flattened to 3D (CPU operation - small overhead)
                 var queryProj3D = new float[numHeads, queryLen, projDim];
                 var queryProjFlat = new float[numHeads * projDim, queryLen];
                 bufQueryProj.CopyToCPU(queryProjFlat);
@@ -2485,31 +2530,29 @@ namespace CallaghanDev.ML.AccelerationManagers
                 var bufQueryProj3D = _accelerator.Allocate3DDenseXY<float>(new Index3D(numHeads, queryLen, projDim));
                 bufQueryProj3D.CopyFromCPU(queryProj3D);
 
-                // 9. MLP input construction
-                _decayMLPInputKernel(new Index3D(flatSize, numHeads, 1), bufQueryProj3D.View, bufRefinedKey.View, bufTimeDiffs.View, bufMLPInput.View);
+                _decayMLPInputKernel(new Index3D(flatSize, numHeads, 1),
+                    bufQueryProj3D.View, bufRefinedKey.View, bufTimeDiffs.View, bufMLPInput.View);
 
-                // 10. MLP hidden layer
-                _decayMLPHiddenKernel(new Index3D(flatSize, numHeads, hiddenDim), bufMLPInput.View, bufW1.View, bufB1.View, bufMLPPreAct.View, bufMLPHidden.View);
+                _decayMLPHiddenKernel(new Index3D(flatSize, numHeads, hiddenDim),
+                    bufMLPInput.View, bufW1.View, bufB1.View, bufMLPPreAct.View, bufMLPHidden.View);
 
-                // 11. MLP dropout (if training)
                 if (useMLPDrop)
                 {
                     float keepProb = 1.0f - network.MLPDropout;
                     float scale = 1.0f / keepProb;
-                    _decayMLPDropoutKernel(new Index3D(flatSize, numHeads, hiddenDim), bufMLPHidden.View, bufMLPDropMask.View, keepProb, scale, dropoutSeed + 1);
+                    _decayMLPDropoutKernel(new Index3D(flatSize, numHeads, hiddenDim),
+                        bufMLPHidden.View, bufMLPDropMask.View, keepProb, scale, dropoutSeed + 1);
                 }
 
-                // 12. MLP output layer (gate logits and gates)
-                _decayMLPOutputKernel(new Index2D(queryLen, keyLen), bufMLPHidden.View, bufW2.View, bufB2.View, bufGateLogits.View, bufGates.View);
+                _decayMLPOutputKernel(new Index2D(queryLen, keyLen),
+                    bufMLPHidden.View, bufW2.View, bufB2.View, bufGateLogits.View, bufGates.View);
 
-                // 13. Final decay bias
-                _decayFinalBiasKernel(new Index2D(queryLen, keyLen), bufGates.View, bufTimeDiffs.View, bufLogBaseRate.View, bufDecayBias.View);
+                _decayFinalBiasKernel(new Index2D(queryLen, keyLen),
+                    bufGates.View, bufTimeDiffs.View, bufLogBaseRate.View, bufDecayBias.View);
 
-                // Copy results back to CPU
                 var decayBias = new float[queryLen, keyLen, numHeads];
                 bufDecayBias.CopyToCPU(decayBias);
 
-                // Build cache (copy all intermediate results back)
                 var cache = new ContentAwareDecayCache
                 {
                     QueryEmbeddings = queryEmbeddings,
@@ -2545,17 +2588,14 @@ namespace CallaghanDev.ML.AccelerationManagers
                 bufGateLogits.CopyToCPU(cache.GateLogits);
                 bufGates.CopyToCPU(cache.Gates);
 
-                // Copy flattened MLP results and reshape to 4D for cache
                 var mlpInputFlat = new float[flatSize, numHeads, mlpInputDim];
                 var mlpPreActFlat = new float[flatSize, numHeads, hiddenDim];
                 var mlpHiddenFlat = new float[flatSize, numHeads, hiddenDim];
-
                 bufMLPInput.CopyToCPU(mlpInputFlat);
                 bufMLPPreAct.CopyToCPU(mlpPreActFlat);
                 bufMLPHidden.CopyToCPU(mlpHiddenFlat);
 
                 for (int qi = 0; qi < queryLen; qi++)
-                {
                     for (int si = 0; si < keyLen; si++)
                     {
                         int flatIdx = qi * keyLen + si;
@@ -2570,7 +2610,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                             }
                         }
                     }
-                }
 
                 if (useMemAttnDrop)
                     bufMemAttnDropMask.CopyToCPU(cache.MemAttnDropoutMask);
@@ -2590,12 +2629,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
 
                 bufQueryProj3D.Dispose();
-
                 return (decayBias, cache);
             }
             finally
             {
-                // Dispose all buffers
                 bufQueryEmb.Dispose();
                 bufKeyEmb.Dispose();
                 bufTimeDiffs.Dispose();
@@ -2638,20 +2675,17 @@ namespace CallaghanDev.ML.AccelerationManagers
         #endregion
 
         #region Content aware cross attention forward 
-        public float[,] ContentAwareCrossAttentionForward(
-    float[,] Q,
-    float[,] K,
-    float[,] V,
-    int numHeads,
-    float scale,
-    float[,,] decayBias,
-    out float[][,] attentionWeights,
-    out float[][,] scoresPreSoftmax)
+        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale,  float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
         {
             int seqLenQ = Q.GetLength(0);
             int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
+
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
+            }
 
             attentionWeights = new float[numHeads][,];
             scoresPreSoftmax = new float[numHeads][,];
@@ -2686,6 +2720,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                 {
                     int startIdx = head * headDim;
 
+                    bufWeights.MemSetToZero();
+
                     _extractHeadQKVKernel(new Index2D(seqLenQ, headDim), bufQ.View, bufQ_head.View, headDim, startIdx);
                     _extractHeadQKVKernel(new Index2D(seqLenK, headDim), bufK.View, bufK_head.View, headDim, startIdx);
                     _extractHeadQKVKernel(new Index2D(seqLenK, headDim), bufV.View, bufV_head.View, headDim, startIdx);
@@ -2710,12 +2746,13 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
 
                         var scores = new float[1, seqLenQ, seqLenK];
-                        bufScores.CopyToCPU(scores);
-                        bufScoresWithBias.CopyFromCPU(scores);
+
+                        bufScores.CopyTo(bufScoresWithBias);
+
                     }
-
-                    _contentAwareSoftmaxKernel(new Index2D(seqLenQ, 1), bufScoresWithBias.View, bufWeights.View);
-
+                    //_contentAwareSoftmaxKernel(seqLenQ, bufScoresWithBias.View, bufWeights.View);
+                    // _contentAwareSoftmaxKernel(new Index2D(seqLenQ, seqLenK), bufScoresWithBias.View, bufWeights.View);
+                    _contentAwareSoftmaxKernel(new Index1D(seqLenQ), bufScoresWithBias.View, bufWeights.View);
                     _contentAwareWeightedSumKernel(new Index2D(seqLenQ, headDim), bufWeights.View, bufV_head.View, bufHeadOutput.View);
 
                     _assembleHeadOutputKernel(new Index2D(seqLenQ, headDim), bufHeadOutput.View, bufConcatenated.View, headDim, startIdx);

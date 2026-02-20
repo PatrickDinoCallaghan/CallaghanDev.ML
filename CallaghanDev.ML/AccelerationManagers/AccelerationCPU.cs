@@ -34,6 +34,11 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
         public (float[] activation, float[] derivative) ActivateLayer(float[] dot, float[] bias, ActivationType activationType)
         {
+            if (bias.Length != dot.Length)
+            {
+                throw new ArgumentException("Bias length must match dot product length");
+            }
+
             int n = dot.Length;
             var activation = new float[n];
             var derivative = new float[n];
@@ -301,6 +306,11 @@ namespace CallaghanDev.ML.AccelerationManagers
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
 
+            if (embeddingDim % numHeads != 0)
+            {
+
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
+            }
             var concatenated = new float[seqLenQ, embeddingDim];
 
             for (int head = 0; head < numHeads; head++)
@@ -352,7 +362,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
-
+            if (embeddingDim % numHeads != 0)
+            { 
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
+            }
             var dQ_full = new float[seqLenQ, embeddingDim];
             var dK_full = new float[seqLenK, embeddingDim];
             var dV_full = new float[seqLenK, embeddingDim];
@@ -999,15 +1012,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
         public void Dispose() { }
-        public float[,] ContentAwareCrossAttentionForward(
-           float[,] Q,
-           float[,] K,
-           float[,] V,
-           int numHeads,
-           float scale,
-           float[,,] decayBias,
-           out float[][,] attentionWeights,
-           out float[][,] scoresPreSoftmax)
+        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
         {
             int psl = Q.GetLength(0);
             int tsl = K.GetLength(0);

@@ -347,16 +347,14 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private float[,] CreatePositionalEncoding(int maxLen, int dim)
         {
             var pe = new float[maxLen, dim];
-
             for (int pos = 0; pos < maxLen; pos++)
             {
                 for (int i = 0; i < dim; i++)
                 {
-                    float angle = pos / MathF.Pow(10000, (2 * (i / 2)) / dim);
+                    float angle = pos / MathF.Pow(10000f, (2f * (i / 2)) / (float)dim);
                     pe[pos, i] = (i % 2 == 0) ? MathF.Sin(angle) : MathF.Cos(angle);
                 }
             }
-
             return pe;
         }
 

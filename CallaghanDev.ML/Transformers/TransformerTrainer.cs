@@ -254,6 +254,7 @@ namespace CallaghanDev.ML.Transformers
 
                     if (float.IsNaN(loss) || float.IsInfinity(loss))
                     {
+                        ZeroAllGradients();
                         continue;
                     }
 
@@ -322,9 +323,13 @@ namespace CallaghanDev.ML.Transformers
                         loss = BackwardPassCrossEntropy(output, targetSlice, cache);
                     }
 
-                    if (float.IsNaN(loss) || float.IsInfinity(loss)) continue;
+                    if (float.IsNaN(loss) || float.IsInfinity(loss))
+                    {
+                        ZeroAllGradients();
+                        continue;
+                    }
 
-                    totalLoss += loss;
+                        totalLoss += loss;
                     validCount++;
                 }
                 catch (Exception ex)
@@ -790,7 +795,8 @@ namespace CallaghanDev.ML.Transformers
             int embeddingDim = _modelConfig.EmbeddingDim;
             int numHeads = _modelConfig.NumHeads;
             int headDim = embeddingDim / numHeads;
-
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
             var dConcatenated = new float[seqLen, embeddingDim];
 
             _accel.BackpropLinearProjection(cache.AttentionOutput, dOut, attention.WO, grads.WO_Grad, grads.BiasO_Grad, dConcatenated);
@@ -814,6 +820,9 @@ namespace CallaghanDev.ML.Transformers
             int embeddingDim = _modelConfig.EmbeddingDim;
             int numHeads = _modelConfig.NumHeads;
             int headDim = embeddingDim / numHeads;
+
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
 
             var Q_noBias = _accel.BatchDotProduct(attention.WQ, input);
             var K_noBias = _accel.BatchDotProduct(attention.WK, input);

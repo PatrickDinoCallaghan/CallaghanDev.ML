@@ -97,14 +97,41 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         }
 
         /// <summary>
-        /// Attach a trained BPE tokenizer. Validates that vocab size matches config.
+        /// Attach a trained BPE tokenizer. Validates that vocab size does not exceed config.
+        /// A tokenizer with fewer tokens than TextVocabSize is allowed — the embedding
+        /// table is pre-allocated at TextVocabSize but only trained tokens get meaningful
+        /// representations. A tokenizer larger than TextVocabSize is rejected because
+        /// token IDs would index out of bounds in the embedding lookup.
         /// </summary>
         public void SetTokenizer(BPETokenizer tokenizer)
         {
-            if (tokenizer.VocabSize != _config.TextVocabSize)
-            {
-                throw new ArgumentException($"Tokenizer vocab size ({tokenizer.VocabSize}) does not match config TextVocabSize ({_config.TextVocabSize}). Either retrain the tokenizer with vocabSize={_config.TextVocabSize} or update the config.");
-            }
+            if (tokenizer.VocabSize > _config.TextVocabSize)
+                throw new ArgumentException(
+                    $"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize " +
+                    $"({_config.TextVocabSize}). Either increase TextVocabSize in the config " +
+                    $"or reduce the tokenizer target vocab size.");
+            Tokenizer = tokenizer;
+        }
+
+        /// <summary>
+        /// Train a BPE tokenizer from raw article texts and attach it to the model.
+        /// Must be called before TokenizeStories() can be used.
+        /// Safe to call on a freshly created model or after Load() if no tokenizer was saved.
+        /// </summary>
+        /// <param name="texts">Raw news article strings to train on.</param>
+        /// <param name="minFrequency">Minimum pair frequency for BPE merges. Default: 2.</param>
+        public void TrainTokenizer(string[] texts, int minFrequency = 2)
+        {
+            if (texts == null || texts.Length == 0)
+                throw new ArgumentException("Cannot train tokenizer on empty text corpus.");
+
+            var tokenizer = new BPETokenizer();
+            tokenizer.Train(texts, _config.TextVocabSize, minFrequency);
+
+            // BPETokenizer.Train may produce fewer tokens than requested if the corpus is small.
+            // That is fine — the embedding table has room for TextVocabSize entries but only
+            // the trained subset will be used. We bypass SetTokenizer's upper-bound check
+            // since we know the tokenizer was trained with TextVocabSize as the target.
             Tokenizer = tokenizer;
         }
 
@@ -157,10 +184,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             {
                 (sh, st) = EncodeStoriesWithCache(stories, cache);
             }
-            else 
-            { 
+            else
+            {
                 cache.TextFinalHidden = null;
-                cache.TextTokenIds = null; 
+                cache.TextTokenIds = null;
             }
 
             cache.StoryArrivalTimes = st;
@@ -196,7 +223,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             return t != null && t.Length > 0 ? ForwardWithCache(new[] { new NewsStory(t, 0f) }, p, c, isTraining, dropoutRng) : ForwardWithCache((NewsStory[])null, p, c, isTraining, dropoutRng);
         }
-            
+
 
         public (float[] prediction, float confidence) PredictNext(NewsStory[] stories, float[,] priceSequence)
         {
@@ -215,7 +242,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             return t != null && t.Length > 0 ? PredictNext(new[] { new NewsStory(t, 0f) }, p) : PredictNext((NewsStory[])null, p);
         }
-            
+
 
         /// <summary>
         /// Convenience: predict from raw text strings using the attached tokenizer.
@@ -233,10 +260,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var ctxTypes = new List<int>();  // Track type per entry
 
             if (NewsMemory != null) foreach (var e in NewsMemory)
-            { 
-                ctxH.Add(e.HiddenState); 
-                ctxT.Add(-(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition)); 
-                ctxTypes.Add(0); 
+            {
+                ctxH.Add(e.HiddenState);
+                ctxT.Add(-(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition));
+                ctxTypes.Add(0);
             }
 
             float[,] newSH = null;
@@ -259,10 +286,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             if (PriceMemory != null)
             {
                 foreach (var e in PriceMemory)
-                { 
-                    ctxH.Add(e.HiddenState); 
-                    ctxT.Add(-(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition)); 
-                    ctxTypes.Add(1); 
+                {
+                    ctxH.Add(e.HiddenState);
+                    ctxT.Add(-(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition));
+                    ctxTypes.Add(1);
                 }
             }
 
@@ -432,7 +459,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             // Among candidates, keep the ones with highest attention scores
             // Entries not yet queried enough get maximum score (cold-start protection)
-            var kept = candidates.OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning  ? e.AttentionScore : float.MaxValue)
+            var kept = candidates.OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning ? e.AttentionScore : float.MaxValue)
                 .Take(scorePruneCount)
                 .ToList();
 
@@ -477,29 +504,29 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
             var (sh, _) = EncodeStories(stories); int ed = _config.PriceEmbeddingDim;
             for (int i = 0; i < stories.Length; i++)
-            { 
+            {
                 var hv = new float[ed];
                 for (int d = 0; d < ed; d++)
-                { 
-                    hv[d] = sh[i, d]; 
+                {
+                    hv[d] = sh[i, d];
                 }
-                NewsMemory.Add(new NewsMemoryEntry 
-                { 
-                    HiddenState = hv, 
+                NewsMemory.Add(new NewsMemoryEntry
+                {
+                    HiddenState = hv,
                     AbsoluteTimestamp = ts + stories[i].ArrivalTime * tpp
-                }); 
+                });
             }
             LastPriceTimestamp = ts;
             PruneNewsMemory(max);
         }
 
-        public void ClearAllMemory() 
+        public void ClearAllMemory()
         {
             NewsMemory.Clear();
             PriceMemory.Clear();
             LastPriceTimestamp = 0;
         }
-        public void ClearNewsMemory() 
+        public void ClearNewsMemory()
         {
             NewsMemory.Clear();
         }
@@ -512,13 +539,12 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             for (int s = 0; s < n; s++)
             {
                 var th = ForwardTextEncoder(stories[s].TokenIds); int sl = th.GetLength(0);
-                for (int d = 0; d < ed; d++) 
-                { 
-                    float sum = 0; 
+                for (int d = 0; d < ed; d++)
+                {
+                    float sum = 0;
                     for (int t = 0; t < sl; t++)
-                    {
-                        sum += th[t, d]; sh[s, d] = sum / sl;
-                    }
+                        sum += th[t, d];
+                    sh[s, d] = sum / sl;  // mean pool — outside the t loop
                 }
                 at[s] = stories[s].ArrivalTime;
             }
@@ -536,8 +562,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 var th = ForwardTextEncoderWithCache(stories[s].TokenIds, sc);
                 cache.StoryCaches.Add(sc); cache.StoryTokenCounts[s] = stories[s].TokenIds.Length;
                 int sl = th.GetLength(0);
-                for (int d = 0; d < ed; d++) 
-                { 
+                for (int d = 0; d < ed; d++)
+                {
                     float sum = 0;
                     for (int t = 0; t < sl; t++)
                     {
@@ -558,9 +584,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             foreach (var block in PriceBlocks)
             {
                 float[,] td = null; float[] ktr = null;
-                if (ctx != null && ctxTimes != null) 
-                { 
-                    td = block.ComputeTimeDiffMatrix(sl, ctxTimes); 
+                if (ctx != null && ctxTimes != null)
+                {
+                    td = block.ComputeTimeDiffMatrix(sl, ctxTimes);
                     ktr = ctxTimes;
                 }
                 x = block.Forward(x, ctx, mask, _accel, td, ktr, isTraining: false);
@@ -677,15 +703,15 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return x;
         }
 
-        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc,  bool isTraining = false, Random dropoutRng = null)
+        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc, bool isTraining = false, Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
             int tsl = K.GetLength(0);
 
-            int PriceEmbeddingDim = _config.PriceEmbeddingDim; 
+            int PriceEmbeddingDim = _config.PriceEmbeddingDim;
             int PriceNumHeads = _config.PriceNumHeads;
 
-            return _accel.ContentAwareCrossAttentionWithCache(Q, K,V,timeDiffs,  keyTimesFromRef,  queryEmbeddings, keyEmbeddings,  block,  bc,  PriceEmbeddingDim,  PriceNumHeads,  isTraining ,  dropoutRng );
+            return _accel.ContentAwareCrossAttentionWithCache(Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings, block, bc, PriceEmbeddingDim, PriceNumHeads, isTraining, dropoutRng);
             /*
             int hd = ed / nh;
 
@@ -739,7 +765,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
                 bc.CrossAttentionWeights[h] = weights; bc.CrossScoresPreSoftmax[h] = scores;
             }*/
-           // return output;
+            // return output;
         }
         /*
         internal (float[,], float[,]) ProjectToOutput(float[,] hidden)
@@ -802,7 +828,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             int sl = tokenIds.Length; var emb = EmbedTextTokens(tokenIds, sl);
             bool[,] mask = _config.TextUseDecoderOnly ? CreateCausalMask(sl) : null;
-            var x = emb; foreach (var b in TextBlocks) x = b.Forward(x, mask); 
+            var x = emb; foreach (var b in TextBlocks) x = b.Forward(x, mask);
             return x;
         }
 
@@ -816,7 +842,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             for (int layer = 0; layer < _config.TextNumLayers; layer++)
             {
-                cache.TextLayerInputs.Add(x); 
+                cache.TextLayerInputs.Add(x);
                 var b = TextBlocks[layer];
                 var ac = cache.TextAttentionCaches[layer]; ac.Input = x;
 
@@ -854,7 +880,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     var ir = new float[ed];
 
                     for (int j = 0; j < ed; j++)
-                    { 
+                    {
                         ir[j] = n1[i, j];
                     }
 
@@ -871,7 +897,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 var (n2, m2, v2, nr2) = _accel.LayerNormForward(fr, b.LN2Gamma, b.LN2Beta);
 
-                l2c.Input = fr; 
+                l2c.Input = fr;
                 l2c.Mean = m2;
                 l2c.Variance = v2;
                 l2c.Normalized = nr2;
@@ -896,19 +922,19 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
 
             TextPositionalEncoding = CreatePositionalEncoding(_config.TextMaxSequenceLength, _config.TextEmbeddingDim);
-            var tc = new TransformerConfig 
-            { 
-                VocabSize = _config.TextVocabSize, 
-                MaxSequenceLength = _config.TextMaxSequenceLength, 
-                EmbeddingDim = _config.TextEmbeddingDim, 
+            var tc = new TransformerConfig
+            {
+                VocabSize = _config.TextVocabSize,
+                MaxSequenceLength = _config.TextMaxSequenceLength,
+                EmbeddingDim = _config.TextEmbeddingDim,
                 NumHeads = _config.TextNumHeads,
-                NumLayers = _config.TextNumLayers, 
+                NumLayers = _config.TextNumLayers,
                 FeedForwardDim = _config.TextFeedForwardDim,
                 FFNActivationType = _config.FFNActivationType,
                 UseDecoderOnly = _config.TextUseDecoderOnly,
                 AccelerationType = _config.AccelerationType,
                 AccelerationDeviceId = _config.AccelerationDeviceId,
-                L2RegulationLamda = _config.L2RegulationLamda 
+                L2RegulationLamda = _config.L2RegulationLamda
             };
 
             TextBlocks = new Transformers.TransformerBlock[_config.TextNumLayers];
@@ -931,15 +957,15 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             {
                 PriceBlocks[i] = new TransformerBlock(
                     _config.PriceEmbeddingDim,
-                    _config.PriceNumHeads, 
+                    _config.PriceNumHeads,
                     _config.PriceFeedForwardDim,
-                    _config.FFNActivationType, 
-                    _accel, 
-                    _random, 
+                    _config.FFNActivationType,
+                    _accel,
+                    _random,
                     _config.AccelerationType,
                     _config.AccelerationDeviceId,
-                    _config.L2RegulationLamda, 
-                    _config.DecayProjectionDim, 
+                    _config.L2RegulationLamda,
+                    _config.DecayProjectionDim,
                     _config.DecayHiddenDim,
                     _config.DecayMemAttnDropout,
                     _config.DecayMLPDropout,
@@ -951,7 +977,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private void InitOutputHead()
         {
             int ed = _config.PriceEmbeddingDim;
-            OutputProjection = new float[_config.OutputDim, ed]; 
+            OutputProjection = new float[_config.OutputDim, ed];
             OutputBias = new float[_config.OutputDim];
 
             float std = MathF.Sqrt(2.0f / (ed + _config.OutputDim));
@@ -964,9 +990,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
             if (_config.UseConfidenceHead)
-            { 
+            {
                 ConfidenceProjection = new float[1, ed];
-                ConfidenceBias = new float[1]; 
+                ConfidenceBias = new float[1];
                 float cs = MathF.Sqrt(2.0f / (ed + 1));
 
                 for (int j = 0; j < ed; j++)
@@ -976,7 +1002,61 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
         }
 
-        private float[,] EmbedTextTokens(int[] ids, int sl) { var e = new float[sl, _config.TextEmbeddingDim]; for (int i = 0; i < sl; i++) for (int j = 0; j < _config.TextEmbeddingDim; j++) e[i, j] = TextTokenEmbedding[ids[i], j] + TextPositionalEncoding[i, j]; return e; }
+        private float[,] EmbedTextTokens(int[] ids, int sl)
+        {
+            int maxTokenId = TextTokenEmbedding.GetLength(0) - 1;
+
+            // Validate all token IDs upfront — a token ID out of range means the tokenizer
+            // and embedding table are mismatched and must be fixed, not silently papered over.
+            for (int i = 0; i < sl; i++)
+            {
+                if (ids[i] < 0 || ids[i] > maxTokenId)
+                    throw new InvalidOperationException(
+                        $"Token ID {ids[i]} at position {i} is out of bounds for embedding table " +
+                        $"(size {maxTokenId + 1}). The tokenizer vocab size exceeds TextVocabSize in " +
+                        $"the config. Increase TextVocabSize or retrain the tokenizer.");
+            }
+
+            // If the article fits within the max sequence length, embed directly.
+            if (sl <= _config.TextMaxSequenceLength)
+            {
+                var e = new float[sl, _config.TextEmbeddingDim];
+                for (int i = 0; i < sl; i++)
+                    for (int j = 0; j < _config.TextEmbeddingDim; j++)
+                        e[i, j] = TextTokenEmbedding[ids[i], j] + TextPositionalEncoding[i, j];
+                return e;
+            }
+
+            // Article is longer than TextMaxSequenceLength — process in chunks and
+            // mean-pool the hidden states so no tokens are discarded.
+            int chunkSize = _config.TextMaxSequenceLength;
+            int numChunks = (sl + chunkSize - 1) / chunkSize;
+            var pooled = new float[sl, _config.TextEmbeddingDim];
+
+            int offset = 0;
+            for (int chunk = 0; chunk < numChunks; chunk++)
+            {
+                int len = Math.Min(chunkSize, sl - offset);
+                var chunkEmb = new float[len, _config.TextEmbeddingDim];
+
+                for (int i = 0; i < len; i++)
+                    for (int j = 0; j < _config.TextEmbeddingDim; j++)
+                        chunkEmb[i, j] = TextTokenEmbedding[ids[offset + i], j] + TextPositionalEncoding[i, j];
+
+                // Run chunk through the text encoder blocks and copy hidden states back
+                bool[,] mask = _config.TextUseDecoderOnly ? CreateCausalMask(len) : null;
+                var hidden = chunkEmb;
+                foreach (var b in TextBlocks) hidden = b.Forward(hidden, mask);
+
+                for (int i = 0; i < len; i++)
+                    for (int j = 0; j < _config.TextEmbeddingDim; j++)
+                        pooled[offset + i, j] = hidden[i, j];
+
+                offset += len;
+            }
+
+            return pooled;
+        }
         private float[,] EmbedPriceSequence(float[,] ps, int sl)
         {
             var projected = _accel.BatchDotProduct(PriceInputProjection, ps);
@@ -1023,12 +1103,12 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             int ed = _config.PriceEmbeddingDim;
             float[,] newsHidden = null; float[] newsTimes = null; int numNews = 0;
             if (stories != null && stories.Length > 0)
-            { 
+            {
                 (newsHidden, newsTimes) = EncodeStoriesWithCache(stories, cache); numNews = newsHidden.GetLength(0);
             }
-            else 
-            { 
-                cache.TextFinalHidden = null; 
+            else
+            {
+                cache.TextFinalHidden = null;
                 cache.TextTokenIds = null;
             }
 
@@ -1040,24 +1120,24 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             if (totalCtx > 0)
             {
-                combinedHidden = new float[totalCtx, ed]; 
+                combinedHidden = new float[totalCtx, ed];
                 combinedTimes = new float[totalCtx];
 
                 for (int i = 0; i < numNews; i++)
                 {
-                    for (int d = 0; d < ed; d++) 
-                    { 
+                    for (int d = 0; d < ed; d++)
+                    {
                         combinedHidden[i, d] = newsHidden[i, d];
-                        combinedTimes[i] = newsTimes[i]; 
+                        combinedTimes[i] = newsTimes[i];
                     }
                 }
-                for (int i = 0; i < numPriceCtx; i++) 
-                { 
+                for (int i = 0; i < numPriceCtx; i++)
+                {
                     int ci = numNews + i;
-                    for (int d = 0; d < ed; d++) 
+                    for (int d = 0; d < ed; d++)
                     {
-                        combinedHidden[ci, d] = priceCtxHidden[i, d]; 
-                        combinedTimes[ci] = priceCtxTimes[i]; 
+                        combinedHidden[ci, d] = priceCtxHidden[i, d];
+                        combinedTimes[ci] = priceCtxTimes[i];
                     }
                 }
 
@@ -1142,7 +1222,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 WM(w, PriceInputProjection); WV(w, PriceInputProjectionBias);
                 for (int i = 0; i < _config.PriceNumLayers; i++) { var b = PriceBlocks[i]; WA(w, b.SelfAttention); WV(w, b.LNSelfGamma); WV(w, b.LNSelfBeta); WA(w, b.CrossAttention); WV(w, b.LNCrossGamma); WV(w, b.LNCrossBeta); WV(w, b.LNFFNGamma); WV(w, b.LNFFNBeta); b.DecayNetwork.WriteTo(w); }
                 WM(w, OutputProjection); WV(w, OutputBias);
-                if (_config.UseConfidenceHead) 
+                if (_config.UseConfidenceHead)
                 {
                     WM(w, ConfidenceProjection); WV(w, ConfidenceBias);
                 }
@@ -1176,7 +1256,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public static Model Load(string dir)
         {
             var d = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(System.IO.File.ReadAllText(System.IO.Path.Combine(dir, "config.json")));
-            
+
             var cfg = new Config
             {
                 TextVocabSize = d["TextVocabSize"].GetInt32(),

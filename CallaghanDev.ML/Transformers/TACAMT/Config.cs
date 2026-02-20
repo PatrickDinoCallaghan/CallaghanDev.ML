@@ -17,7 +17,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// Maximum sequence length for text inputs.
         /// Determines the size of positional encoding tables.
         /// </summary>
-        public int TextMaxSequenceLength { get; set; } = 512;
+        public int TextMaxSequenceLength { get; set; } = 1024;//= 2048;
 
         /// <summary>
         /// Embedding dimension for text tokens.
@@ -83,7 +83,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// <summary>
         /// Number of cross-attention block layers in the price decoder.
         /// </summary>
-        public int PriceNumLayers { get; set; } = 2;
+        public int PriceNumLayers { get; set; } = 3;
 
         /// <summary>
         /// Feed-forward hidden dimension in the price decoder blocks.
@@ -145,7 +145,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// Global gradient clipping threshold. Applied after accumulating
         /// all gradients for a batch.
         /// </summary>
-        public float GradientClippingThreshold { get; set; } = 1.0f;
+        public float GradientClippingThreshold { get; set; } = 0.5f;
 
         #endregion
 
@@ -157,14 +157,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// to this dimension per head before computing decay gates.
         /// Higher = more expressive but more parameters. Default: 8
         /// </summary>
-        public int DecayProjectionDim { get; set; } = 8;
+        public int DecayProjectionDim { get; set; } = 16;
 
         /// <summary>
         /// Hidden dimension for the content-aware decay MLP.
         /// The gating MLP is: (projDim*3 + 2) -> hiddenDim -> 1.
         /// Default: 16
         /// </summary>
-        public int DecayHiddenDim { get; set; } = 16;
+        public int DecayHiddenDim { get; set; } = 32;
 
         /// <summary>
         /// Number of sinusoidal basis functions per head for multi-scale time encoding.
@@ -174,7 +174,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// scales (seconds, minutes, hours, days) simultaneously.
         /// Must be >= 1. Default: 8
         /// </summary>
-        public int DecayTimeEncodingBases { get; set; } = 8;
+        public int DecayTimeEncodingBases { get; set; } = 16;
 
         /// <summary>
         /// Dropout rate for memory attention weights in the decay network.
@@ -182,7 +182,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// from overfitting to specific memory entry patterns.
         /// Default: 0.1
         /// </summary>
-        public float DecayMemAttnDropout { get; set; } = 0.1f;
+        public float DecayMemAttnDropout { get; set; } = 0.2f;
 
         /// <summary>
         /// Dropout rate for the MLP hidden layer in the decay network.
@@ -191,7 +191,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// correlations between current prices and historical content.
         /// Default: 0.1
         /// </summary>
-        public float DecayMLPDropout { get; set; } = 0.1f;
+        public float DecayMLPDropout { get; set; } = 0.2f;
 
         /// <summary>
         /// L2 weight decay coefficient for all decay network parameters.

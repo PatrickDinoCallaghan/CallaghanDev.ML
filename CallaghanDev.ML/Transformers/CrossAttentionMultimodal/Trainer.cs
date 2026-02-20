@@ -54,15 +54,20 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         public void Train(int[][] textSequences, float[][,] priceInputs, float[][,] priceTargets, float[][] confidenceTargets = null)
         {
             int totalSamples = textSequences.Length;
+
             if (priceInputs.Length != totalSamples || priceTargets.Length != totalSamples)
+            {
                 throw new ArgumentException("All input arrays must have the same number of samples.");
+            }
 
             float currentLR = _trainConfig.LearningRate;
 
             for (int epoch = 0; epoch < _trainConfig.Epochs; epoch++)
             {
                 if (_trainConfig.Verbose)
+                {
                     Console.WriteLine($"\n=== Epoch {epoch + 1}/{_trainConfig.Epochs} ===");
+                }
 
                 var shuffled = Enumerable.Range(0, totalSamples).OrderBy(_ => _random.Next()).ToArray();
                 float epochLoss = 0;
@@ -78,18 +83,24 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     numBatches++;
 
                     if (_trainConfig.Verbose && numBatches % 10 == 0)
+                    {
                         Console.WriteLine($"  Batch {numBatches}: Loss = {batchLoss:F6}");
+                    }
                 }
 
                 float avgLoss = numBatches > 0 ? epochLoss / numBatches : 0;
                 if (_trainConfig.Verbose)
+                {
                     Console.WriteLine($"  Epoch {epoch + 1} Average Loss: {avgLoss:F6}");
+                }
 
                 if (_trainConfig.UseLearningRateDecay)
                 {
                     currentLR *= _trainConfig.LearningRateDecay;
                     if (_trainConfig.Verbose)
+                    {
                         Console.WriteLine($"  Learning rate: {currentLR:F8}");
+                    }
                 }
             }
         }
@@ -153,11 +164,21 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     var cache = new MultimodalForwardCache(_config.TextNumLayers, _config.PriceNumLayers);
                     var (predictions, confidence) = _model.ForwardWithCache(textTokens, inputSlice, cache);
 
+                    if (!IsFinite(predictions) || !IsFinite(confidence))
+                    {
+                        continue;
+                    }
+
                     float loss = BackwardPass(predictions, confidence, targetSlice, confTargetSlice, cache);
 
                     if (float.IsNaN(loss) || float.IsInfinity(loss))
                     {
                         continue;
+                    }
+                    if (!float.IsFinite(loss))
+                    {
+                        ZeroAllGradients();
+                        return 0f;
                     }
 
                     totalLoss += loss;
@@ -166,11 +187,13 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 }
                 catch (Exception ex)
                 {
+                    ZeroAllGradients();
                     if (_trainConfig.Verbose)
                     {
                         Console.WriteLine($"  WARNING: Training error on sample {idx}: {ex.Message}");
                     }
-                    continue;
+                    //Dont train this batch at all
+                    return 0f; 
                 }
             }
 
@@ -184,6 +207,22 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             UpdateAllParameters(learningRate);
             return totalLoss / validCount;
+        }
+        private bool IsFinite(float[,] matrix)
+        {
+            int rows = matrix.GetLength(0), cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+
+                    if (!float.IsFinite(matrix[i, j])) 
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
 
         private float BackwardPass(float[,] predictions, float[,] confidence, float[,] targets, float[] confTargets, MultimodalForwardCache cache)

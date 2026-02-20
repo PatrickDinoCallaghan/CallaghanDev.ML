@@ -600,6 +600,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
+
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
+
             var concatenated = new float[seqLenQ, embeddingDim];
 
             // Always parallelise across heads — each head is fully independent
@@ -616,6 +620,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
+
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads");
+
             var dQ_full = new float[seqLenQ, embeddingDim];
             var dK_full = new float[seqLenK, embeddingDim];
             var dV_full = new float[seqLenK, embeddingDim];
@@ -1956,7 +1964,14 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
 
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
+           float[,] queryEmbeddings,
+           float[,] keyEmbeddings,
+           float[,] timeDiffs,
+           float[] keyTimesFromRef,
+           ContentAwareDecayNetwork network,
+           bool isTraining = false,
+           Random dropoutRng = null)
         {
             int queryLen = timeDiffs.GetLength(0);
             int keyLen = timeDiffs.GetLength(1);
@@ -1996,13 +2011,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             bool useMLPDrop = isTraining && network.MLPDropout > 0 && dropoutRng != null;
 
             if (useMemAttnDrop)
-            {
                 cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
-            }
             if (useMLPDrop)
-            {
                 cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
-            }
 
             var decayBias = new float[queryLen, keyLen, numHeads];
 
@@ -2010,18 +2021,50 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(totalWork))
             {
-                return _singleThreadCPU.ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, network, isTraining, dropoutRng);
+                return _singleThreadCPU.ContentAwareDecayForward(
+                    queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef,
+                    network, isTraining, dropoutRng);
+            }
+
+            // FIX: derive one deterministic per-head seed from dropoutRng sequentially,
+            // before the parallel loop, so each head's draw sequence matches single-
+            // threaded CPU regardless of thread scheduling order.
+            Random[] perHeadRngs = null;
+            if ((useMemAttnDrop || useMLPDrop) && dropoutRng != null)
+            {
+                perHeadRngs = new Random[numHeads];
+                for (int h = 0; h < numHeads; h++)
+                    perHeadRngs[h] = new Random(dropoutRng.Next());
             }
 
             Parallel.For(0, numHeads, _parallelOptions, h =>
             {
-                ProcessDecayHead(h, queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, network, cache, decayBias, isTraining, useMemAttnDrop, useMLPDrop, dropoutRng, queryLen, keyLen, projDim, contentDim, hiddenDim, mlpInputDim, numBases, rawDim);
+                ProcessDecayHead(
+                    h, queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef,
+                    network, cache, decayBias,
+                    isTraining, useMemAttnDrop, useMLPDrop,
+                    perHeadRngs?[h],
+                    queryLen, keyLen, projDim, contentDim,
+                    hiddenDim, mlpInputDim, numBases, rawDim);
             });
 
             return (decayBias, cache);
         }
-
-        private void ProcessDecayHead(int h, float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, ContentAwareDecayCache cache, float[,,] decayBias, bool isTraining, bool useMemAttnDrop, bool useMLPDrop, Random dropoutRng, int queryLen, int keyLen, int projDim, int contentDim, int hiddenDim, int mlpInputDim, int numBases, int rawDim)
+        private void ProcessDecayHead(
+     int h,
+     float[,] queryEmbeddings,
+     float[,] keyEmbeddings,
+     float[,] timeDiffs,
+     float[] keyTimesFromRef,
+     ContentAwareDecayNetwork network,
+     ContentAwareDecayCache cache,
+     float[,,] decayBias,
+     bool isTraining,
+     bool useMemAttnDrop,
+     bool useMLPDrop,
+     Random dropoutRng,
+     int queryLen, int keyLen, int projDim, int contentDim,
+     int hiddenDim, int mlpInputDim, int numBases, int rawDim)
         {
             // 1. Project queries
             for (int q = 0; q < queryLen; q++)
@@ -2067,7 +2110,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
 
-            // 4. Memory interaction attention (self-attention over keys)
+            // 4. Memory interaction attention
             float memScale = 1.0f / MathF.Sqrt(projDim);
 
             for (int s = 0; s < keyLen; s++)
@@ -2100,28 +2143,22 @@ namespace CallaghanDev.ML.AccelerationManagers
                     sumExp += cache.MemAttnWeights[h, i, j];
                 }
                 if (sumExp > 0)
-                {
                     for (int j = 0; j < keyLen; j++)
                         cache.MemAttnWeights[h, i, j] /= sumExp;
-                }
 
-                // Dropout on memory attention (thread-safe RNG)
+                // FIX: no lock — dropoutRng is now a per-head-local instance
                 if (useMemAttnDrop)
                 {
                     float keepProb = 1.0f - network.MemoryAttentionDropout;
                     float dscale = 1.0f / keepProb;
-                    lock (dropoutRng)  // Thread-safe RNG access
+                    for (int j = 0; j < keyLen; j++)
                     {
-                        for (int j = 0; j < keyLen; j++)
-                        {
-                            float mask = dropoutRng.NextSingle() < keepProb ? dscale : 0f;
-                            cache.MemAttnDropoutMask[h, i, j] = mask;
-                            cache.MemAttnWeights[h, i, j] *= mask;
-                        }
+                        float mask = dropoutRng.NextSingle() < keepProb ? dscale : 0f;
+                        cache.MemAttnDropoutMask[h, i, j] = mask;
+                        cache.MemAttnWeights[h, i, j] *= mask;
                     }
                 }
 
-                // Weighted sum
                 for (int p = 0; p < projDim; p++)
                 {
                     float val = 0;
@@ -2131,7 +2168,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
 
-            // 5. Output projection (refined key)
+            // 5. Output projection + residual
             for (int s = 0; s < keyLen; s++)
             {
                 for (int p = 0; p < projDim; p++)
@@ -2143,7 +2180,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
 
-            // 6. Gating MLP (query × key pairs)
+            // 6. Gating MLP
             for (int qi = 0; qi < queryLen; qi++)
             {
                 for (int si = 0; si < keyLen; si++)
@@ -2151,7 +2188,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                     float td = timeDiffs[qi, si];
                     float logTd = MathF.Log(1f + td);
 
-                    // Build MLP input
                     int idx = 0;
                     for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
                     for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
@@ -2159,7 +2195,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                     cache.MLPInput[qi, si, h, idx++] = td;
                     cache.MLPInput[qi, si, h, idx++] = logTd;
 
-                    // Hidden layer (ReLU)
                     for (int j = 0; j < hiddenDim; j++)
                     {
                         float val = network.B1[h, j];
@@ -2168,27 +2203,23 @@ namespace CallaghanDev.ML.AccelerationManagers
                         cache.MLPHiddenPreAct[qi, si, h, j] = val;
                         float activated = val > 0 ? val : 0;
 
-                        // Dropout on MLP hidden (thread-safe RNG)
+                        // FIX: no lock — dropoutRng is now a per-head-local instance
                         if (useMLPDrop)
                         {
                             float keepProb = 1.0f - network.MLPDropout;
-                            lock (dropoutRng)  // Thread-safe RNG access
-                            {
-                                float mask = dropoutRng.NextSingle() < keepProb ? (1.0f / keepProb) : 0f;
-                                cache.MLPDropoutMask[qi, si, h, j] = mask;
-                                activated *= mask;
-                            }
+                            float mask = dropoutRng.NextSingle() < keepProb ? (1.0f / keepProb) : 0f;
+                            cache.MLPDropoutMask[qi, si, h, j] = mask;
+                            activated *= mask;
                         }
                         cache.MLPHidden[qi, si, h, j] = activated;
                     }
 
-                    // Output layer
                     float logit = network.B2[h];
                     for (int j = 0; j < hiddenDim; j++)
                         logit += network.W2[h, j] * cache.MLPHidden[qi, si, h, j];
                     cache.GateLogits[qi, si, h] = logit;
 
-                    float gate = StableSigmoid(logit);  // Use existing StableSigmoid method
+                    float gate = StableSigmoid(logit);
                     cache.Gates[qi, si, h] = gate;
 
                     float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
@@ -2196,7 +2227,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
-
         #endregion
         public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, CallaghanDev.ML.Transformers.TACAMT.TransformerBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false,  Random dropoutRng = null)
         {
