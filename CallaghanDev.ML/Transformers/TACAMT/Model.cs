@@ -177,7 +177,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return ProjectToOutput(ForwardPriceDecoder(priceSequence, sh, st));
         }
-        public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, MultimodalForwardCache cache, bool isTraining = false, Random dropoutRng = null)
+        /*public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, MultimodalForwardCache cache, bool isTraining = false, Random dropoutRng = null)
         {
             float[,] sh = null; float[] st = null;
             if (stories != null && stories.Length > 0)
@@ -206,7 +206,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     }
                 }
                 */
-                var typeIndices = new int[numNews]; // all zeros for news
+               /* var typeIndices = new int[numNews]; // all zeros for news
                 _accel.ApplyContextTypeEmbedding(sh, ContextTypeEmbedding, typeIndices);
             }
 
@@ -214,7 +214,94 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             cache.PriceFinalHidden = ph;
             return ProjectToOutput(ph);
         }
+        */
+        // Existing method — now just a wrapper
 
+        public (float[,] predictions, float[,] confidence) ForwardWithCache(
+            NewsStory[] stories,
+            float[,] priceSequence,
+            MultimodalForwardCache cache,
+            bool isTraining = false,
+            Random dropoutRng = null)
+        {
+            int sl = priceSequence.GetLength(0);
+
+            return ForwardWithCache(
+                stories,
+                priceSequence,
+                rowStart: 0,
+                rowCount: sl,
+                cache,
+                isTraining,
+                dropoutRng);
+        }
+
+
+        public (float[,] predictions, float[,] confidence) ForwardWithCache(
+            NewsStory[] stories,
+            float[,] priceSequence,
+            int rowStart,                 // NEW
+            int rowCount,                 // NEW
+            MultimodalForwardCache cache,
+            bool isTraining = false,
+            Random dropoutRng = null)
+        {
+            // --- Correctness guards ---
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+
+            if (rowStart < 0 || rowCount < 0)
+                throw new ArgumentOutOfRangeException();
+
+            if (rowStart + rowCount > priceSequence.GetLength(0))
+                throw new ArgumentException("Invalid slice bounds.");
+
+            float[,] sh = null;
+            float[] st = null;
+
+            if (stories != null && stories.Length > 0)
+            {
+                (sh, st) = EncodeStoriesWithCache(stories, cache);
+            }
+            else
+            {
+                cache.TextFinalHidden = null;
+                cache.TextTokenIds = null;
+            }
+
+            cache.StoryArrivalTimes = st;
+
+            // Apply context type embedding (identical logic)
+            if (sh != null)
+            {
+                int numNews = sh.GetLength(0);
+
+                // SPEEDUP: reuse buffer instead of allocating each call (optional)
+                var typeIndices = new int[numNews];  // still safe, tiny cost
+
+                _accel.ApplyContextTypeEmbedding(
+                    sh,
+                    ContextTypeEmbedding,
+                    typeIndices);
+            }
+             
+            var ph = ForwardPriceDecoderWithCache(
+                priceSequence,
+                rowStart,
+                rowCount,
+                sh,
+                st,
+                cache,
+                isTraining,
+                dropoutRng);
+
+            cache.PriceFinalHidden = ph;
+
+            return ProjectToOutput(ph);
+        }
+
+
+        /*
         public (float[,], float[,]) Forward(int[] t, float[,] p)
         {
             return t != null && t.Length > 0 ? Forward(new[] { new NewsStory(t, 0f) }, p) : Forward((NewsStory[])null, p);
@@ -223,7 +310,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             return t != null && t.Length > 0 ? ForwardWithCache(new[] { new NewsStory(t, 0f) }, p, c, isTraining, dropoutRng) : ForwardWithCache((NewsStory[])null, p, c, isTraining, dropoutRng);
         }
-
+        */
 
         public (float[] prediction, float confidence) PredictNext(NewsStory[] stories, float[,] priceSequence)
         {
@@ -594,6 +681,190 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return x;
         }
 
+        // Existing signature remains for compatibility.
+        // It now delegates to the new overload.
+        internal float[,] ForwardPriceDecoderWithCache(
+            float[,] priceSequence,
+            float[,] storyHidden,
+            float[] storyTimes,
+            MultimodalForwardCache cache,
+            bool isTraining = true,
+            Random dropoutRng = null)
+        {
+            int sl = priceSequence.GetLength(0);
+            return ForwardPriceDecoderWithCache(
+                priceSequence,
+                rowStart: 0,
+                rowCount: sl,
+                storyHidden: storyHidden,
+                storyTimes: storyTimes,
+                cache: cache,
+                isTraining: isTraining,
+                dropoutRng: dropoutRng);
+        }
+
+        // NEW overload: accepts rowStart/rowCount so caller can avoid SliceRows.
+        internal float[,] ForwardPriceDecoderWithCache(
+            float[,] priceSequence,
+            int rowStart,
+            int rowCount,
+            float[,] storyHidden,
+            float[] storyTimes,
+            MultimodalForwardCache cache,
+            bool isTraining = true,
+            Random dropoutRng = null)
+        {
+            // --- validate (correctness) ---
+            if (priceSequence == null) throw new ArgumentNullException(nameof(priceSequence));
+            if (rowStart < 0) throw new ArgumentOutOfRangeException(nameof(rowStart));
+            if (rowCount < 0) throw new ArgumentOutOfRangeException(nameof(rowCount));
+            if (rowStart + rowCount > priceSequence.GetLength(0))
+                throw new ArgumentException("rowStart + rowCount exceeds priceSequence row count.");
+
+            int sl = rowCount;
+            int ed = _config.PriceEmbeddingDim;
+            int nh = _config.PriceNumHeads;
+            int hd = ed / nh;
+
+            float scale = 1.0f / MathF.Sqrt(hd);
+
+            // IMPORTANT: this requires an EmbedPriceSequence overload that supports offsets.
+            // See "Methods you must change" below.
+            var emb = EmbedPriceSequence(priceSequence, rowStart, sl);
+
+            cache.PriceEmbedded = emb;
+            cache.PriceContinuousInput = priceSequence; // same as before (reference)
+
+            bool[,] selfMask = _config.PriceUseDecoderOnly ? CreateCausalMask(sl) : null;
+            var x = emb;
+
+            for (int layer = 0; layer < _config.PriceNumLayers; layer++)
+            {
+                var block = PriceBlocks[layer];
+                var bc = cache.PriceBlockCaches[layer];
+                bc.BlockInput = x;
+
+                var sQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
+                var sK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
+                var sV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
+
+                bc.SelfQ = sQ;
+                bc.SelfK = sK;
+                bc.SelfV = sV;
+
+                var sao = _accel.MultiHeadAttentionForward(sQ, sK, sV, nh, scale, selfMask);
+                bc.SelfAttnOutput = sao;
+
+                var sp = ComputeProjection(sao, block.SelfAttention.WO, block.SelfAttention.BiasO);
+                var sr = _accel.MatrixAdd(x, sp);
+                bc.SelfResidualInput = sr;
+
+                var (ns, sm, sv, sn) = _accel.LayerNormForward(sr, block.LNSelfGamma, block.LNSelfBeta);
+                bc.LNSelfCache.Input = sr;
+                bc.LNSelfCache.Mean = sm;
+                bc.LNSelfCache.Variance = sv;
+                bc.LNSelfCache.Normalized = sn;
+                bc.NormedSelf = ns;
+
+                float[,] nc;
+
+                if (storyHidden != null)
+                {
+                    float[,] td = null;
+                    float[] ktr = null;
+
+                    if (storyTimes != null)
+                    {
+                        // sl is already the logical sequence length, so time diff matrix stays correct.
+                        td = block.ComputeTimeDiffMatrix(sl, storyTimes);
+                        ktr = storyTimes;
+                        bc.TimeDiffs = td;
+                        bc.KeyTimesFromRef = ktr;
+                    }
+
+                    var cQ = ComputeProjection(ns, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
+                    var cK = ComputeProjection(storyHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
+                    var cV = ComputeProjection(storyHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+
+                    bc.CrossQ = cQ;
+                    bc.CrossK = cK;
+                    bc.CrossV = cV;
+
+                    var cao = ContentAwareCrossAttentionWithCache(
+                        cQ, cK, cV,
+                        td, ktr,
+                        ns, storyHidden,
+                        block, bc,
+                        isTraining, dropoutRng);
+
+                    bc.CrossAttnOutput = cao;
+
+                    var cp = ComputeProjection(cao, block.CrossAttention.WO, block.CrossAttention.BiasO);
+                    var cr = _accel.MatrixAdd(ns, cp);
+                    bc.CrossResidualInput = cr;
+
+                    var (ncr, cm, cvr, cn) = _accel.LayerNormForward(cr, block.LNCrossGamma, block.LNCrossBeta);
+                    bc.LNCrossCache.Input = cr;
+                    bc.LNCrossCache.Mean = cm;
+                    bc.LNCrossCache.Variance = cvr;
+                    bc.LNCrossCache.Normalized = cn;
+                    bc.NormedCross = ncr;
+
+                    nc = ncr;
+                }
+                else
+                {
+                    bc.CrossQ = null;
+                    bc.CrossK = null;
+                    bc.CrossV = null;
+                    bc.CrossAttnOutput = null;
+                    bc.TimeDiffs = null;
+                    bc.DecayCache = null;
+
+                    var (ncr, cm, cvr, cn) = _accel.LayerNormForward(ns, block.LNCrossGamma, block.LNCrossBeta);
+                    bc.LNCrossCache.Input = ns;
+                    bc.LNCrossCache.Mean = cm;
+                    bc.LNCrossCache.Variance = cvr;
+                    bc.LNCrossCache.Normalized = cn;
+                    bc.NormedCross = ncr;
+
+                    nc = ncr;
+                }
+
+                // NOTE: this still allocates ffnIn rows; speeding that up requires changes elsewhere.
+                var ffnIn = new float[sl][];
+
+                for (int i = 0; i < sl; i++)
+                {
+                    var ir = new float[ed];
+                    for (int j = 0; j < ed; j++)
+                        ir[j] = nc[i, j];
+
+                    ffnIn[i] = ir;
+                }
+
+                var ffOut = _accel.FFNForwardBatch(nc, sl, ed, block.FeedForwardNetwork.ForwardPassOnly);
+
+                bc.FFNInputRows = ffnIn;
+                bc.FFNOutput = ffOut;
+
+                var fr = _accel.MatrixAdd(nc, ffOut);
+                bc.FFNResidualInput = fr;
+
+                var (nf, fm, fv, fn) = _accel.LayerNormForward(fr, block.LNFFNGamma, block.LNFFNBeta);
+
+                bc.LNFFNCache.Input = fr;
+                bc.LNFFNCache.Mean = fm;
+                bc.LNFFNCache.Variance = fv;
+                bc.LNFFNCache.Normalized = fn;
+
+                x = nf;
+            }
+
+            return x;
+        }
+
+        /*
         internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
             int sl = priceSequence.GetLength(0), ed = _config.PriceEmbeddingDim, nh = _config.PriceNumHeads, hd = ed / nh;
@@ -672,9 +943,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         ffOut[i, j] = or2[j];
                 }
                 */
-
-
-                var ffnIn = new float[sl][];
+        /*var ffnIn = new float[sl][];
 
                 for (int i = 0; i < sl; i++)
                 {
@@ -702,7 +971,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
             return x;
         }
-
+        */
         private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc, bool isTraining = false, Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
@@ -1057,7 +1326,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return pooled;
         }
-        private float[,] EmbedPriceSequence(float[,] ps, int sl)
+        /*private float[,] EmbedPriceSequence(float[,] ps, int sl)
         {
             var projected = _accel.BatchDotProduct(PriceInputProjection, ps);
             return _accel.EmbedWithBiasAndPositional(
@@ -1066,8 +1335,40 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 PricePositionalEncoding,
                 sl,
                 _config.PriceEmbeddingDim);
+        }*/
+        // Existing method kept for compatibility
+        private float[,] EmbedPriceSequence(float[,] ps, int sl)
+        {
+            // Old behavior: assumes rows start at 0 and length == sl
+            // Delegates to new overload
+            return EmbedPriceSequence(ps, rowStart: 0, rowCount: sl);
         }
 
+        // NEW overload: offset-aware
+        private float[,] EmbedPriceSequence(float[,] ps, int rowStart, int rowCount)
+        {
+            if (ps == null) throw new ArgumentNullException(nameof(ps));
+            if (rowStart < 0) throw new ArgumentOutOfRangeException(nameof(rowStart));
+            if (rowCount < 0) throw new ArgumentOutOfRangeException(nameof(rowCount));
+            if (rowStart + rowCount > ps.GetLength(0))
+                throw new ArgumentException("rowStart + rowCount exceeds ps row count.");
+
+            // IMPORTANT:
+            // This call must only project the logical slice [rowStart .. rowStart+rowCount).
+            // That requires an offset-aware accelerator method (see below).
+            var projected = _accel.BatchDotProduct(
+                PriceInputProjection,
+                ps,
+                rowStart,
+                rowCount);
+
+            return _accel.EmbedWithBiasAndPositional(
+                projected,
+                PriceInputProjectionBias,
+                PricePositionalEncoding,
+                rowCount,                     // sl == logical slice length
+                _config.PriceEmbeddingDim);
+        }
         private float[,] CreatePositionalEncoding(int ml, int d) { var pe = new float[ml, d]; for (int p = 0; p < ml; p++) for (int i = 0; i < d; i++) { float a = p / MathF.Pow(10000, 2.0f * (i / 2) / d); pe[p, i] = (i % 2 == 0) ? MathF.Sin(a) : MathF.Cos(a); } return pe; }
         private bool[,] CreateCausalMask(int sl) { var m = new bool[sl, sl]; for (int i = 0; i < sl; i++) for (int j = 0; j <= i; j++) m[i, j] = true; return m; }
         private float[,] ComputeProjection(float[,] input, float[,] w, float[] b) { var p = _accel.BatchDotProduct(w, input); int r = p.GetLength(0), c = p.GetLength(1); var res = new float[r, c]; for (int i = 0; i < r; i++) for (int j = 0; j < c; j++) res[i, j] = p[i, j] + b[j]; return res; }

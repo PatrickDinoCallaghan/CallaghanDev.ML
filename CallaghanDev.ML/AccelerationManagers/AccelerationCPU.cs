@@ -220,26 +220,36 @@ namespace CallaghanDev.ML.AccelerationManagers
             for (int i = 0; i < rows; i++)
             {
                 float max = float.NegativeInfinity;
+
                 for (int j = 0; j < cols; j++)
                 {
                     if (mask == null || mask[i, j])
+                    {
                         max = Math.Max(max, matrix[i, j]);
+                    }
                 }
 
                 float sum = 0.0f;
                 for (int j = 0; j < cols; j++)
                 {
                     if (mask != null && !mask[i, j])
+                    {
                         result[i, j] = 0.0f;
+                    }
                     else
                     {
                         result[i, j] = MathF.Exp(matrix[i, j] - max);
                         sum += result[i, j];
                     }
                 }
+                if (sum > 0f)
+                {
+                    for (int j = 0; j < cols; j++)
+                    {
 
-                for (int j = 0; j < cols; j++)
-                    result[i, j] /= sum;
+                        result[i, j] = result[i, j] / sum;
+                    }
+                }
             }
             return result;
         }
@@ -274,29 +284,50 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
         {
-            int outputDim = weights.GetLength(0);
-            int inputDim = weights.GetLength(1);
             int seqLen = inputMatrix.GetLength(0);
 
-            if (inputMatrix.GetLength(1) != inputDim)
-                throw new ArgumentException($"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+            // Delegate to offset-aware version
+            return BatchDotProduct(weights, inputMatrix, rowStart: 0, rowCount: seqLen);
+        }
+        public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
 
-            var result = new float[seqLen, outputDim];
-            for (int i = 0; i < seqLen; i++)
+            if (rowStart < 0 || rowCount < 0)
+                throw new ArgumentOutOfRangeException();
+
+            if (rowStart + rowCount > inputMatrix.GetLength(0))
+                throw new ArgumentException("Invalid row slice.");
+
+            int outputDim = weights.GetLength(0);
+            int inputDim = weights.GetLength(1);
+
+            if (inputMatrix.GetLength(1) != inputDim)
+                throw new ArgumentException(
+                    $"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+
+            var result = new float[rowCount, outputDim];
+
+            for (int i = 0; i < rowCount; i++)
             {
+                int srcRow = rowStart + i;
+
                 for (int j = 0; j < outputDim; j++)
                 {
                     float sum = 0.0f;
+
                     for (int k = 0; k < inputDim; k++)
                     {
-                        sum += weights[j, k] * inputMatrix[i, k];
+                        sum += weights[j, k] * inputMatrix[srcRow, k];
                     }
+
                     result[i, j] = sum;
                 }
             }
+
             return result;
         }
-
         #region Multi-head attention
 
         public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
@@ -427,7 +458,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                     for (int j = 0; j < seqLenK; j++)
                     {
-                        attnWeights[i, j] /= (expSum + 1e-10f);
+                        //attnWeights[i, j] /= (expSum + 1e-10f);
+                        attnWeights[i, j] = attnWeights[i, j]/ expSum;
                     }
                 }
 
@@ -561,7 +593,9 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                     for (int k = 0; k < embeddingDim; k++)
                     {
-                        weightGrad[k, j] += input[i, k] * dOutVal;
+                        //These bugs were symetric would never have seen them
+                        //weightGrad[k, j] += input[i, k] * dOutVal;
+                        weightGrad[j, k] += dOutVal * input[i, k];
                     }
 
                     biasGrad[j] += dOutVal;
@@ -572,7 +606,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                     float sum = 0;
                     for (int j = 0; j < embeddingDim; j++)
                     {
-                        sum += dOutput[i, j] * weights[k, j];
+                        //These bugs were symetric would never have seen them
+                        //sum += dOutput[i, j] * weights[k, j];
+                        sum += dOutput[i, j] * weights[j, k];
                     }
                     dInput[i, k] += sum;
                 }
@@ -1031,7 +1067,9 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                 for (int p = 0; p < psl; p++)
                 {
-                    float mx = float.MinValue;
+                    //float mx = float.MinValue;
+                    float mx = float.NegativeInfinity;
+
 
                     for (int s = 0; s < tsl; s++)
                     {

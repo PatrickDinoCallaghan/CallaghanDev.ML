@@ -44,6 +44,43 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             LNCrossCache = new LayerNormCache();
             LNFFNCache = new LayerNormCache();
         }
+        public void Reset()
+        {
+            BlockInput = null;
+
+            // Self Attention
+            SelfQ = null;
+            SelfK = null;
+            SelfV = null;
+            SelfAttnOutput = null;
+            SelfResidualInput = null;
+            NormedSelf = null;
+
+            // Cross Attention
+            CrossQ = null;
+            CrossK = null;
+            CrossV = null;
+            CrossAttnOutput = null;
+            CrossResidualInput = null;
+            NormedCross = null;
+
+            // Time decay
+            TimeDiffs = null;
+            KeyTimesFromRef = null;
+            CrossAttentionWeights = null;
+            CrossScoresPreSoftmax = null;
+            DecayCache = null;
+
+            // FFN
+            FFNInputRows = null;
+            FFNOutput = null;
+            FFNResidualInput = null;
+
+            // Reset sub-caches (important)
+            LNSelfCache?.Reset();
+            LNCrossCache?.Reset();
+            LNFFNCache?.Reset();
+        }
     }
 
     public class CrossAttentionBlockGradients
@@ -110,7 +147,52 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public int NumNewsContext { get; set; } = 0;
         public int NumPriceContext { get; set; } = 0;
         public float[,] PriceContextHidden { get; set; }
+        public void Reset()
+        {
+            // Text tensors
+            TextEmbedded = null;
+            TextTokenIds = null;
+            TextFinalHidden = null;
 
+            TextLayerInputs.Clear();
+            TextFFNOutputs.Clear();
+            TextFFNInputs.Clear();
+
+            // Reset per-layer caches (already allocated in ctor)
+            for (int i = 0; i < TextAttentionCaches.Count; i++)
+            {
+                TextAttentionCaches[i].Reset();
+                TextLN1Caches[i].Reset();
+                TextLN2Caches[i].Reset();
+            }
+
+            // Story data
+            if (StoryCaches != null)
+            {
+                foreach (var storyCache in StoryCaches)
+                {
+                    storyCache?.Reset();  // FIX: Reset each sub-cache before discarding the list
+                }
+                StoryCaches.Clear();
+            }
+            StoryTokenCounts = null;
+            StoryArrivalTimes = null;
+
+            // Price tensors
+            PriceEmbedded = null;
+            PriceContinuousInput = null;
+            PriceFinalHidden = null;
+            PriceContextHidden = null;
+
+            NumNewsContext = 0;
+            NumPriceContext = 0;
+
+            // Reset block caches (already allocated)
+            for (int i = 0; i < PriceBlockCaches.Count; i++)
+            {
+                PriceBlockCaches[i].Reset();
+            }
+        }
         public MultimodalForwardCache(int textNumLayers, int priceNumLayers)
         {
             TextLayerInputs = new List<float[,]>();
@@ -135,5 +217,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 PriceBlockCaches.Add(new BlockCache());
             }
         }
+
     }
 }

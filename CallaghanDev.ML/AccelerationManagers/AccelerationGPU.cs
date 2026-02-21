@@ -54,7 +54,14 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Dictionary<int, (MemoryBuffer1D<float, Stride1D.Dense> b, MemoryBuffer1D<float, Stride1D.Dense> d)> _updBCache = new();
         private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> mat, MemoryBuffer1D<float, Stride1D.Dense> vec, MemoryBuffer1D<float, Stride1D.Dense> res)> _dotTransposedCache = new();
         private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
-        private readonly Dictionary<(int outputDim, int inputDim, int seqLen),(MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
+        private readonly Dictionary<
+          (int outputDim, int inputDim, int rowCount),
+          (
+              MemoryBuffer2D<float, Stride2D.DenseX> w,
+              MemoryBuffer2D<float, Stride2D.DenseX> inp,
+              MemoryBuffer2D<float, Stride2D.DenseX> res
+          )
+      > _batchDotCache = new();
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _applyContextTypeEmbeddingKernel;
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _computeTimeDiffMatrixKernel;
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _meanPoolRowsKernel;
@@ -1252,37 +1259,63 @@ namespace CallaghanDev.ML.AccelerationManagers
                 bufIn.Dispose(); bufGamma.Dispose(); bufBeta.Dispose(); bufOut.Dispose();
             }
         }
-
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
         {
+            return BatchDotProduct(weights, inputMatrix, 0, inputMatrix.GetLength(0));
+        }
+        public float[,] BatchDotProduct(
+        float[,] weights,
+        float[,] inputMatrix,
+        int rowStart,
+        int rowCount)
+        {
+            if (rowStart < 0 || rowCount < 0)
+                throw new ArgumentOutOfRangeException();
+
             int outputDim = weights.GetLength(0);
             int inputDim = weights.GetLength(1);
-            int seqLen = inputMatrix.GetLength(0);
 
             if (inputMatrix.GetLength(1) != inputDim)
                 throw new ArgumentException($"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
 
-            var key = (outputDim, inputDim, seqLen);
+            if (rowStart + rowCount > inputMatrix.GetLength(0))
+                throw new ArgumentException("Invalid row slice.");
+
+            var key = (outputDim, inputDim, rowCount);
+
             if (!_batchDotCache.TryGetValue(key, out var bufs))
             {
                 bufs = (
                     _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim)),
-                    _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, inputDim)),
-                    _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, outputDim))
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, inputDim)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, outputDim))
                 );
+
                 _batchDotCache[key] = bufs;
             }
 
             bufs.w.CopyFromCPU(weights);
-            bufs.inp.CopyFromCPU(inputMatrix);
 
-            _batchDotKernel(new Index2D(seqLen, outputDim), bufs.w.View, bufs.inp.View, bufs.res.View);
+            // ✅ Create temporary CPU slice (required)
+            var slice = new float[rowCount, inputDim];
 
-            var result = new float[seqLen, outputDim];
+            for (int i = 0; i < rowCount; i++)
+                for (int j = 0; j < inputDim; j++)
+                    slice[i, j] = inputMatrix[rowStart + i, j];
+
+            bufs.inp.CopyFromCPU(slice);
+
+            _batchDotKernel(
+                new Index2D(rowCount, outputDim),
+                bufs.w.View,
+                bufs.inp.View,
+                bufs.res.View);
+
+            var result = new float[rowCount, outputDim];
             bufs.res.CopyToCPU(result);
+
             return result;
         }
- 
         public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
         {
             int seqLenQ = Q.GetLength(0);

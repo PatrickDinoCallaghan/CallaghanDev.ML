@@ -56,6 +56,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// </summary>
         float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix);
 
+        float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount);
         /// <summary>
         /// Parallel per-head attention forward: computes all heads concurrently.
         /// Returns concatenated [seqLen, embeddingDim] output.

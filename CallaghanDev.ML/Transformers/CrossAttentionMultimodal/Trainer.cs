@@ -406,6 +406,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var (dCrossResidual, dLNCrossGamma, dLNCrossBeta) = _accel.LayerNormBackward(
                     dNormedCross, blockCache.LNCrossCache.Normalized, block.LNCrossGamma,
                     blockCache.LNCrossCache.Input, blockCache.LNCrossCache.Mean, blockCache.LNCrossCache.Variance);
+
+
                 for (int j = 0; j < embDim; j++)
                 {
                     blockGrads.LNCrossGrads.GammaGrad[j] += dLNCrossGamma[j];

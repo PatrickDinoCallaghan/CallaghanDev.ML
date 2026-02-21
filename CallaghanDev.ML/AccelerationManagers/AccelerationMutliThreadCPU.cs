@@ -556,17 +556,23 @@ namespace CallaghanDev.ML.AccelerationManagers
                 result[i, j] = gamma[j] * (input[i, j] - mean) / stdDev + beta[j];
             }
         }
-
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
         {
-            int outputDim = weights.GetLength(0);
-            int seqLen = inputMatrix.GetLength(0);
-
-            if (!ShouldParallelize(seqLen * outputDim))
+            return BatchDotProduct(weights, inputMatrix, 0, inputMatrix.GetLength(0));
+        }
+        public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount)
+        {
+            if (rowStart < 0 || rowCount < 0)
             {
-                return _singleThreadCPU.BatchDotProduct(weights, inputMatrix);
+                throw new ArgumentOutOfRangeException();
             }
 
+            if (rowStart + rowCount > inputMatrix.GetLength(0))
+            {
+                throw new ArgumentException("Invalid row slice.");
+            }
+
+            int outputDim = weights.GetLength(0);
             int inputDim = weights.GetLength(1);
 
             if (inputMatrix.GetLength(1) != inputDim)
@@ -574,25 +580,35 @@ namespace CallaghanDev.ML.AccelerationManagers
                 throw new ArgumentException($"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
             }
 
-            var result = new float[seqLen, outputDim];
-
-            Parallel.For(0, seqLen, _parallelOptions, i =>
+            if (!ShouldParallelize(rowCount * outputDim))
             {
+                return _singleThreadCPU.BatchDotProduct(weights, inputMatrix, rowStart, rowCount);
+            }
+
+            var result = new float[rowCount, outputDim];
+
+            Parallel.For(0, rowCount, _parallelOptions, i =>
+            {
+                int srcRow = rowStart + i;
+
                 for (int j = 0; j < outputDim; j++)
                 {
                     float sum = 0.0f;
+
                     for (int k = 0; k < inputDim; k++)
                     {
-                        sum += weights[j, k] * inputMatrix[i, k];
+                        sum += weights[j, k] * inputMatrix[srcRow, k];
                     }
+
                     result[i, j] = sum;
                 }
             });
+
             return result;
         }
 
         #region Multi-head attention
-  
+
         // This is the best i could attempt. Please please please let me never have to try this again. Jesus.
         public unsafe float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
         {

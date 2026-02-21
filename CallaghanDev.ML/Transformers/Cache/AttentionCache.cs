@@ -15,6 +15,18 @@ namespace CallaghanDev.ML.Transformers.Cache
         public float[,] AttentionWeights { get; set; }
         public float[,] AttentionOutput { get; set; }
         public float[,] Input { get; set; }
+        public void Reset()
+        {
+            Q = null;
+            K = null;
+            V = null;
+
+            AttentionScores = null;
+            AttentionWeights = null;
+            AttentionOutput = null;
+
+            Input = null;
+        }
     }
     public class ForwardCache
     {
@@ -60,5 +72,13 @@ namespace CallaghanDev.ML.Transformers.Cache
         public float[] Mean { get; set; }
         public float[] Variance { get; set; }
         public float[,] Normalized { get; set; }
+
+        public void Reset()
+        {
+            Input = null;
+            Mean = null;
+            Variance = null;
+            Normalized = null;
+        }
     }
 }
