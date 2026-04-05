@@ -3,11 +3,13 @@ using System;
 
 namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 {
+
+
     /// <summary>
     /// Configuration for the cross-attention multimodal transformer.
     /// 
     /// Architecture (Flamingo-style):
-    ///   Text Encoder:  Standard transformer (Text/SymbolicSequence mode) — frozen or trainable
+    ///   Text Encoder:  Standard transformer (Text/SymbolicSequence mode) - frozen or trainable
     ///   Price Decoder:  Transformer with interleaved cross-attention layers attending to text encoder output
     ///   Output Head:    Linear projection from price decoder hidden states => OHLCV predictions + confidence
     /// </summary>

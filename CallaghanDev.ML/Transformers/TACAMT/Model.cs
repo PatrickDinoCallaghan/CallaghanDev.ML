@@ -7,7 +7,7 @@ using System.Linq;
 
 namespace CallaghanDev.ML.Transformers.TACAMT
 {
-    public partial class Model
+    public class Model
     {
 
         /// <summary>
@@ -98,7 +98,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         /// <summary>
         /// Attach a trained BPE tokenizer. Validates that vocab size does not exceed config.
-        /// A tokenizer with fewer tokens than TextVocabSize is allowed — the embedding
+        /// A tokenizer with fewer tokens than TextVocabSize is allowed - the embedding
         /// table is pre-allocated at TextVocabSize but only trained tokens get meaningful
         /// representations. A tokenizer larger than TextVocabSize is rejected because
         /// token IDs would index out of bounds in the embedding lookup.
@@ -120,19 +120,22 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// </summary>
         /// <param name="texts">Raw news article strings to train on.</param>
         /// <param name="minFrequency">Minimum pair frequency for BPE merges. Default: 2.</param>
-        public void TrainTokenizer(string[] texts, int minFrequency = 2)
+        public void TrainTokenizer(string[] texts, int minFrequency = 10)
         {
             if (texts == null || texts.Length == 0)
+            {
                 throw new ArgumentException("Cannot train tokenizer on empty text corpus.");
+            }
 
             var tokenizer = new BPETokenizer();
             tokenizer.Train(texts, _config.TextVocabSize, minFrequency);
 
             // BPETokenizer.Train may produce fewer tokens than requested if the corpus is small.
-            // That is fine — the embedding table has room for TextVocabSize entries but only
+            // That is fine - the embedding table has room for TextVocabSize entries but only
             // the trained subset will be used. We bypass SetTokenizer's upper-bound check
             // since we know the tokenizer was trained with TextVocabSize as the target.
             Tokenizer = tokenizer;
+
         }
 
         /// <summary>
@@ -215,7 +218,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return ProjectToOutput(ph);
         }
         */
-        // Existing method — now just a wrapper
+        // Existing method - now just a wrapper
 
         public (float[,] predictions, float[,] confidence) ForwardWithCache(
             NewsStory[] stories,
@@ -631,7 +634,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     float sum = 0;
                     for (int t = 0; t < sl; t++)
                         sum += th[t, d];
-                    sh[s, d] = sum / sl;  // mean pool — outside the t loop
+                    sh[s, d] = sum / sl;  // mean pool - outside the t loop
                 }
                 at[s] = stories[s].ArrivalTime;
             }
@@ -1275,7 +1278,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             int maxTokenId = TextTokenEmbedding.GetLength(0) - 1;
 
-            // Validate all token IDs upfront — a token ID out of range means the tokenizer
+            // Validate all token IDs upfront - a token ID out of range means the tokenizer
             // and embedding table are mismatched and must be fixed, not silently papered over.
             for (int i = 0; i < sl; i++)
             {
@@ -1296,7 +1299,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 return e;
             }
 
-            // Article is longer than TextMaxSequenceLength — process in chunks and
+            // Article is longer than TextMaxSequenceLength - process in chunks and
             // mean-pool the hidden states so no tokens are discarded.
             int chunkSize = _config.TextMaxSequenceLength;
             int numChunks = (sl + chunkSize - 1) / chunkSize;
@@ -1382,7 +1385,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return ComputeProjection(c, attn.WO, attn.BiasO);
         }
 
-        private float SampleGaussian() { float u1 = 1f - _random.NextSingle(), u2 = 1f - _random.NextSingle(); return MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2); }
+        protected float SampleGaussian() { float u1 = 1f - _random.NextSingle(), u2 = 1f - _random.NextSingle(); return MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2); }
         private static float Sigmoid(float x) { if (x >= 0) { float ex = MathF.Exp(-x); return 1f / (1f + ex); } else { float ex = MathF.Exp(x); return ex / (1f + ex); } }
 
         public float[,] EncodePriceHistory(float[,] histPrices)

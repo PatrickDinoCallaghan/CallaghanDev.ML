@@ -36,13 +36,21 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             _random = random ?? new Random();
 
             if (_config.AccelerationType == AccelerationType.GPU || _config.AccelerationType == AccelerationType.CUDA)
+            {
                 _accel = new AccelerationGPU(_config.AccelerationType, _config.AccelerationDeviceId);
+            }
             else if (_config.AccelerationType == AccelerationType.CPU)
+            {
                 _accel = new AccelerationCPU();
+            }
             else if (_config.AccelerationType == AccelerationType.MultiThreadCPU)
+            {
                 _accel = new AccelerationMutliThreadCPU();
+            }
             else
+            {
                 throw new Exception("Unsupported AccelerationType");
+            }
 
             InitTextEncoder();
             InitPriceDecoder();

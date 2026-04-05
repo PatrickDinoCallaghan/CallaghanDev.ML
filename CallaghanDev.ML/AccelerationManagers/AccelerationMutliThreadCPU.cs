@@ -433,7 +433,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 localMax => { lock (lockObj) { if (localMax > globalMax) globalMax = localMax; } }
             );
 
-            // All masked out — zero the row and bail
+            // All masked out - zero the row and bail
             if (float.IsNegativeInfinity(globalMax))
             {
                 Parallel.For(0, cols, _parallelOptions, j => result[i, j] = 0.0f);
@@ -474,7 +474,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
 
-            // All masked out — zero the row and bail
+            // All masked out - zero the row and bail
             if (float.IsNegativeInfinity(max))
             {
                 for (int j = 0; j < cols; j++)
@@ -524,7 +524,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         //Making the SoftmaxRow method able to run in parallel was a big strech. But attempting to do something similar for layerNormRow is just mental.
         // even if we assume very large embedding dims say really big, like 16,384 or even 32,768. The math still wont favour within-row parallelism for LayerNorm.
-        // - 32,768 features sequential: ~10-15µs(add, subtract, multiply — no transcendental functions)
+        // - 32,768 features sequential: ~10-15µs(add, subtract, multiply - no transcendental functions)
         // - Three Parallel.For overheads: ~10-15µs
         // Thats break even at best. And at this point using cpu accelleration is just always the wrong choice. Use gpu or something.
         // TLDR, Leave this
@@ -622,7 +622,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             var concatenated = new float[seqLenQ, embeddingDim];
 
-            // Always parallelise across heads — each head is fully independent
+            // Always parallelise across heads - each head is fully independent
             Parallel.For(0, numHeads, _parallelOptions, head =>
                 MHAForwardHeadFast(Q, K, V, concatenated, head, headDim, seqLenQ, seqLenK, scale, mask)
             );
@@ -658,7 +658,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             int vecSize = Vector<float>.Count;
             int headVecEnd = headDim - (headDim % vecSize);
 
-            // Single allocation for this head — reused every row
+            // Single allocation for this head - reused every row
             float[] scores = new float[seqLenK];
 
             fixed (float* pQ = Q, pK = K, pV = V, pOut = concatenated, pScores = scores)
@@ -725,7 +725,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             int vecSize = Vector<float>.Count;
             int headVecEnd = headDim - (headDim % vecSize);
 
-            // Single allocation per head — reused every row
+            // Single allocation per head - reused every row
             float[] attn = new float[seqLenK];
             float[] dAttn = new float[seqLenK];
 
@@ -745,7 +745,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     float* dci = pDC + i * strideDC + offset;
                     float* dqi = pDQ + i * strideDQ + offset;
 
-                    // ── Recompute attention ──
+                    // -- Recompute attention --
                     float max = float.NegativeInfinity;
 
                     for (int j = 0; j < seqLenK; j++)
@@ -796,7 +796,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                         pAttn[j] *= invExp;
                     }
 
-                        // ── dAttn ──
+                        // -- dAttn --
                     for (int j = 0; j < seqLenK; j++)
                     {
                         float* vj = pV + j * strideV + offset;
@@ -810,11 +810,11 @@ namespace CallaghanDev.ML.AccelerationManagers
                         pDAttn[j] = dot;
                     }
 
-                    // ── Softmax backward ──
+                    // -- Softmax backward --
                     float sDot = 0;
                     for (int j = 0; j < seqLenK; j++) sDot += pAttn[j] * pDAttn[j];
 
-                    // ── dQ, dK, dV ──
+                    // -- dQ, dK, dV --
                     for (int j = 0; j < seqLenK; j++)
                     {
                         if (useDecoderMask && j > i) continue;
@@ -1621,7 +1621,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             int vecSize = Vector<float>.Count;
             int vecEnd = cols - (cols % vecSize);
 
-            // Pin inside the non-lambda method — this is legal.
+            // Pin inside the non-lambda method - this is legal.
             fixed (float* pTgt = target, pSrc = source)
             {
                 float* t = pTgt + i * cols;
@@ -1744,7 +1744,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                     float mx = float.MinValue;
 
-                    // ── Compute raw scores ──
+                    // -- Compute raw scores --
                     for (int s = 0; s < tsl; s++)
                     {
                         float* kj = pK + s * strideK + si;
@@ -1763,7 +1763,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                         if (sc > mx) mx = sc;
                     }
 
-                    // ── Softmax ──
+                    // -- Softmax --
                     float se = 0f;
                     for (int s = 0; s < tsl; s++)
                     {
@@ -1774,7 +1774,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     float invSe = se > 0f ? 1f / se : 0f;
                     for (int s = 0; s < tsl; s++) wi[s] *= invSe;
 
-                    // ── Weighted sum of V ──
+                    // -- Weighted sum of V --
                     // Zero the head-slice first
                     for (int d = 0; d < headDim; d++) oi[d] = 0f;
 
@@ -2162,7 +2162,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     for (int j = 0; j < keyLen; j++)
                         cache.MemAttnWeights[h, i, j] /= sumExp;
 
-                // FIX: no lock — dropoutRng is now a per-head-local instance
+                // FIX: no lock - dropoutRng is now a per-head-local instance
                 if (useMemAttnDrop)
                 {
                     float keepProb = 1.0f - network.MemoryAttentionDropout;
@@ -2219,7 +2219,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                         cache.MLPHiddenPreAct[qi, si, h, j] = val;
                         float activated = val > 0 ? val : 0;
 
-                        // FIX: no lock — dropoutRng is now a per-head-local instance
+                        // FIX: no lock - dropoutRng is now a per-head-local instance
                         if (useMLPDrop)
                         {
                             float keepProb = 1.0f - network.MLPDropout;

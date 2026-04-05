@@ -98,7 +98,7 @@ namespace CallaghanDev.ML.Transformers
             return tokens.ToArray();
         }
 
-        public void Train(string[] texts, int vocabSize = 5000, int minFrequency = 2)
+        public void Train(string[] texts, int vocabSize = 50000, int minFrequency = 10)
         {
             var specialTokens = _vocabToId.Where(kv => kv.Key.StartsWith("<|")).ToList();
             _vocabToId.Clear();

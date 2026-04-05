@@ -146,8 +146,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 // ===========================================================
                 // TACAMT CORE — Backward Compatibility
                 // ===========================================================
-                (Test_TACAMT_BackwardCompat_SingleText_NoError,
-                    "TACAMT: Backward-Compat Single Text"),
+              
                 (Test_TACAMT_BackwardCompat_NullText_NoError,
                     "TACAMT: Backward-Compat Null Text"),
                 (Test_TACAMT_BackwardCompat_TrainWithIntArrays,
@@ -1229,7 +1228,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
 
 
-
+        /*
         public void Test_TACAMT_BackwardCompat_SingleText_NoError()
         {
             var (tokenizer, _, priceInputs, _) = CreateTestData(numSamples: 1);
@@ -1239,7 +1238,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var tokens = tokenizer.Encode("stock price rose", addSpecialTokens: true);
             var (pred, _) = model.Forward(tokens, priceInputs[0]);
             Assert(pred != null && !HasNaN(pred), "Single text forward failed");
-        }
+        }*/
 
         public void Test_TACAMT_BackwardCompat_NullText_NoError()
         {

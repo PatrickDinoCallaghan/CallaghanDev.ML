@@ -1539,7 +1539,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             // input^T is [embeddingDim, seqLen], result is [embeddingDim, embeddingDim]
             // But we need to transpose input first. We can use:
             // (input^T * dOutput)[k, j] = sum_i input[i, k] * dOutput[i, j]
-            // This is the same as MatrixMultiplyTranspose(input^T ... ) — let's just build the transpose
+            // This is the same as MatrixMultiplyTranspose(input^T ... ) - let's just build the transpose
             // Actually: MatrixMultiplyTranspose(A, B) computes A * B^T.
             // We want input^T * dOutput. Note: (input^T * dOutput) = (dOutput^T * input)^T
             // Simpler: just allocate a transposed copy.
@@ -1882,7 +1882,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             // Softmax + cross-entropy has row-level sequential dependencies (max, sum, log)
             // that make it awkward to kernel without shared memory. The compute is O(seqLen × vocabDim)
-            // which is small relative to MHA. CPU-side is fine — the GPU transfers would dominate.
+            // which is small relative to MHA. CPU-side is fine - the GPU transfers would dominate.
             for (int i = 0; i < effectiveLen; i++)
             {
                 float max = float.NegativeInfinity;
@@ -1921,7 +1921,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             float invLen = 1.0f / (effectiveLen * outputDim);
             float loss = 0;
 
-            // Same rationale as CrossEntropy — reduction-heavy, CPU is fine.
+            // Same rationale as CrossEntropy - reduction-heavy, CPU is fine.
             for (int i = 0; i < effectiveLen; i++)
             {
                 float rowLoss = 0;
@@ -2916,7 +2916,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             // Mirrors the existing MatrixSquaredNorm pattern (line ~1639):
             // ILGPU doesn't expose a single-pass parallel reduction with the existing kernel
             // convention, so we upload to verify transfer overhead is accounted for in the
-            // pipeline, then copy back and reduce on the CPU — consistent with the 2D version.
+            // pipeline, then copy back and reduce on the CPU - consistent with the 2D version.
             var buf = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
             try
             {

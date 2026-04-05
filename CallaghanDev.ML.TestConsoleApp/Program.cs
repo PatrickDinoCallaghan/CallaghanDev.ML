@@ -9,6 +9,7 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main()
         {
+            RunNeuralNetworkBooleanLogicTests();
             AccelerationConsistencyTests accelerationConsistencyTests = new AccelerationConsistencyTests();
             accelerationConsistencyTests.RunAllTests();
 
@@ -18,13 +19,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             tACMATests.RunAllTests();
 
 
-
             Tests tt = new Tests();
             tt.RunAllTests();
 
             CrossAttentionMultimodalExamples.RunAll();
 
-            RunNeuralNetworkBooleanLogicTests();
 
             Console.WriteLine("Press any key to continue.");
             Console.ReadKey();

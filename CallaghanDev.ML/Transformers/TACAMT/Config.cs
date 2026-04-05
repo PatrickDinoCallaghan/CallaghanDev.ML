@@ -11,7 +11,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// Size of the text vocabulary (number of unique tokens).
         /// Must match the tokenizer's vocab size if one is attached.
         /// </summary>
-        public int TextVocabSize { get; set; } = 10000;
+        public int TextVocabSize { get; set; } = 50000;
 
         /// <summary>
         /// Maximum sequence length for text inputs.
@@ -34,7 +34,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// <summary>
         /// Number of transformer layers in the text encoder.
         /// </summary>
-        public int TextNumLayers { get; set; } = 2;
+        public int TextNumLayers { get; set; } = 4;
 
         /// <summary>
         /// Feed-forward hidden dimension in the text encoder blocks.
@@ -125,7 +125,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// <summary>
         /// Hardware acceleration type (CPU, MultiThreadCPU, GPU, CUDA).
         /// </summary>
-        public AccelerationType AccelerationType { get; set; } = AccelerationType.CPU;
+        public AccelerationType AccelerationType { get; set; } = AccelerationType.MultiThreadCPU;
 
         /// <summary>
         /// Device ID for GPU/CUDA acceleration.

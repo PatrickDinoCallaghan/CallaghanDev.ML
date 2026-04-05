@@ -10,7 +10,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
         }
 
-        // I realize this behaves like a transpose rather than a plain dot product—but that’s exactly what we want, and it’s correct.
+        // I realize this behaves like a transpose rather than a plain dot product-but that’s exactly what we want, and it’s correct.
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
             int rows = matrix.GetLength(0);   // number of neurons in this layer

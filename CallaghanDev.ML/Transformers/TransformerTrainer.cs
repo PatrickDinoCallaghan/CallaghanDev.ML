@@ -667,49 +667,6 @@ namespace CallaghanDev.ML.Transformers
             _accel.BackpropInputProjection(dX, continuousInput, _gradients.InputProjectionGrad, _gradients.InputProjectionBiasGrad, seqLen, _modelConfig.EmbeddingDim, _modelConfig.InputFeatureDim);
         }
 
-        private void BackpropOutputLayer(float[,] dLogits, float[,] input)
-        {
-            int seqLen = dLogits.GetLength(0);
-            int outputDim = _modelConfig.EffectiveOutputDim;
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int v = 0; v < outputDim; v++)
-                {
-                    for (int e = 0; e < _modelConfig.EmbeddingDim; e++)
-                    {
-                        _gradients.OutputProjectionGrad[v, e] += input[i, e] * dLogits[i, v];
-                    }
-                }
-
-                for (int v = 0; v < outputDim; v++)
-                {
-                    _gradients.OutputBiasGrad[v] += dLogits[i, v];
-                }
-            }
-        }
-
-        private float[,] ComputeOutputGradient(float[,] dLogits)
-        {
-            int seqLen = dLogits.GetLength(0);
-            int outputDim = dLogits.GetLength(1);
-            var dX = new float[seqLen, _modelConfig.EmbeddingDim];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int e = 0; e < _modelConfig.EmbeddingDim; e++)
-                {
-                    float grad = 0;
-                    for (int v = 0; v < outputDim; v++)
-                    {
-                        grad += dLogits[i, v] * _model.OutputProjection[v, e];
-                    }
-                    dX[i, e] = grad;
-                }
-            }
-
-            return dX;
-        }
         private float[,] BackpropBlock(int layerIdx, float[,] dOut, ForwardCache cache)
         {
             var block = _model.Blocks[layerIdx];
@@ -1145,53 +1102,6 @@ namespace CallaghanDev.ML.Transformers
             return _accel.MatrixAddBias(logits, _model.OutputBias);
            // return AddBiasToMatrix(logits, _model.OutputBias);
         }
-        /*
-        private float[,] AddBiasToMatrix(float[,] matrix, float[] bias)
-        {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-
-            var result = new float[rows, cols];
-
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = matrix[i, j] + bias[j];
-                }
-            }
-            return result;
-        }*/
-
-        private bool[,] CreateCausalMask(int seqLen)
-        {
-            /*
-            var mask = new bool[seqLen, seqLen];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j <= i; j++)
-                {
-                    mask[i, j] = true;
-                }
-            }
-            return mask;*/
-
-
-            return _accel.CreateCausalMask(seqLen);
-        }
-        /*
-        private float VectorNorm(float[] vector)
-        {
-            float sum = 0;
-
-            for (int i = 0; i < vector.Length; i++)
-            {
-                sum += vector[i] * vector[i];
-            }
-
-            return sum;
-        }*/
 
         private T[] ShuffleArray<T>(T[] data)
         {
@@ -1199,23 +1109,6 @@ namespace CallaghanDev.ML.Transformers
 
             return indices.Select(i => data[i]).ToArray();
         }
-        /*
-        private float[,] SliceRows(float[,] matrix, int startRow, int endRow)
-        {
-            int cols = matrix.GetLength(1);
 
-            int numRows = endRow - startRow;
-            var result = new float[numRows, cols];
-
-            for (int i = 0; i < numRows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = matrix[startRow + i, j];
-                }
-            }
-
-            return result;
-        }*/
     }
 }

@@ -12,7 +12,7 @@ namespace CallaghanDev.ML
 
         // Mean Squared Error Loss
         /*
-        Purpose: Used as a loss function in regression problems. It measures the average of the squares of the errors—that is, 
+        Purpose: Used as a loss function in regression problems. It measures the average of the squares of the errors-that is, 
             the average squared difference between the estimated values and the actual value.
         Usage: Commonly used in linear regression, neural networks for regression tasks, etc. It's helpful in optimization 
             problems where minimizing the error is the goal.
