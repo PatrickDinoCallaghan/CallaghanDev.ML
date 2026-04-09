@@ -1,3 +1,6 @@
+using CallaghanDev.ML.Transformers.Configuration;
+using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
 using System.Collections.Generic;
 
@@ -24,39 +27,39 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// </summary>
         public float[,] ContextTypeEmbeddingGrad { get; set; }
 
-        public Gradients(Config config)
+        public Gradients(MultimodalTransformerConfig config)
         {
-            TextEmbeddingGrad = new float[config.TextVocabSize, config.TextEmbeddingDim];
+            TextEmbeddingGrad = new float[config.Text.VocabSize, config.Text.EmbeddingDim];
             TextAttnGrads = new List<AttentionGradients>();
             TextLN1Grads = new List<LayerNormGradients>();
             TextLN2Grads = new List<LayerNormGradients>();
 
-            for (int i = 0; i < config.TextNumLayers; i++)
+            for (int i = 0; i < config.Text.NumLayers; i++)
             {
-                TextAttnGrads.Add(new AttentionGradients(config.TextEmbeddingDim));
-                TextLN1Grads.Add(new LayerNormGradients(config.TextEmbeddingDim));
-                TextLN2Grads.Add(new LayerNormGradients(config.TextEmbeddingDim));
+                TextAttnGrads.Add(new AttentionGradients(config.Text.EmbeddingDim));
+                TextLN1Grads.Add(new LayerNormGradients(config.Text.EmbeddingDim));
+                TextLN2Grads.Add(new LayerNormGradients(config.Text.EmbeddingDim));
             }
 
-            PriceInputProjectionGrad = new float[config.PriceEmbeddingDim, config.PriceInputFeatureDim];
-            PriceInputProjectionBiasGrad = new float[config.PriceEmbeddingDim];
+            PriceInputProjectionGrad = new float[config.Price.EmbeddingDim, config.Price.InputFeatureDim];
+            PriceInputProjectionBiasGrad = new float[config.Price.EmbeddingDim];
             PriceBlockGrads = new List<CrossAttentionBlockGradients>();
 
-            for (int i = 0; i < config.PriceNumLayers; i++)
+            for (int i = 0; i < config.Price.NumLayers; i++)
             {
-                PriceBlockGrads.Add(new CrossAttentionBlockGradients(config.PriceEmbeddingDim, config.PriceNumHeads, config.DecayProjectionDim, config.DecayHiddenDim, config.DecayTimeEncodingBases));
+                PriceBlockGrads.Add(new CrossAttentionBlockGradients(config.Price.EmbeddingDim, config.Price.NumHeads, config.DecayNetwork.ProjectionDim, config.DecayNetwork.HiddenDim, config.DecayNetwork.TimeEncodingBases));
             }
 
-            OutputProjectionGrad = new float[config.OutputDim, config.PriceEmbeddingDim];
-            OutputBiasGrad = new float[config.OutputDim];
+            OutputProjectionGrad = new float[config.Output.OutputDim, config.Price.EmbeddingDim];
+            OutputBiasGrad = new float[config.Output.OutputDim];
 
-            if (config.UseConfidenceHead)
+            if (config.Output.UseConfidenceHead)
             { 
-                ConfidenceProjectionGrad = new float[1, config.PriceEmbeddingDim]; 
+                ConfidenceProjectionGrad = new float[1, config.Price.EmbeddingDim]; 
                 ConfidenceBiasGrad = new float[1]; 
             }
 
-            ContextTypeEmbeddingGrad = new float[2, config.PriceEmbeddingDim];
+            ContextTypeEmbeddingGrad = new float[2, config.Price.EmbeddingDim];
         }
 
         public void Zero()

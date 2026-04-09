@@ -1,10 +1,11 @@
-﻿using System;
+﻿using CallaghanDev.ML.Transformers.Configuration;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace CallaghanDev.ML.Transformers
+namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 {
     public class TransformerGradients
     {
@@ -24,7 +25,7 @@ namespace CallaghanDev.ML.Transformers
 
         public TransformerGradients(TransformerConfig config)
         {
-            _usesDiscreteTokens = config.UsesDiscreteTokens;
+            _usesDiscreteTokens = config.Data.UsesDiscreteTokens;
 
             if (_usesDiscreteTokens)
             {

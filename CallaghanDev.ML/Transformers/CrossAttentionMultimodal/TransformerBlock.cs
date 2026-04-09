@@ -1,5 +1,6 @@
 using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
 
 namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
@@ -67,7 +68,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 LNFFNGamma[i] = 1.0f;
             }
         }
-
         public float[,] Forward(float[,] x, float[,] textHidden, bool[,] selfAttnMask, IAccelerationManager accel)
         {
             int priceSeqLen = x.GetLength(0);
@@ -75,25 +75,27 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             int headDim = _embeddingDim / numHeads;
             float scale = 1.0f / MathF.Sqrt(headDim);
 
-            // Self-Attention (price => price)
+            // Self-attention
             var selfQ = ComputeProjection(x, SelfAttention.WQ, SelfAttention.BiasQ, accel);
             var selfK = ComputeProjection(x, SelfAttention.WK, SelfAttention.BiasK, accel);
             var selfV = ComputeProjection(x, SelfAttention.WV, SelfAttention.BiasV, accel);
 
+            RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
+
             var selfAttnOut = accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfAttnMask);
             var selfProjected = ComputeProjection(selfAttnOut, SelfAttention.WO, SelfAttention.BiasO, accel);
 
-            // Residual + LayerNorm
             var selfResidual = accel.MatrixAdd(x, selfProjected);
             var (normedSelf, _, _, _) = accel.LayerNormForward(selfResidual, LNSelfGamma, LNSelfBeta);
 
-            // Cross-Attention: SKIP if no text available
             float[,] normedCross;
             if (textHidden != null)
             {
                 var crossQ = ComputeProjection(normedSelf, CrossAttention.WQ, CrossAttention.BiasQ, accel);
                 var crossK = ComputeProjection(textHidden, CrossAttention.WK, CrossAttention.BiasK, accel);
                 var crossV = ComputeProjection(textHidden, CrossAttention.WV, CrossAttention.BiasV, accel);
+
+                RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
 
                 var crossAttnOut = accel.MultiHeadAttentionForward(crossQ, crossK, crossV, numHeads, scale, null);
                 var crossProjected = ComputeProjection(crossAttnOut, CrossAttention.WO, CrossAttention.BiasO, accel);
@@ -104,24 +106,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             }
             else
             {
-                // No text: pass through cross-attention LN as identity-like
-                // (still apply LN so the FFN sees consistent scale)
                 var (normedCrossResult, _, _, _) = accel.LayerNormForward(normedSelf, LNCrossGamma, LNCrossBeta);
                 normedCross = normedCrossResult;
             }
-
-            // FFN
-           /* var ffOutput = new float[priceSeqLen, _embeddingDim];
-            for (int i = 0; i < priceSeqLen; i++)
-            {
-                var inputRow = new float[_embeddingDim];
-                for (int j = 0; j < _embeddingDim; j++)
-                    inputRow[j] = normedCross[i, j];
-
-                var outputRow = FeedForwardNetwork.ForwardPassOnly(inputRow);
-                for (int j = 0; j < _embeddingDim; j++)
-                    ffOutput[i, j] = outputRow[j];
-            }*/
 
             var ffOutput = new float[priceSeqLen, _embeddingDim];
             for (int i = 0; i < priceSeqLen; i++)
@@ -131,13 +118,11 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 accel.SetRow(ffOutput, i, outputRow, _embeddingDim);
             }
 
-
             var ffResidual = accel.MatrixAdd(normedCross, ffOutput);
             var (normedFF, _, _, _) = accel.LayerNormForward(ffResidual, LNFFNGamma, LNFFNBeta);
 
             return normedFF;
         }
-
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias, IAccelerationManager accel)
         {
             /*
@@ -160,6 +145,105 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var projected = accel.BatchDotProduct(weight, input);
 
             return accel.MatrixAddBias(projected, bias);
+        }
+    }
+
+    public class CrossAttentionBlock : TransformerBlockBase
+    {
+        private readonly MultiHeadAttention _crossAttention;
+
+        private readonly float[] _lnCrossGamma;
+        private readonly float[] _lnCrossBeta;
+
+        private float[,] _context;
+
+        public CrossAttentionBlock(
+            int embeddingDim,
+            int numHeads,
+            int feedForwardDim,
+            ActivationType ffnActivation,
+            IAccelerationManager accel,
+            Random random,
+            AccelerationType accelType = AccelerationType.CPU,
+            int accelDeviceId = 0,
+            float l2Lambda = 0.01f)
+            : base(embeddingDim, numHeads, accel)
+        {
+            if (embeddingDim % numHeads != 0)
+                throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
+
+            // ---- Self Attention (base uses this) ----
+            SelfAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
+
+            LNSelfGamma = new float[embeddingDim];
+            LNSelfBeta = new float[embeddingDim];
+
+            // ---- Cross Attention ----
+            _crossAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
+
+            _lnCrossGamma = new float[embeddingDim];
+            _lnCrossBeta = new float[embeddingDim];
+
+            // ---- Feed Forward ----
+            var parameters = new Parameters
+            {
+                AccelerationType = accelType,
+                AccelerationDeviceId = accelDeviceId,
+                CostFunction = CostFunctionType.mse,
+                ActivationDistribution = ActivationDistribution.Normal,
+                LayerWidths = new List<int>
+                {
+                    embeddingDim,
+                    feedForwardDim,
+                    embeddingDim
+                },
+                LayerActivations = new List<ActivationType>
+                {
+                    ffnActivation,
+                    ffnActivation,
+                    ActivationType.None
+                },
+                L2RegulationLamda = l2Lambda
+            };
+
+            FeedForwardNetwork = new NeuralNetwork(parameters);
+
+            LNFFNGamma = new float[embeddingDim];
+            LNFFNBeta = new float[embeddingDim];
+
+            // ---- Initialise LayerNorm gammas to 1 ----
+            for (int i = 0; i < embeddingDim; i++)
+            {
+                LNSelfGamma[i] = 1.0f;
+                _lnCrossGamma[i] = 1.0f;
+                LNFFNGamma[i] = 1.0f;
+            }
+        }
+
+        /// <summary>
+        /// Set external context (e.g. encoder output, text embeddings, memory, etc.)
+        /// </summary>
+        public void SetContext(float[,] context)
+        {
+            _context = context;
+        }
+
+        /// <summary>
+        /// Cross-attention stage (overrides base hook)
+        /// </summary>
+        protected override float[,] CrossAttentionForward(float[,] x)
+        {
+            // No context → just normalise (keeps distribution stable for FFN)
+            if (_context == null)
+            {
+                return Accel.LayerNorm(x, _lnCrossGamma, _lnCrossBeta);
+            }
+
+            // Cross attention: Q = x, K/V = context
+            var cross = _crossAttention.Forward(x, _context);
+
+            // Residual + LayerNorm
+            return ApplyResidualNorm(x, cross, _lnCrossGamma, _lnCrossBeta);
         }
     }
 }

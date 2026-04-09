@@ -54,14 +54,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         private readonly Dictionary<int, (MemoryBuffer1D<float, Stride1D.Dense> b, MemoryBuffer1D<float, Stride1D.Dense> d)> _updBCache = new();
         private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> mat, MemoryBuffer1D<float, Stride1D.Dense> vec, MemoryBuffer1D<float, Stride1D.Dense> res)> _dotTransposedCache = new();
         private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
-        private readonly Dictionary<
-          (int outputDim, int inputDim, int rowCount),
-          (
-              MemoryBuffer2D<float, Stride2D.DenseX> w,
-              MemoryBuffer2D<float, Stride2D.DenseX> inp,
-              MemoryBuffer2D<float, Stride2D.DenseX> res
-          )
-      > _batchDotCache = new();
+        private readonly Dictionary<(int outputDim, int inputDim, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _applyContextTypeEmbeddingKernel;
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _computeTimeDiffMatrixKernel;
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>> _meanPoolRowsKernel;
@@ -2837,7 +2830,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
         #endregion
 
-        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V,  float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings,  TransformerBlock block, BlockCache bc, int PriceEmbeddingDim,  int PriceNumHeads, bool isTraining = false, Random dropoutRng = null)
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V,  float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim,  int PriceNumHeads, bool isTraining = false, Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
             int tsl = K.GetLength(0);

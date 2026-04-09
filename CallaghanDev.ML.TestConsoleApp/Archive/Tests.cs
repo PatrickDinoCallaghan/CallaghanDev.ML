@@ -1,7 +1,9 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
+using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 
 namespace CallaghanDev.ML
 {
@@ -1741,32 +1743,67 @@ namespace CallaghanDev.ML
             return (tokenizer, textSeqs, priceInputs, priceTargets);
         }
 
-        private Config CreateSmallCrossAttentionConfig(int textVocabSize, AccelerationType accelType = AccelerationType.CPU, int embDim = 16, int numHeads = 2, int numLayers = 1, int ffnDim = 32, int inputFeatures = 5, int outputDim = 5, int priceSeqLen = 10, bool useConfidence = true, bool freezeTextEncoder = false)
+        private (MultimodalTransformerConfig model, TrainingConfig training)
+            CreateSmallCrossAttentionConfig(
+                int textVocabSize,
+                AccelerationType accelType = AccelerationType.CPU,
+                int embDim = 16,
+                int numHeads = 2,
+                int numLayers = 1,
+                int ffnDim = 32, int inputFeatures = 5, int outputDim = 5, int priceSeqLen = 10,  bool useConfidence = true, bool freezeTextEncoder = false)
         {
-            return new Config
+            var model = new MultimodalTransformerConfig
             {
-                TextVocabSize = textVocabSize,
-                TextMaxSequenceLength = 32,
-                TextEmbeddingDim = embDim,
-                TextNumHeads = numHeads,
-                TextNumLayers = numLayers,
-                TextFeedForwardDim = ffnDim,
-                TextUseDecoderOnly = false,
-                PriceInputFeatureDim = inputFeatures,
-                PriceMaxSequenceLength = priceSeqLen + 2,
-                PriceEmbeddingDim = embDim,
-                PriceNumHeads = numHeads,
-                PriceNumLayers = numLayers,
-                PriceFeedForwardDim = ffnDim,
-                PriceUseDecoderOnly = true,
-                OutputDim = outputDim,
-                UseConfidenceHead = useConfidence,
-                FreezeTextEncoder = freezeTextEncoder,
-                FFNActivationType = ActivationType.Relu,
-                AccelerationType = accelType,
-                L2RegulationLamda = 0f,
-                GradientClippingThreshold = 1.0f
+                Text = new TextEncoderConfig
+                {
+                    VocabSize = textVocabSize,
+                    MaxSequenceLength = 32,
+                    EmbeddingDim = embDim,
+                    NumHeads = numHeads,
+                    NumLayers = numLayers,
+                    FeedForwardDim = ffnDim,
+                    Freeze = freezeTextEncoder
+                },
+
+                Price = new PriceDecoderConfig
+                {
+                    InputFeatureDim = inputFeatures,
+                    MaxSequenceLength = priceSeqLen + 2,
+                    EmbeddingDim = embDim,
+                    NumHeads = numHeads,
+                    NumLayers = numLayers,
+                    FeedForwardDim = ffnDim
+                },
+
+                Output = new OutputHeadConfig
+                {
+                    OutputDim = outputDim,
+                    UseConfidenceHead = useConfidence
+                },
+
+                Runtime = new RuntimeConfig
+                {
+                    FFNActivationType = ActivationType.Relu,
+                    AccelerationType = accelType
+                },
+
+                Regularization = new RegularizationConfig
+                {
+                    L2RegulationLamda = 0f,
+                    GradientClippingThreshold = 1.0f
+                },
+
+                RequireSharedCrossAttentionEmbeddingDim = true
             };
+
+            var training = TrainingConfig.ForMultimodalModel();
+
+            // Optional: override defaults for "small" config
+            training.BatchSize = 4;
+            training.Epochs = 10;
+            training.ConfidenceLossWeight = useConfidence ? 0.1f : 0f;
+
+            return (model, training);
         }
 
         private bool MatricesApproxEqual(float[,] a, float[,] b, float tol = 1e-4f)
@@ -2722,14 +2759,14 @@ namespace CallaghanDev.ML
 
                 var loaded = Transformers.CrossAttentionMultimodal.Model.Load(dir);
 
-                Assert(loaded.Config.TextVocabSize == config.TextVocabSize, "TextVocabSize mismatch");
-                Assert(loaded.Config.TextEmbeddingDim == config.TextEmbeddingDim, "TextEmbeddingDim mismatch");
-                Assert(loaded.Config.TextNumLayers == config.TextNumLayers, "TextNumLayers mismatch");
-                Assert(loaded.Config.PriceInputFeatureDim == config.PriceInputFeatureDim, "PriceInputFeatureDim mismatch");
-                Assert(loaded.Config.PriceEmbeddingDim == config.PriceEmbeddingDim, "PriceEmbeddingDim mismatch");
-                Assert(loaded.Config.PriceNumLayers == config.PriceNumLayers, "PriceNumLayers mismatch");
-                Assert(loaded.Config.OutputDim == config.OutputDim, "OutputDim mismatch");
-                Assert(loaded.Config.UseConfidenceHead == config.UseConfidenceHead, "UseConfidenceHead mismatch");
+                Assert(loaded.Config.Text.VocabSize == config.TextVocabSize, "TextVocabSize mismatch");
+                Assert(loaded.Config.Text.EmbeddingDim == config.TextEmbeddingDim, "TextEmbeddingDim mismatch");
+                Assert(loaded.Config.Text.NumLayers == config.TextNumLayers, "TextNumLayers mismatch");
+                Assert(loaded.Config.Price.InputFeatureDim == config.PriceInputFeatureDim, "PriceInputFeatureDim mismatch");
+                Assert(loaded.Config.Price.EmbeddingDim == config.PriceEmbeddingDim, "PriceEmbeddingDim mismatch");
+                Assert(loaded.Config.Price.NumLayers == config.PriceNumLayers, "PriceNumLayers mismatch");
+                Assert(loaded.Config.Output.OutputDim == config.OutputDim, "OutputDim mismatch");
+                Assert(loaded.Config.Output.UseConfidenceHead == config.UseConfidenceHead, "UseConfidenceHead mismatch");
 
                 AssertMatricesEqual(model.TextTokenEmbedding, loaded.TextTokenEmbedding, "TextTokenEmbedding");
 
@@ -2811,7 +2848,7 @@ namespace CallaghanDev.ML
 
                 var loaded = Transformers.CrossAttentionMultimodal.Model.Load(dir);
 
-                Assert(!loaded.Config.UseConfidenceHead, "Loaded UseConfidenceHead should be false");
+                Assert(!loaded.Config.Output.UseConfidenceHead, "Loaded UseConfidenceHead should be false");
 
                 var (predAfter, confAfter) = loaded.Forward(textSeqs[0], priceInputs[0]);
 

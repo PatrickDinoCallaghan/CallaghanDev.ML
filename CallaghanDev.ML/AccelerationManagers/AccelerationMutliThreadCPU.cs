@@ -2217,8 +2217,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                         for (int k = 0; k < mlpInputDim; k++)
                             val += network.W1[h, j, k] * cache.MLPInput[qi, si, h, k];
                         cache.MLPHiddenPreAct[qi, si, h, j] = val;
-                        float activated = val > 0 ? val : 0;
-
+                        float activated = val > 0f ? val : 0.01f * val;
                         // FIX: no lock - dropoutRng is now a per-head-local instance
                         if (useMLPDrop)
                         {
@@ -2239,12 +2238,13 @@ namespace CallaghanDev.ML.AccelerationManagers
                     cache.Gates[qi, si, h] = gate;
 
                     float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
-                    decayBias[qi, si, h] = -(baseRate * gate) * td;
+                    float effectiveTd = 1f + td;
+                    decayBias[qi, si, h] = -(baseRate * gate) * effectiveTd;
                 }
             }
         }
         #endregion
-        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, CallaghanDev.ML.Transformers.TACAMT.TransformerBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false,  Random dropoutRng = null)
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false,  Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
             int tsl = K.GetLength(0);

@@ -16,6 +16,9 @@
 
   <ItemGroup>
     <Compile Remove="FailureType.cs" />
+    <Compile Remove="Transformers\CrossAttentionMultimodal\Config.cs" />
+    <Compile Remove="Transformers\MultiTypeTransformer\TrainingConfig.cs" />
+    <Compile Remove="Transformers\TACAMT\Config.cs" />
   </ItemGroup>
 
   <ItemGroup>

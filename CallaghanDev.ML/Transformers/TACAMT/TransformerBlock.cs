@@ -1,288 +1,134 @@
 using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
 
 namespace CallaghanDev.ML.Transformers.TACAMT
 {
-    public class TransformerBlock
+    public class TacamtBlock : TransformerBlockBase
     {
-        public MultiHeadAttention SelfAttention { get; set; }
-        public float[] LNSelfGamma { get; set; }
-        public float[] LNSelfBeta { get; set; }
+        public readonly MultiHeadAttention CrossAttention;
 
-        public MultiHeadAttention CrossAttention { get; set; }
-        public float[] LNCrossGamma { get; set; }
-        public float[] LNCrossBeta { get; set; }
+        public float[] LnCrossGamma;
+        public float[] LnCrossBeta;
+        public ContentAwareDecayNetwork DecayNetwork;
 
-        public NeuralNetwork FeedForwardNetwork { get; set; }
-        public float[] LNFFNGamma { get; set; }
-        public float[] LNFFNBeta { get; set; }
+        private float[,] _context;
+        private float[,] _timeDiffs;
+        private float[] _keyTimes;
 
-        /// <summary>
-        /// Content-aware decay network v3.
-        /// Learns decay = f(query_content, key_content, time, other_memories).
-        /// Now includes dropout on memory attention and MLP hidden, plus L2 weight decay.
-        /// </summary>
-        public ContentAwareDecayNetwork DecayNetwork { get; set; }
+        private bool _isTraining;
+        private Random _dropoutRng;
 
-        private readonly int _embeddingDim;
-        private readonly int _numHeads;
-        private readonly int _headDim;
-
-        private readonly IAccelerationManager _accel;
-
-        public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random, AccelerationType accelType = AccelerationType.CPU, int accelDeviceId = 0, float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8)
+        public TacamtBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random,  float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8) : base(embeddingDim, numHeads, accel)
         {
-            if (embeddingDim % numHeads != 0)
-            {
-                throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
-            }
+            SelfAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
 
-            _accel = accel;
-            _numHeads = numHeads;
-            _embeddingDim = embeddingDim;
-            _headDim = embeddingDim / numHeads;
-
-            SelfAttention = new MultiHeadAttention(embeddingDim, _numHeads, accel, random);
-            LNSelfGamma = new float[embeddingDim];
+            LNSelfGamma = InitGamma(embeddingDim);
             LNSelfBeta = new float[embeddingDim];
 
-            CrossAttention = new MultiHeadAttention(embeddingDim, _numHeads, accel, random);
-            LNCrossGamma = new float[embeddingDim];
-            LNCrossBeta = new float[embeddingDim];
+            CrossAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
 
-            DecayNetwork = new ContentAwareDecayNetwork(numHeads, embeddingDim, decayProjectionDim, decayHiddenDim, random, decayMemAttnDropout, decayMLPDropout, decayWeightDecay, decayTimeBases);
+            LnCrossGamma = InitGamma(embeddingDim);
+            LnCrossBeta = new float[embeddingDim];
 
-            var parameters = new Parameters
+            DecayNetwork = new ContentAwareDecayNetwork(
+                numHeads,
+                embeddingDim,
+                decayProjectionDim,
+                decayHiddenDim,
+                random,
+                decayMemAttnDropout,
+                decayMLPDropout,
+                decayWeightDecay,
+                decayTimeBases);
+
+            FeedForwardNetwork = new NeuralNetwork(new Parameters
             {
-                AccelerationType = accelType,
-                CostFunction = CostFunctionType.mse,
-                ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { embeddingDim, feedForwardDim, embeddingDim },
-                LayerActivations = new List<ActivationType> { ffnActivation, ffnActivation, ffnActivation },
+                LayerActivations = new List<ActivationType> { ffnActivation, ffnActivation, ActivationType.None },
                 L2RegulationLamda = l2Lambda
-            };
+            });
 
-            FeedForwardNetwork = new NeuralNetwork(parameters);
-
-            LNFFNGamma = new float[embeddingDim];
+            LNFFNGamma = InitGamma(embeddingDim);
             LNFFNBeta = new float[embeddingDim];
-
-            for (int i = 0; i < embeddingDim; i++)
-            {
-                LNSelfGamma[i] = 1.0f;
-                LNCrossGamma[i] = 1.0f;
-                LNFFNGamma[i] = 1.0f;
-            }
         }
 
-        /// <summary>
-        /// Forward pass with content-aware time-decay cross-attention.
-        /// </summary>
-        /// <param name="x">Price hidden states [priceSeqLen, embDim]</param>
-        /// <param name="contextHidden">Context hidden states [numKeys, embDim], or null</param>
-        /// <param name="selfAttnMask">Causal mask for self-attention</param>
-        /// <param name="accel">Acceleration manager</param>
-        /// <param name="timeDiffs">[priceSeqLen, numKeys] absolute time differences, or null</param>
-        /// <param name="keyTimesFromRef">[numKeys] each key's time relative to reference, for memory interaction</param>
-        /// <param name="isTraining">Whether to apply dropout (true during training, false at inference)</param>
-        /// <param name="dropoutRng">Random number generator for dropout masks</param>
-        public float[,] Forward(float[,] x, float[,] contextHidden, bool[,] selfAttnMask, IAccelerationManager accel, float[,] timeDiffs = null, float[] keyTimesFromRef = null, bool isTraining = false, Random dropoutRng = null)
+        // ---- External setters (cleaner than giant Forward signature) ----
+        public void SetContext(float[,] context) => _context = context;
+        public void SetTimeData(float[,] timeDiffs, float[] keyTimes)
         {
-            int priceSeqLen = x.GetLength(0);
-            int numHeads = _numHeads;
-            int headDim = _headDim;
+            _timeDiffs = timeDiffs;
+            _keyTimes = keyTimes;
+        }
 
-            float scale = 1.0f / MathF.Sqrt(headDim);
+        public void SetTraining(bool isTraining, Random rng = null)
+        {
+            _isTraining = isTraining;
+            _dropoutRng = rng;
+        }
 
-            var selfQ = ComputeProjection(x, SelfAttention.WQ, SelfAttention.BiasQ, accel);
-            var selfK = ComputeProjection(x, SelfAttention.WK, SelfAttention.BiasK, accel);
-            var selfV = ComputeProjection(x, SelfAttention.WV, SelfAttention.BiasV, accel);
-
-            var selfAttnOut = accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfAttnMask);
-
-            var selfProjected = ComputeProjection(selfAttnOut, SelfAttention.WO, SelfAttention.BiasO, accel);
-            var selfResidual = accel.MatrixAdd(x, selfProjected);
-
-            var (normedSelf, _, _, _) = accel.LayerNormForward(
-                selfResidual,
-                LNSelfGamma,
-                LNSelfBeta
-            );
-
-            float[,] normedCross;
-
-            if (contextHidden != null)
+        // ---- Cross Attention Hook ----
+        protected override float[,] CrossAttentionForward(float[,] x)
+        {
+            if (_context == null)
             {
-                float[,] crossAttnOut;
+                return Accel.LayerNorm(x, LnCrossGamma, LnCrossBeta);
+            }
 
-                if (timeDiffs != null)
-                {
-                    crossAttnOut = ContentAwareCrossAttention(normedSelf, contextHidden, timeDiffs, keyTimesFromRef, accel, isTraining, dropoutRng);
-                }
-                else
-                {
-                    var crossQ = ComputeProjection(normedSelf, CrossAttention.WQ, CrossAttention.BiasQ, accel);
-                    var crossK = ComputeProjection(contextHidden, CrossAttention.WK, CrossAttention.BiasK, accel);
-                    var crossV = ComputeProjection(contextHidden, CrossAttention.WV, CrossAttention.BiasV, accel);
+            float[,] cross;
 
-                    crossAttnOut = accel.MultiHeadAttentionForward(
-                        crossQ,
-                        crossK,
-                        crossV,
-                        numHeads,
-                        scale,
-                        null
-                    );
-                }
-
-                var crossProjected = ComputeProjection(crossAttnOut, CrossAttention.WO, CrossAttention.BiasO, accel);
-                var crossResidual = accel.MatrixAdd(normedSelf, crossProjected);
-
-                var (nc, _, _, _) = accel.LayerNormForward(
-                    crossResidual,
-                    LNCrossGamma,
-                    LNCrossBeta
-                );
-
-                normedCross = nc;
+            if (_timeDiffs != null)
+            {
+                cross = ContentAwareCrossAttention(x);
             }
             else
             {
-                var (nc, _, _, _) = accel.LayerNormForward(normedSelf, LNCrossGamma, LNCrossBeta);
-
-                normedCross = nc;
+                cross = CrossAttention.Forward(x, _context);
             }
 
-            /*var ffOutput = new float[priceSeqLen, _embeddingDim];
-
-            for (int i = 0; i < priceSeqLen; i++)
-            {
-                var inputRow = new float[_embeddingDim];
-
-                for (int j = 0; j < _embeddingDim; j++)
-                {
-                    inputRow[j] = normedCross[i, j];
-                }
-
-                var outputRow = FeedForwardNetwork.ForwardPassOnly(inputRow);
-
-                for (int j = 0; j < _embeddingDim; j++)
-                {
-                    ffOutput[i, j] = outputRow[j];
-                }ComputeTimeDiffMatrix
-            }*/
-
-            var ffOutput = accel.FFNForwardBatch(normedCross, priceSeqLen, _embeddingDim, FeedForwardNetwork.ForwardPassOnly);
-
-            var ffResidual = accel.MatrixAdd(normedCross, ffOutput);
-
-            var (normedFF, _, _, _) = accel.LayerNormForward(ffResidual, LNFFNGamma, LNFFNBeta);
-
-            return normedFF;
+            return ApplyResidualNorm(x, cross, LnCrossGamma, LnCrossBeta);
         }
 
-
-        public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
+        private float[,] ContentAwareCrossAttention(float[,] x)
         {
-            return _accel.ComputeTimeDiffMatrix(priceSeqLen, keyArrivalTimes);
-            /*
-            int numKeys = keyArrivalTimes.Length;
-            var timeDiffs = new float[priceSeqLen, numKeys];
+            var Q = ComputeProjection(x, CrossAttention.WQ, CrossAttention.BiasQ, Accel);
+            var K = ComputeProjection(_context, CrossAttention.WK, CrossAttention.BiasK, Accel);
+            var V = ComputeProjection(_context, CrossAttention.WV, CrossAttention.BiasV, Accel);
 
-            for (int p = 0; p < priceSeqLen; p++)
-            {
-                for (int s = 0; s < numKeys; s++)
-                {
-                    timeDiffs[p, s] = MathF.Abs(p - keyArrivalTimes[s]);
-                }
-            }
+            RotaryPositionEmbedding.ApplyInPlace(Q, K, NumHeads);
 
-            return timeDiffs;*/
+            float scale = 1.0f / MathF.Sqrt(HeadDim);
+
+            var (decayBias, _) = Accel.ContentAwareDecayForward(
+                x,
+                _context,
+                _timeDiffs,
+                _keyTimes,
+                DecayNetwork,
+                _isTraining,
+                _dropoutRng
+            );
+
+            var attnOutput = Accel.ContentAwareCrossAttentionForward(
+                Q, K, V,
+                NumHeads,
+                scale,
+                decayBias,
+                out _,
+                out _);
+
+            // FIX: apply output projection (WO) before returning, matching the cache path
+            // which does: cp = ComputeProjection(cao, CrossAttention.WO, CrossAttention.BiasO)
+            return ComputeProjection(attnOutput, CrossAttention.WO, CrossAttention.BiasO, Accel);
         }
-
-        private float[,] ContentAwareCrossAttention(float[,] priceHidden, float[,] contextHidden, float[,] timeDiffs, float[] keyTimesFromRef, IAccelerationManager accel, bool isTraining = false, Random dropoutRng = null)
+        private float[] InitGamma(int size)
         {
-            int priceSeqLen = priceHidden.GetLength(0);
-            int contextSeqLen = contextHidden.GetLength(0);
-            int embDim = _embeddingDim;
-            int numHeads = _numHeads;
-            int headDim = _headDim;
-
-            float scale = 1.0f / MathF.Sqrt(headDim);
-
-            var Q = ComputeProjection(priceHidden, CrossAttention.WQ, CrossAttention.BiasQ, accel);
-            var K = ComputeProjection(contextHidden, CrossAttention.WK, CrossAttention.BiasK, accel);
-            var V = ComputeProjection(contextHidden, CrossAttention.WV, CrossAttention.BiasV, accel);
-
-            //var (decayBias, _) = DecayNetwork.Forward(priceHidden, contextHidden, timeDiffs, keyTimesFromRef, isTraining, dropoutRng);
-
-            var (decayBias, _) = accel.ContentAwareDecayForward(priceHidden, contextHidden, timeDiffs, keyTimesFromRef, DecayNetwork, isTraining, dropoutRng);
-
-            /* var output = new float[priceSeqLen, embDim];
-           
-            for (int h = 0; h < numHeads; h++)
-            {
-                int startIdx = h * headDim;
-
-                for (int p = 0; p < priceSeqLen; p++)
-                {
-                    var scores = new float[contextSeqLen];
-                    float maxScore = float.MinValue;
-
-                    for (int s = 0; s < contextSeqLen; s++)
-                    {
-                        float dot = 0;
-
-                        for (int d = 0; d < headDim; d++)
-                        {
-                            dot += Q[p, startIdx + d] * K[s, startIdx + d];
-                        }
-
-                        scores[s] = dot * scale + decayBias[p, s, h];
-
-                        if (scores[s] > maxScore)
-                        {
-                            maxScore = scores[s];
-                        }
-                    }
-
-                    float sumExp = 0;
-                    var w = new float[contextSeqLen];
-
-                    for (int s = 0; s < contextSeqLen; s++)
-                    {
-                        w[s] = MathF.Exp(scores[s] - maxScore);
-                        sumExp += w[s];
-                    }
-
-                    if (sumExp > 0)
-                    {
-                        for (int s = 0; s < contextSeqLen; s++)
-                        {
-                            w[s] /= sumExp;
-                        }
-                    }
-
-                    for (int d = 0; d < headDim; d++)
-                    {
-                        float val = 0;
-
-                        for (int s = 0; s < contextSeqLen; s++)
-                        {
-                            val += w[s] * V[s, startIdx + d];
-                        }
-
-                        output[p, startIdx + d] = val;
-                    }
-                }
-            }
-            */
-
-            return accel.ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, out _, out _);
-
-            //return output;
+            var g = new float[size];
+            for (int i = 0; i < size; i++) g[i] = 1f;
+            return g;
         }
+
 
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias, IAccelerationManager accel)
         {

@@ -1,11 +1,7 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace CallaghanDev.ML.Transformers
+namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 {
     public class MultiHeadAttention
     {
@@ -33,6 +29,9 @@ namespace CallaghanDev.ML.Transformers
             if (embeddingDim % numHeads != 0)
                 throw new ArgumentException("Embedding dimension must be divisible by number of heads");
 
+            if ((_headDim & 1) != 0)
+                throw new ArgumentException("RoPE requires an even per-head dimension");
+
             random ??= new Random();
 
             WQ = InitWeights(embeddingDim, embeddingDim, random);
@@ -50,6 +49,7 @@ namespace CallaghanDev.ML.Transformers
         {
             var weights = new float[rows, cols];
             float std = MathF.Sqrt(2.0f / (rows + cols));
+
             for (int i = 0; i < rows; i++)
             {
                 for (int j = 0; j < cols; j++)
@@ -60,6 +60,7 @@ namespace CallaghanDev.ML.Transformers
                     weights[i, j] = z * std;
                 }
             }
+
             return weights;
         }
 
@@ -67,26 +68,58 @@ namespace CallaghanDev.ML.Transformers
         {
             int seqLen = input.GetLength(0);
 
-            // Project to Q, K, V using matrix operations
             var Q = MatMulWithBias(input, WQ, BiasQ);
             var K = MatMulWithBias(input, WK, BiasK);
             var V = MatMulWithBias(input, WV, BiasV);
+
+            RotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
 
             var output = new float[seqLen, _embeddingDim];
 
             for (int head = 0; head < _numHeads; head++)
             {
                 int startIdx = head * _headDim;
+
                 var Q_head = ExtractHead(Q, startIdx, _headDim);
                 var K_head = ExtractHead(K, startIdx, _headDim);
                 var V_head = ExtractHead(V, startIdx, _headDim);
 
-                // Attention: scores = Q * K^T / sqrt(d_k)
                 var scores = _accel.MatrixMultiplyTranspose(Q_head, K_head);
                 var scaledScores = _accel.MatrixScale(scores, 1.0f / MathF.Sqrt(_headDim));
-
                 var attention = _accel.Softmax(scaledScores, mask);
+                var headOutput = _accel.MatrixMultiply(attention, V_head);
 
+                CopyHead(headOutput, output, startIdx, _headDim);
+            }
+
+            return MatMulWithBias(output, WO, BiasO);
+        }
+
+        public float[,] Forward(float[,] query, float[,] keyValue, bool[,] mask = null)
+        {
+            int seqLen = query.GetLength(0);
+
+            var Q = MatMulWithBias(query, WQ, BiasQ);
+            var K = MatMulWithBias(keyValue, WK, BiasK);
+            var V = MatMulWithBias(keyValue, WV, BiasV);
+
+            RotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
+
+            var output = new float[seqLen, _embeddingDim];
+            float scale = 1.0f / MathF.Sqrt(_headDim);
+
+            for (int head = 0; head < _numHeads; head++)
+            {
+                int startIdx = head * _headDim;
+
+                var Q_head = ExtractHead(Q, startIdx, _headDim);
+                var K_head = ExtractHead(K, startIdx, _headDim);
+                var V_head = ExtractHead(V, startIdx, _headDim);
+
+                var scores = _accel.MatrixMultiplyTranspose(Q_head, K_head);
+                scores = _accel.MatrixScale(scores, scale);
+
+                var attention = _accel.Softmax(scores, mask);
                 var headOutput = _accel.MatrixMultiply(attention, V_head);
 
                 CopyHead(headOutput, output, startIdx, _headDim);
@@ -105,17 +138,14 @@ namespace CallaghanDev.ML.Transformers
             {
                 var inputRow = new float[input.GetLength(1)];
                 for (int k = 0; k < input.GetLength(1); k++)
-                {
                     inputRow[k] = input[i, k];
-                }
 
                 var outputRow = _accel.CalculateDotProduct(weights, inputRow);
 
                 for (int j = 0; j < outputDim; j++)
-                {
                     result[i, j] = outputRow[j] + bias[j];
-                }
             }
+
             return result;
         }
 
@@ -123,26 +153,21 @@ namespace CallaghanDev.ML.Transformers
         {
             int seqLen = matrix.GetLength(0);
             var result = new float[seqLen, headDim];
+
             for (int i = 0; i < seqLen; i++)
-            {
                 for (int j = 0; j < headDim; j++)
-                {
                     result[i, j] = matrix[i, startIdx + j];
-                }
-            }
+
             return result;
         }
 
         private void CopyHead(float[,] headOutput, float[,] fullOutput, int startIdx, int headDim)
         {
             int seqLen = headOutput.GetLength(0);
+
             for (int i = 0; i < seqLen; i++)
-            {
                 for (int j = 0; j < headDim; j++)
-                {
                     fullOutput[i, startIdx + j] = headOutput[i, j];
-                }
-            }
         }
     }
 }

@@ -1,6 +1,8 @@
 using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.Cache;
+using CallaghanDev.ML.Transformers.Configuration;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 
 
 namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
@@ -11,39 +13,37 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
     /// </summary>
     public class Model
     {
-        private readonly Config _config;
+        private readonly MultimodalTransformerConfig _config;
         private readonly Random _random;
         private readonly IAccelerationManager _accel;
 
-        public Config Config => _config;
+        public MultimodalTransformerConfig Config => _config;
         public IAccelerationManager AccelerationManager => _accel;
         public float[,] TextTokenEmbedding { get; set; }
-        public float[,] TextPositionalEncoding { get; set; }
-        public Transformers.TransformerBlock[] TextBlocks { get; set; }
+        public MultiTypeTransformer.TransformerBlock[] TextBlocks { get; set; }
         public float[,] PriceInputProjection { get; set; }
         public float[] PriceInputProjectionBias { get; set; }
-        public float[,] PricePositionalEncoding { get; set; }
         public TransformerBlock[] PriceBlocks { get; set; }
         public float[,] OutputProjection { get; set; }
         public float[] OutputBias { get; set; }
         public float[,] ConfidenceProjection { get; set; }
         public float[] ConfidenceBias { get; set; }
 
-        public Model(Config config, Random random = null)
+        public Model(MultimodalTransformerConfig config, Random random = null)
         {
             config.Validate();
             _config = config;
             _random = random ?? new Random();
 
-            if (_config.AccelerationType == AccelerationType.GPU || _config.AccelerationType == AccelerationType.CUDA)
+            if (_config.Runtime.AccelerationType == AccelerationType.GPU || _config.Runtime.AccelerationType == AccelerationType.CUDA)
             {
-                _accel = new AccelerationGPU(_config.AccelerationType, _config.AccelerationDeviceId);
+                _accel = new AccelerationGPU(_config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId);
             }
-            else if (_config.AccelerationType == AccelerationType.CPU)
+            else if (_config.Runtime.AccelerationType == AccelerationType.CPU)
             {
                 _accel = new AccelerationCPU();
             }
-            else if (_config.AccelerationType == AccelerationType.MultiThreadCPU)
+            else if (_config.Runtime.AccelerationType == AccelerationType.MultiThreadCPU)
             {
                 _accel = new AccelerationMutliThreadCPU();
             }
@@ -59,78 +59,66 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private void InitTextEncoder()
         {
-            TextTokenEmbedding = new float[_config.TextVocabSize, _config.TextEmbeddingDim];
-            float std = MathF.Sqrt(1.0f / _config.TextEmbeddingDim);
-
-            for (int i = 0; i < _config.TextVocabSize; i++)
-            {
-                for (int j = 0; j < _config.TextEmbeddingDim; j++)
-                {
-
+            TextTokenEmbedding = new float[_config.Text.VocabSize, _config.Text.EmbeddingDim];
+            float std = MathF.Sqrt(1.0f / _config.Text.EmbeddingDim);
+            for (int i = 0; i < _config.Text.VocabSize; i++)
+                for (int j = 0; j < _config.Text.EmbeddingDim; j++)
                     TextTokenEmbedding[i, j] = SampleGaussian() * std;
-                }
-            }
-
-            TextPositionalEncoding = CreatePositionalEncoding(_config.TextMaxSequenceLength, _config.TextEmbeddingDim);
-
-            var textTransformerConfig = new TransformerConfig
+             
+            // No throwaway TransformerConfig needed — pass parameters directly.
+            TextBlocks = new MultiTypeTransformer.TransformerBlock[_config.Text.NumLayers];
+            for (int i = 0; i < _config.Text.NumLayers; i++)
             {
-                VocabSize = _config.TextVocabSize,
-                MaxSequenceLength = _config.TextMaxSequenceLength,
-                EmbeddingDim = _config.TextEmbeddingDim,
-                NumHeads = _config.TextNumHeads,
-                NumLayers = _config.TextNumLayers,
-                FeedForwardDim = _config.TextFeedForwardDim,
-                FFNActivationType = _config.FFNActivationType,
-                UseDecoderOnly = _config.TextUseDecoderOnly,
-                AccelerationType = _config.AccelerationType,
-                AccelerationDeviceId = _config.AccelerationDeviceId,
-                L2RegulationLamda = _config.L2RegulationLamda
-            };
-
-            TextBlocks = new Transformers.TransformerBlock[_config.TextNumLayers];
-
-            for (int i = 0; i < _config.TextNumLayers; i++)
-            {
-                TextBlocks[i] = new Transformers.TransformerBlock(textTransformerConfig, _accel, _random);
+                TextBlocks[i] = new MultiTypeTransformer.TransformerBlock(
+                    embeddingDim: _config.Text.EmbeddingDim,
+                    numHeads: _config.Text.NumHeads,
+                    feedForwardDim: _config.Text.FeedForwardDim,
+                    ffnActivationType: _config.Runtime.FFNActivationType,
+                    costFunction: CostFunctionType.mse,
+                    activationDistribution: ActivationDistribution.Normal,
+                    l2RegulationLamda: _config.Regularization.L2RegulationLamda,
+                    gradientClippingThreshold: _config.Regularization.GradientClippingThreshold,
+                    accelerationType: _config.Runtime.AccelerationType,
+                    accelerationDeviceId: _config.Runtime.AccelerationDeviceId,
+                    accel: _accel,
+                    random: _random);
             }
         }
 
+
         private void InitPriceDecoder()
         {
-            PriceInputProjection = new float[_config.PriceEmbeddingDim, _config.PriceInputFeatureDim];
-            PriceInputProjectionBias = new float[_config.PriceEmbeddingDim];
+            PriceInputProjection = new float[_config.Price.EmbeddingDim, _config.Price.InputFeatureDim];
+            PriceInputProjectionBias = new float[_config.Price.EmbeddingDim];
 
-            float std = MathF.Sqrt(2.0f / (_config.PriceInputFeatureDim + _config.PriceEmbeddingDim));
+            float std = MathF.Sqrt(2.0f / (_config.Price.InputFeatureDim + _config.Price.EmbeddingDim));
 
-            for (int i = 0; i < _config.PriceEmbeddingDim; i++)
+            for (int i = 0; i < _config.Price.EmbeddingDim; i++)
             {
-                for (int j = 0; j < _config.PriceInputFeatureDim; j++)
+                for (int j = 0; j < _config.Price.InputFeatureDim; j++)
                 {
                     PriceInputProjection[i, j] = SampleGaussian() * std;
                 }
             }
+             
+            PriceBlocks = new TransformerBlock[_config.Price.NumLayers];
 
-            PricePositionalEncoding = CreatePositionalEncoding(_config.PriceMaxSequenceLength, _config.PriceEmbeddingDim);
-
-            PriceBlocks = new TransformerBlock[_config.PriceNumLayers];
-
-            for (int i = 0; i < _config.PriceNumLayers; i++)
+            for (int i = 0; i < _config.Price.NumLayers; i++)
             {
-                PriceBlocks[i] = new TransformerBlock(_config.PriceEmbeddingDim, _config.PriceNumHeads, _config.PriceFeedForwardDim, _config.FFNActivationType, _accel, _random, _config.AccelerationType, _config.AccelerationDeviceId, _config.L2RegulationLamda);
+                PriceBlocks[i] = new TransformerBlock(_config.Price.EmbeddingDim, _config.Price.NumHeads, _config.Price.FeedForwardDim, _config.Runtime.FFNActivationType, _accel, _random, _config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId, _config.Regularization.L2RegulationLamda);
             }
         }
 
         private void InitOutputHead()
         {
-            int embDim = _config.PriceEmbeddingDim;
+            int embDim = _config.Price.EmbeddingDim;
 
-            OutputProjection = new float[_config.OutputDim, embDim];
-            OutputBias = new float[_config.OutputDim];
+            OutputProjection = new float[_config.Output.OutputDim, embDim];
+            OutputBias = new float[_config.Output.OutputDim];
 
-            float std = MathF.Sqrt(2.0f / (embDim + _config.OutputDim));
+            float std = MathF.Sqrt(2.0f / (embDim + _config.Output.OutputDim));
 
-            for (int i = 0; i < _config.OutputDim; i++)
+            for (int i = 0; i < _config.Output.OutputDim; i++)
             {
                 for (int j = 0; j < embDim; j++)
                 {
@@ -138,7 +126,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 }
             }
 
-            if (_config.UseConfidenceHead)
+            if (_config.Output.UseConfidenceHead)
             {
                 ConfidenceProjection = new float[1, embDim];
                 ConfidenceBias = new float[1];
@@ -151,27 +139,21 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             }
         }
 
- 
+
 
 
         private float[,] ForwardTextEncoder(int[] textTokenIds)
         {
             int seqLen = textTokenIds.Length;
-            //var embedded = EmbedTextTokens(textTokenIds, seqLen);
+            var embedded = EmbedTextTokens(textTokenIds, seqLen);
 
-            var embedded = _accel.EmbedTokensWithPosition(TextTokenEmbedding, textTokenIds, TextPositionalEncoding, seqLen, _config.TextEmbeddingDim);
             bool[,] mask = null;
-            if (_config.TextUseDecoderOnly)
-            {
-                //mask = CreateCausalMask(seqLen);
+            if (_config.Text.UseDecoderOnly)
                 mask = _accel.CreateCausalMask(seqLen);
-            }
 
             var x = embedded;
             foreach (var block in TextBlocks)
-            {
                 x = block.Forward(x, mask);
-            }
 
             return x;
         }
@@ -179,23 +161,17 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private float[,] ForwardTextEncoderWithCache(int[] textTokenIds, MultimodalForwardCache cache)
         {
             int seqLen = textTokenIds.Length;
-            //var embedded = EmbedTextTokens(textTokenIds, seqLen);
+            var embedded = EmbedTextTokens(textTokenIds, seqLen);
 
-
-            var embedded = _accel.EmbedTokensWithPosition(TextTokenEmbedding, textTokenIds, TextPositionalEncoding, seqLen, _config.TextEmbeddingDim);
             cache.TextEmbedded = embedded;
             cache.TextTokenIds = textTokenIds;
 
             bool[,] mask = null;
-            if (_config.TextUseDecoderOnly)
-            {
-               // mask = CreateCausalMask(seqLen);
-
+            if (_config.Text.UseDecoderOnly)
                 mask = _accel.CreateCausalMask(seqLen);
-            }
 
             var x = embedded;
-            for (int layer = 0; layer < _config.TextNumLayers; layer++)
+            for (int layer = 0; layer < _config.Text.NumLayers; layer++)
             {
                 cache.TextLayerInputs.Add(x);
                 var block = TextBlocks[layer];
@@ -214,33 +190,16 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 ln1Cache.Normalized = ln1Normalized;
 
                 var ffnInputRows = new float[seqLen][];
-                var ffOutput = new float[seqLen, _config.TextEmbeddingDim];
+                var ffOutput = new float[seqLen, _config.Text.EmbeddingDim];
 
-                /*
                 for (int i = 0; i < seqLen; i++)
                 {
-                    var inputRow = new float[_config.TextEmbeddingDim];
-
-                    for (int j = 0; j < _config.TextEmbeddingDim; j++)
-                    {
-                        inputRow[j] = normed1[i, j];
-                    }
-
+                    var inputRow = _accel.ExtractRow(normed1, i, _config.Text.EmbeddingDim);
                     ffnInputRows[i] = inputRow;
                     var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-
-                    for (int j = 0; j < _config.TextEmbeddingDim; j++)
-                    {
-                        ffOutput[i, j] = outputRow[j];
-                    }
-                }*/
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var inputRow = _accel.ExtractRow(normed1, i, _config.TextEmbeddingDim);
-                    ffnInputRows[i] = inputRow;
-                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-                    _accel.SetRow(ffOutput, i, outputRow, _config.TextEmbeddingDim);
+                    _accel.SetRow(ffOutput, i, outputRow, _config.Text.EmbeddingDim);
                 }
+
                 cache.TextFFNInputs.Add(ffnInputRows);
                 cache.TextFFNOutputs.Add(ffOutput);
 
@@ -252,6 +211,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 ln2Cache.Mean = ln2Means;
                 ln2Cache.Variance = ln2Vars;
                 ln2Cache.Normalized = ln2Normalized;
+
                 x = normed2;
             }
 
@@ -262,51 +222,12 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private (float[,] predictions, float[,] confidence) ProjectToOutput(float[,] hidden)
         {
-            /*int seqLen = hidden.GetLength(0);
-            int embDim = _config.PriceEmbeddingDim;
-            
-            var predictions = new float[seqLen, _config.OutputDim];
-            for (int i = 0; i < seqLen; i++)
-            {
-                var row = new float[embDim];
-                for (int k = 0; k < embDim; k++)
-                {
-                    row[k] = hidden[i, k];
-                }
-
-                var outputRow = _accel.CalculateDotProduct(OutputProjection, row);
-                for (int j = 0; j < _config.OutputDim; j++)
-                {
-                    predictions[i, j] = outputRow[j] + OutputBias[j];
-                }
-            }*/
             var predRaw = _accel.BatchDotProduct(OutputProjection, hidden);
             var predictions = _accel.MatrixAddBias(predRaw, OutputBias);
 
             float[,] confidence = null;
-            if (_config.UseConfidenceHead)
+            if (_config.Output.UseConfidenceHead)
             {
-                /*
-                 confidence = new float[seqLen, 1];
-                for (int i = 0; i < seqLen; i++)
-                {
-                    float logit = ConfidenceBias[0];
-                    for (int k = 0; k < embDim; k++)
-                    {
-                        logit += ConfidenceProjection[0, k] * hidden[i, k];
-                    }
-                    confidence[i, 0] = Sigmoid(logit);
-                }*
-
-                var confRaw = _accel.BatchDotProduct(ConfidenceProjection, hidden);
-                var confBiased = _accel.MatrixAddBias(confRaw, ConfidenceBias);
-
-                // Apply sigmoid separately (keep as is, or add a Sigmoid method later)
-                for (int i = 0; i < seqLen; i++)
-                {
-                    confidence[i, 0] = Sigmoid(confBiased[i, 0]);
-                }
-                */
                 var confRaw = _accel.BatchDotProduct(ConfidenceProjection, hidden);
                 confidence = _accel.MatrixAddBias(confRaw, ConfidenceBias);
                 _accel.SigmoidInPlace(confidence);
@@ -315,103 +236,42 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             return (predictions, confidence);
         }
 
-        /*
-        private float[,] EmbedTextTokens(int[] tokenIds, int seqLen)
-        {
-            var embedded = new float[seqLen, _config.TextEmbeddingDim];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j < _config.TextEmbeddingDim; j++)
-                {
-                    embedded[i, j] = TextTokenEmbedding[tokenIds[i], j] + TextPositionalEncoding[i, j];
-                }
-            }
-            return embedded;
-        }*/
-
         private float[,] EmbedPriceSequence(float[,] priceSequence, int seqLen)
         {
-            /*
             var projected = _accel.BatchDotProduct(PriceInputProjection, priceSequence);
-
-            var embedded = new float[seqLen, _config.PriceEmbeddingDim];
+            return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
+        }
+        private float[,] EmbedTextTokens(int[] textTokenIds, int seqLen)
+        {
+            var embedded = new float[seqLen, _config.Text.EmbeddingDim];
 
             for (int i = 0; i < seqLen; i++)
             {
-                for (int j = 0; j < _config.PriceEmbeddingDim; j++)
-                {
-                    embedded[i, j] = projected[i, j] + PriceInputProjectionBias[j] + PricePositionalEncoding[i, j];
-                }
+                int tokenId = textTokenIds[i];
+                for (int j = 0; j < _config.Text.EmbeddingDim; j++)
+                    embedded[i, j] = TextTokenEmbedding[tokenId, j];
             }
 
             return embedded;
-            */
-
-            var projected = _accel.BatchDotProduct(PriceInputProjection, priceSequence);
-            return _accel.AddBiasAndPositionalEncoding(projected, PriceInputProjectionBias, PricePositionalEncoding, seqLen, _config.PriceEmbeddingDim);
         }
-
-        private float[,] CreatePositionalEncoding(int maxLen, int dim)
-        {
-            var pe = new float[maxLen, dim];
-            for (int pos = 0; pos < maxLen; pos++)
-            {
-                for (int i = 0; i < dim; i++)
-                {
-                    float angle = pos / MathF.Pow(10000f, (2f * (i / 2)) / (float)dim);
-                    pe[pos, i] = (i % 2 == 0) ? MathF.Sin(angle) : MathF.Cos(angle);
-                }
-            }
-            return pe;
-        }
-
-        /*
-        private bool[,] CreateCausalMask(int seqLen)
-        {
-            var mask = new bool[seqLen, seqLen];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j <= i; j++)
-                {
-                    mask[i, j] = true;
-                }
-            }
-
-            return mask;
-        }*/
 
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias)
         {
-            /*
-            var projected = _accel.BatchDotProduct(weight, input);
-            int rows = projected.GetLength(0);
-            int cols = projected.GetLength(1);
-            var result = new float[rows, cols];
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = projected[i, j] + bias[j];
-                }
-            }
-            return result;
-            */
-
             var projected = _accel.BatchDotProduct(weight, input);
             return _accel.MatrixAddBias(projected, bias);
         }
 
         private float[,] AttentionForwardWithCache(MultiHeadAttention attention, float[,] qSource, float[,] kvSource_K, float[,] kvSource_V, bool[,] mask, AttentionCache cache)
         {
-            int embDim = _config.TextEmbeddingDim;
-            int numHeads = _config.TextNumHeads;
+            int embDim = _config.Text.EmbeddingDim;
+            int numHeads = _config.Text.NumHeads;
             int headDim = embDim / numHeads;
 
             var Q = ComputeProjection(qSource, attention.WQ, attention.BiasQ);
             var K = ComputeProjection(kvSource_K, attention.WK, attention.BiasK);
             var V = ComputeProjection(kvSource_V, attention.WV, attention.BiasV);
+
+            RotaryPositionEmbedding.ApplyInPlace(Q, K, numHeads);
 
             cache.Q = Q;
             cache.K = K;
@@ -425,7 +285,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var output = ComputeProjection(concatenated, attention.WO, attention.BiasO);
             return output;
         }
-
         private float SampleGaussian()
         {
             float u1 = 1.0f - _random.NextSingle();
@@ -498,11 +357,13 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var (predictions, confidenceMatrix) = Forward(textTokenIds, priceSequence);
             int lastPos = predictions.GetLength(0) - 1;
 
-            var prediction = new float[_config.OutputDim];
-            for (int j = 0; j < _config.OutputDim; j++)
+            var prediction = new float[_config.Output.OutputDim];
+            for (int j = 0; j < _config.Output.OutputDim; j++)
+            {
                 prediction[j] = predictions[lastPos, j];
 
-            float confidence = _config.UseConfidenceHead ? confidenceMatrix[lastPos, 0] : 1.0f;
+            }
+            float confidence = _config.Output.UseConfidenceHead ? confidenceMatrix[lastPos, 0] : 1.0f;
             return (prediction, confidence);
         }
 
@@ -514,7 +375,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var embedded = EmbedPriceSequence(priceSequence, seqLen);
 
             bool[,] mask = null;
-            if (_config.PriceUseDecoderOnly)
+            if (_config.Price.UseDecoderOnly)
             {
                 //mask = CreateCausalMask(seqLen);
                 mask = _accel.CreateCausalMask(seqLen);
@@ -532,8 +393,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, float[,] textHidden, MultimodalForwardCache cache)
         {
             int seqLen = priceSequence.GetLength(0);
-            int embDim = _config.PriceEmbeddingDim;
-            int numHeads = _config.PriceNumHeads;
+            int embDim = _config.Price.EmbeddingDim;
+            int numHeads = _config.Price.NumHeads;
             int headDim = embDim / numHeads;
             float scale = 1.0f / MathF.Sqrt(headDim);
 
@@ -542,7 +403,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             cache.PriceContinuousInput = priceSequence;
 
             bool[,] selfMask = null;
-            if (_config.PriceUseDecoderOnly)
+            if (_config.Price.UseDecoderOnly)
             {
                 //selfMask = CreateCausalMask(seqLen);
                 selfMask = _accel.CreateCausalMask(seqLen);
@@ -550,7 +411,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             var x = embedded;
 
-            for (int layer = 0; layer < _config.PriceNumLayers; layer++)
+            for (int layer = 0; layer < _config.Price.NumLayers; layer++)
             {
                 var block = PriceBlocks[layer];
                 var blockCache = cache.PriceBlockCaches[layer];
@@ -560,6 +421,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var selfQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
                 var selfK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
                 var selfV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
+
+                RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
+
                 blockCache.SelfQ = selfQ;
                 blockCache.SelfK = selfK;
                 blockCache.SelfV = selfV;
@@ -584,6 +448,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     var crossQ = ComputeProjection(normedSelf, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
                     var crossK = ComputeProjection(textHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
                     var crossV = ComputeProjection(textHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+                    RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
                     blockCache.CrossQ = crossQ;
                     blockCache.CrossK = crossK;
                     blockCache.CrossV = crossV;
@@ -622,27 +487,16 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 // === FFN ===
                 var ffnInputRows = new float[seqLen][];
                 var ffOutput = new float[seqLen, embDim];
-                /*
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var inputRow = new float[embDim];
-                    for (int j = 0; j < embDim; j++)
-                        inputRow[j] = normedCross[i, j];
-                    ffnInputRows[i] = inputRow;
-                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-                    for (int j = 0; j < embDim; j++)
-                        ffOutput[i, j] = outputRow[j];
-                }*/
 
                 for (int i = 0; i < seqLen; i++)
                 {
-                    var inputRow = _accel.ExtractRow(normedCross, i, _config.TextEmbeddingDim);
+                    var inputRow = _accel.ExtractRow(normedCross, i, _config.Text.EmbeddingDim);
 
                     ffnInputRows[i] = inputRow;
 
                     var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
 
-                    _accel.SetRow(ffOutput, i, outputRow, _config.TextEmbeddingDim);
+                    _accel.SetRow(ffOutput, i, outputRow, _config.Text.EmbeddingDim);
                 } 
 
                 blockCache.FFNInputRows = ffnInputRows;
@@ -679,28 +533,28 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var configPath = System.IO.Path.Combine(directory, "config.json");
             var configDict = new Dictionary<string, object>
             {
-                ["TextVocabSize"] = _config.TextVocabSize,
-                ["TextMaxSequenceLength"] = _config.TextMaxSequenceLength,
-                ["TextEmbeddingDim"] = _config.TextEmbeddingDim,
-                ["TextNumHeads"] = _config.TextNumHeads,
-                ["TextNumLayers"] = _config.TextNumLayers,
-                ["TextFeedForwardDim"] = _config.TextFeedForwardDim,
-                ["TextUseDecoderOnly"] = _config.TextUseDecoderOnly,
-                ["FreezeTextEncoder"] = _config.FreezeTextEncoder,
-                ["PriceInputFeatureDim"] = _config.PriceInputFeatureDim,
-                ["PriceMaxSequenceLength"] = _config.PriceMaxSequenceLength,
-                ["PriceEmbeddingDim"] = _config.PriceEmbeddingDim,
-                ["PriceNumHeads"] = _config.PriceNumHeads,
-                ["PriceNumLayers"] = _config.PriceNumLayers,
-                ["PriceFeedForwardDim"] = _config.PriceFeedForwardDim,
-                ["PriceUseDecoderOnly"] = _config.PriceUseDecoderOnly,
-                ["OutputDim"] = _config.OutputDim,
-                ["UseConfidenceHead"] = _config.UseConfidenceHead,
-                ["FFNActivationType"] = (int)_config.FFNActivationType,
-                ["AccelerationType"] = (int)_config.AccelerationType,
-                ["AccelerationDeviceId"] = _config.AccelerationDeviceId,
-                ["L2RegulationLamda"] = _config.L2RegulationLamda,
-                ["GradientClippingThreshold"] = _config.GradientClippingThreshold
+                ["TextVocabSize"] = _config.Text.VocabSize,
+                ["TextMaxSequenceLength"] = _config.Text.MaxSequenceLength,
+                ["TextEmbeddingDim"] = _config.Text.EmbeddingDim,
+                ["TextNumHeads"] = _config.Text.NumHeads,
+                ["TextNumLayers"] = _config.Text.NumLayers,
+                ["TextFeedForwardDim"] = _config.Text.FeedForwardDim,
+                ["TextUseDecoderOnly"] = _config.Text.UseDecoderOnly,
+                ["FreezeTextEncoder"] = _config.Text.Freeze,
+                ["PriceInputFeatureDim"] = _config.Price.InputFeatureDim,
+                ["PriceMaxSequenceLength"] = _config.Price.MaxSequenceLength,
+                ["PriceEmbeddingDim"] = _config.Price.EmbeddingDim,
+                ["PriceNumHeads"] = _config.Price.NumHeads,
+                ["PriceNumLayers"] = _config.Price.NumLayers,
+                ["PriceFeedForwardDim"] = _config.Price.FeedForwardDim,
+                ["PriceUseDecoderOnly"] = _config.Price.UseDecoderOnly,
+                ["OutputDim"] = _config.Output.OutputDim,
+                ["UseConfidenceHead"] = _config.Output.UseConfidenceHead,
+                ["FFNActivationType"] = (int)_config.Runtime.FFNActivationType,
+                ["AccelerationType"] = (int)_config.Runtime.AccelerationType,
+                ["AccelerationDeviceId"] = _config.Runtime.AccelerationDeviceId,
+                ["L2RegulationLamda"] = _config.Regularization.L2RegulationLamda,
+                ["GradientClippingThreshold"] = _config.Regularization.GradientClippingThreshold
             };
 
 
@@ -714,7 +568,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 WriteMatrix(writer, TextTokenEmbedding);
 
-                for (int layer = 0; layer < _config.TextNumLayers; layer++)
+                for (int layer = 0; layer < _config.Text.NumLayers; layer++)
                 {
                     var block = TextBlocks[layer];
                     WriteAttention(writer, block.Attention);
@@ -727,7 +581,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 WriteMatrix(writer, PriceInputProjection);
                 WriteVector(writer, PriceInputProjectionBias);
 
-                for (int layer = 0; layer < _config.PriceNumLayers; layer++)
+                for (int layer = 0; layer < _config.Price.NumLayers; layer++)
                 {
                     var block = PriceBlocks[layer];
 
@@ -747,19 +601,19 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 WriteMatrix(writer, OutputProjection);
                 WriteVector(writer, OutputBias);
 
-                if (_config.UseConfidenceHead)
+                if (_config.Output.UseConfidenceHead)
                 {
                     WriteMatrix(writer, ConfidenceProjection);
                     WriteVector(writer, ConfidenceBias);
                 }
             }
 
-            for (int layer = 0; layer < _config.TextNumLayers; layer++)
+            for (int layer = 0; layer < _config.Text.NumLayers; layer++)
             {
                 var ffnDir = System.IO.Path.Combine(directory, $"text_ffn_{layer}");
                 TextBlocks[layer].FeedForwardNetwork.Save(ffnDir);
             }
-            for (int layer = 0; layer < _config.PriceNumLayers; layer++)
+            for (int layer = 0; layer < _config.Price.NumLayers; layer++)
             {
                 var ffnDir = System.IO.Path.Combine(directory, $"price_ffn_{layer}");
                 PriceBlocks[layer].FeedForwardNetwork.Save(ffnDir);
@@ -772,31 +626,52 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var configJson = System.IO.File.ReadAllText(configPath);
             var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(configJson);
 
-            var config = new Config
+            var config = new MultimodalTransformerConfig
             {
-                TextVocabSize = dict["TextVocabSize"].GetInt32(),
-                TextMaxSequenceLength = dict["TextMaxSequenceLength"].GetInt32(),
-                TextEmbeddingDim = dict["TextEmbeddingDim"].GetInt32(),
-                TextNumHeads = dict["TextNumHeads"].GetInt32(),
-                TextNumLayers = dict["TextNumLayers"].GetInt32(),
-                TextFeedForwardDim = dict["TextFeedForwardDim"].GetInt32(),
-                TextUseDecoderOnly = dict["TextUseDecoderOnly"].GetBoolean(),
-                FreezeTextEncoder = dict["FreezeTextEncoder"].GetBoolean(),
-                PriceInputFeatureDim = dict["PriceInputFeatureDim"].GetInt32(),
-                PriceMaxSequenceLength = dict["PriceMaxSequenceLength"].GetInt32(),
-                PriceEmbeddingDim = dict["PriceEmbeddingDim"].GetInt32(),
-                PriceNumHeads = dict["PriceNumHeads"].GetInt32(),
-                PriceNumLayers = dict["PriceNumLayers"].GetInt32(),
-                PriceFeedForwardDim = dict["PriceFeedForwardDim"].GetInt32(),
-                PriceUseDecoderOnly = dict["PriceUseDecoderOnly"].GetBoolean(),
-                OutputDim = dict["OutputDim"].GetInt32(),
-                UseConfidenceHead = dict["UseConfidenceHead"].GetBoolean(),
-                FFNActivationType = (ActivationType)dict["FFNActivationType"].GetInt32(),
-                AccelerationType = (AccelerationType)dict["AccelerationType"].GetInt32(),
-                AccelerationDeviceId = dict["AccelerationDeviceId"].GetInt32(),
-                L2RegulationLamda = dict["L2RegulationLamda"].GetSingle(),
-                GradientClippingThreshold = dict["GradientClippingThreshold"].GetSingle()
+                Text = new TextEncoderConfig
+                {
+                    VocabSize = dict["TextVocabSize"].GetInt32(),
+                    MaxSequenceLength = dict["TextMaxSequenceLength"].GetInt32(),
+                    EmbeddingDim = dict["TextEmbeddingDim"].GetInt32(),
+                    NumHeads = dict["TextNumHeads"].GetInt32(),
+                    NumLayers = dict["TextNumLayers"].GetInt32(),
+                    FeedForwardDim = dict["TextFeedForwardDim"].GetInt32(),
+                    UseDecoderOnly = dict["TextUseDecoderOnly"].GetBoolean(),
+                    Freeze = dict["FreezeTextEncoder"].GetBoolean()
+                },
+
+                Price = new PriceDecoderConfig
+                {
+                    InputFeatureDim = dict["PriceInputFeatureDim"].GetInt32(),
+                    MaxSequenceLength = dict["PriceMaxSequenceLength"].GetInt32(),
+                    EmbeddingDim = dict["PriceEmbeddingDim"].GetInt32(),
+                    NumHeads = dict["PriceNumHeads"].GetInt32(),
+                    NumLayers = dict["PriceNumLayers"].GetInt32(),
+                    FeedForwardDim = dict["PriceFeedForwardDim"].GetInt32(),
+                    UseDecoderOnly = dict["PriceUseDecoderOnly"].GetBoolean()
+                },
+
+                Output = new OutputHeadConfig
+                {
+                    OutputDim = dict["OutputDim"].GetInt32(),
+                    UseConfidenceHead = dict["UseConfidenceHead"].GetBoolean()
+                },
+
+                Runtime = new RuntimeConfig
+                {
+                    FFNActivationType = (ActivationType)dict["FFNActivationType"].GetInt32(),
+                    AccelerationType = (AccelerationType)dict["AccelerationType"].GetInt32(),
+                    AccelerationDeviceId = dict["AccelerationDeviceId"].GetInt32()
+                },
+
+                Regularization = new RegularizationConfig
+                {
+                    L2RegulationLamda = dict["L2RegulationLamda"].GetSingle(),
+                    GradientClippingThreshold = dict["GradientClippingThreshold"].GetSingle()
+                }
             };
+            
+            config.Validate();
 
             var model = new Model(config);
 
@@ -806,7 +681,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             {
                 ReadMatrixInto(reader, model.TextTokenEmbedding);
 
-                for (int layer = 0; layer < config.TextNumLayers; layer++)
+                for (int layer = 0; layer < config.Text.NumLayers; layer++)
                 {
                     var block = model.TextBlocks[layer];
                     ReadAttentionInto(reader, block.Attention);
@@ -819,7 +694,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 ReadMatrixInto(reader, model.PriceInputProjection);
                 ReadVectorInto(reader, model.PriceInputProjectionBias);
 
-                for (int layer = 0; layer < config.PriceNumLayers; layer++)
+                for (int layer = 0; layer < config.Price.NumLayers; layer++)
                 {
                     var block = model.PriceBlocks[layer];
                     ReadAttentionInto(reader, block.SelfAttention);
@@ -835,24 +710,24 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 ReadMatrixInto(reader, model.OutputProjection);
                 ReadVectorInto(reader, model.OutputBias);
 
-                if (config.UseConfidenceHead)
+                if (config.Output.UseConfidenceHead)
                 {
                     ReadMatrixInto(reader, model.ConfidenceProjection);
                     ReadVectorInto(reader, model.ConfidenceBias);
                 }
             }
-
-            for (int layer = 0; layer < config.TextNumLayers; layer++)
+            for (int layer = 0; layer < config.Text.NumLayers; layer++)
             {
                 var ffnDir = System.IO.Path.Combine(directory, $"text_ffn_{layer}");
-                model.TextBlocks[layer].FeedForwardNetwork = NeuralNetwork.Load(ffnDir, config.AccelerationType);
-            }
-            for (int layer = 0; layer < config.PriceNumLayers; layer++)
-            {
-                var ffnDir = System.IO.Path.Combine(directory, $"price_ffn_{layer}");
-                model.PriceBlocks[layer].FeedForwardNetwork = NeuralNetwork.Load(ffnDir, config.AccelerationType);
+                var loadedFfn = NeuralNetwork.Load(ffnDir, config.Runtime.AccelerationType);
+                model.TextBlocks[layer].ReplaceFeedForwardNetwork(loadedFfn);
             }
 
+            for (int layer = 0; layer < config.Price.NumLayers; layer++)
+            {
+                var ffnDir = System.IO.Path.Combine(directory, $"price_ffn_{layer}");
+                model.PriceBlocks[layer].FeedForwardNetwork = NeuralNetwork.Load(ffnDir, config.Runtime.AccelerationType);
+            }
             return model;
         }
 

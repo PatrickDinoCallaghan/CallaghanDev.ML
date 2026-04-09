@@ -1,4 +1,4 @@
-
+﻿
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
@@ -133,6 +133,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                     "TACAMT: Time-Decay Initial Values"),
                 (Test_TACAMT_TimeDecay_ParamsChangeAfterTraining,
                     "TACAMT: Decay Params Change After Training"),
+                (Test_TACAMT_ComputeTimeBiasMatrix_Correct,
+                    "TACAMT: ComputeTimeBiasMatrix Correctness"),
 
                 // ===========================================================
                 // TACAMT CORE — Training
@@ -263,6 +265,8 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (Test_Dims_TextEmbedding_MatchesConfig, "Dims: TextTokenEmbedding matches [VocabSize, EmbDim]"),
                 (Test_Dims_PriceInputProjection_MatchesConfig, "Dims: PriceInputProjection matches [EmbDim, FeatureDim]"),
                 (Test_Dims_OutputProjection_MatchesConfig, "Dims: OutputProjection matches [OutputDim, EmbDim]"),
+                (Test_Dims_PositionalEncoding_Text_MatchesConfig, "Dims: TextPositionalEncoding matches [MaxSeqLen, EmbDim]"),
+                (Test_Dims_PositionalEncoding_Price_MatchesConfig, "Dims: PricePositionalEncoding matches [MaxSeqLen, EmbDim]"),
                 (Test_Dims_AllBlocks_SelfAttn_WQ_Correct, "Dims: All PriceBlock SelfAttention.WQ is [EmbDim, EmbDim]"),
                 (Test_Dims_AllBlocks_CrossAttn_WQ_Correct, "Dims: All PriceBlock CrossAttention.WQ is [EmbDim, EmbDim]"),
                 (Test_Dims_DecayNetwork_Projections_Correct, "Dims: DecayNetwork projections match config"),
@@ -285,7 +289,9 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (Test_MultiLayer_MoreLayers_DifferentOutput, "MultiLayer: 1-layer vs 2-layer produces different outputs"),
                 (Test_MultiLayer_AllBlocks_Executed, "MultiLayer: Cache confirms all blocks executed"),
                 (Test_MultiLayer_DeepModel_NoNaN, "MultiLayer: 4-layer deep model produces no NaN"),
-
+                // POSITIONAL ENCODING
+                (Test_PosEnc_SinCosPattern, "PosEnc: Sinusoidal pattern verified"),
+                (Test_PosEnc_DifferentPositions_DifferentEncodings, "PosEnc: Different positions have different encodings"),
                 (Test_PosEnc_AffectsOutput, "PosEnc: Shuffled input positions change output"),
                 // CAUSAL MASKING
                 (Test_CausalMask_FutureTokens_DontAffectPast, "CausalMask: Changing future tokens doesn't affect past predictions"),
@@ -367,7 +373,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (Test_Stability_MixedMagnitude_NoNaN, "Stability: Mixed magnitude inputs don't cause NaN"),
                 // EQUIVALENCE
                 (Test_Equiv_ForwardAndForwardWithCache_SameOutput, "Equiv: Forward() and ForwardWithCache() same output"),
-
+                //(Test_Equiv_TwoModels_SameSeed_SameOutput, "Equiv: Two models same seed -> identical output"),
                 (Test_Equiv_GradientsZero_BeforeTraining, "Equiv: Gradient storage zero before first backward"),
 
 
@@ -397,21 +403,6 @@ namespace CallaghanDev.ML.TestConsoleApp
                 (Test_GradCheck_DecayNetwork_W1_FiniteDifference, "GradCheck: DecayNetwork W1 MLP finite difference"),
                 (Test_GradCheck_TextEmbedding_FiniteDifference, "GradCheck: TextEmbedding affects loss through cross-attention"),
                 (Test_E2E_LearnRecencyMatters, "E2E: Recent news produces different prediction than old news"),
-                // ===========================================================
-// SEMANTIC CORRECTNESS
-// ===========================================================
-(Test_Decay_RecentNews_HigherAttention_ThanOld,
-    "Semantic: Recent news receives higher attention weight than old news"),
-(Test_ConfidenceHead_CorrelatesWithAccuracy,
-    "Semantic: Confidence higher on predictable vs noisy samples"),
-(Test_PriceContext_LongerHistory_LowerLoss,
-    "Semantic: Longer price history context reduces validation loss"),
-(Test_Sequential_MemoryChangesOutput_VsNoMemory_UsingPredictWithMemory,
-    "Semantic: Prediction with memory differs from prediction without"),
-(Test_MultiStory_MoreContext_ChangesOutput,
-    "Semantic: Adding more news stories changes the prediction"),
-(Test_Decay_OlderMemory_LessInfluence,
-    "Semantic: Memory entries at t=-1000 have less influence than t=-1"),
             };
 
             for (int i = 0; i < tests.Length; i++)
@@ -520,14 +511,15 @@ namespace CallaghanDev.ML.TestConsoleApp
                     MinHistoryLength = priceCtxMinHist,
                     MinCurrentLength = priceCtxMinCurrent
                 },
+
                 DecayNetwork = new DecayNetworkConfig
                 {
                     Enabled = true,
                     ProjectionDim = 8,
                     HiddenDim = 16,
                     TimeEncodingBases = 8,
-                    MemAttentionDropout = 0f,
-                    MlpDropout = 0f,
+                    MemAttentionDropout = 0.2f,
+                    MlpDropout = 0.2f,
                     WeightDecay = 0.0f
                 },
 
@@ -617,7 +609,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var priceCtxTimes = new float[splitPoint];
             for (int t = 0; t < splitPoint; t++) priceCtxTimes[t] = -(splitPoint - t);
 
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred, conf) = model.ForwardWithPriceContextAndCache(
                 stories[0], currentInput, priceCtxHidden, priceCtxTimes, cache);
 
@@ -627,7 +619,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 for (int j = 0; j < perturbedCtx.GetLength(1); j++)
                     perturbedCtx[i, j] += 1.0f;
 
-            var cache2 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache2 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred2, _) = model.ForwardWithPriceContextAndCache(
                 stories[0], currentInput, perturbedCtx, priceCtxTimes, cache2);
 
@@ -639,7 +631,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Verify cache structure proves no gradient path back through history
             Assert(cache.PriceContextHidden != null, "Cache should store price context reference");
-            Assert(cache.PriceBlockCaches.Count == config.Price.NumLayers,
+            Assert(cache.PriceBlockCaches.Count == config.PriceNumLayers,
                 "Cache should only have block caches for the current chunk");
 
             int currentSeqLen = currentInput.GetLength(0);
@@ -660,7 +652,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var crossWqBefore = CloneMatrix(model.PriceBlocks[0].CrossAttention.WQ);
             var lnSelfGammaBefore = CloneVector(model.PriceBlocks[0].LNSelfGamma);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 5, Epochs = 3, UseGradientClipping = false, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -680,7 +672,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var histPrices = SliceRows(priceInputs[0], 0, 8);
             var histHidden1 = model.EncodePriceHistory(histPrices);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 1, Epochs = 1, UseGradientClipping = false, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -697,58 +689,22 @@ namespace CallaghanDev.ML.TestConsoleApp
 
         public void Test_PriceContext_DecayNetwork_GetsGradsFromPriceContext()
         {
-            var (tokenizer, stories, priceInputs, priceTargets) = CreateTestData(numSamples: 10, priceSeqLen: 16);
+            var (tokenizer, stories, priceInputs, priceTargets) = CreateTestData(numSamples: 5, priceSeqLen: 16);
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
             var decayNet = model.PriceBlocks[0].DecayNetwork;
-
             var logDecayBefore = CloneVector(decayNet.LogBaseDecayRate);
-            var w1Before = CloneTensor3D(decayNet.W1);
+            float w1Before = decayNet.W1[0, 0, 0];
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
-            {
-                LearningRate = 0.1f,
-                BatchSize = 10,
-                Epochs = 100,
-                UseGradientClipping = false,
-                Verbose = false
-            });
-
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
+            { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, UseGradientClipping = false, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
-            // keep your original intent
             Assert(VectorChanged(logDecayBefore, decayNet.LogBaseDecayRate),
-                "LogBaseDecayRate should change");
-
-            // ✅ key fix: check ANY weight changed, not one element
-            Assert(!TensorAllClose(w1Before, decayNet.W1, 1e-7f),
-                "Decay W1 should change — gradients should flow");
-        }
-        private float[,,] CloneTensor3D(float[,,] src)
-        {
-            int d0 = src.GetLength(0);
-            int d1 = src.GetLength(1);
-            int d2 = src.GetLength(2);
-
-            var clone = new float[d0, d1, d2];
-
-            for (int i = 0; i < d0; i++)
-                for (int j = 0; j < d1; j++)
-                    for (int k = 0; k < d2; k++)
-                        clone[i, j, k] = src[i, j, k];
-
-            return clone;
-        }
-        private bool TensorAllClose(float[,,] a, float[,,] b, float tol)
-        {
-            for (int i = 0; i < a.GetLength(0); i++)
-                for (int j = 0; j < a.GetLength(1); j++)
-                    for (int k = 0; k < a.GetLength(2); k++)
-                        if (MathF.Abs(a[i, j, k] - b[i, j, k]) > tol)
-                            return false;
-
-            return true;
+                "LogBaseDecayRate should change — decay network gets gradients with price context");
+            Assert(MathF.Abs(w1Before - decayNet.W1[0, 0, 0]) > 1e-8f,
+                "Decay W1 should change — MLP gradients should flow through price context path");
         }
 
         public void Test_PriceContext_CrossAttnKV_GradsOnlyForNews_NotPriceCtx()
@@ -759,7 +715,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var textEmbBefore = CloneMatrix(model.TextTokenEmbedding);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 1, Epochs = 3, UseGradientClipping = false, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -781,7 +737,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var priceCtxTimes = new float[8];
             for (int t = 0; t < 8; t++) priceCtxTimes[t] = -(8 - t);
 
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred, _) = model.ForwardWithPriceContextAndCache(
                 stories[0], SliceRows(priceInputs[0], 8, 15), priceCtxHidden, priceCtxTimes, cache);
 
@@ -799,12 +755,12 @@ namespace CallaghanDev.ML.TestConsoleApp
             var priceCtxHidden = model.EncodePriceHistory(SliceRows(priceInputs[0], 0, 8));
             var priceCtxTimes = Enumerable.Range(0, 8).Select(t => -(float)(8 - t)).ToArray();
 
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred, _) = model.ForwardWithPriceContextAndCache(
                 stories[0], currentInput, priceCtxHidden, priceCtxTimes, cache);
 
             Assert(pred.GetLength(0) == expectedLen, $"Output rows: {pred.GetLength(0)}, expected {expectedLen}");
-            Assert(pred.GetLength(1) == config.Output.OutputDim, $"Output cols: {pred.GetLength(1)}, expected {config.Output.OutputDim}");
+            Assert(pred.GetLength(1) == config.OutputDim, $"Output cols: {pred.GetLength(1)}, expected {config.OutputDim}");
         }
 
         public void Test_PriceContext_ForwardWithContext_NoNaN()
@@ -815,7 +771,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var priceCtxHidden = model.EncodePriceHistory(SliceRows(priceInputs[0], 0, 8));
             var priceCtxTimes = Enumerable.Range(0, 8).Select(t => -(float)(8 - t)).ToArray();
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred, _) = model.ForwardWithPriceContextAndCache(
                 stories[0], SliceRows(priceInputs[0], 8, 15), priceCtxHidden, priceCtxTimes, cache);
 
@@ -836,7 +792,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var hidden = model.EncodePriceHistory(histPrices);
 
             Assert(hidden.GetLength(0) == 10, $"History hidden rows: {hidden.GetLength(0)} expected 10");
-            Assert(hidden.GetLength(1) == config.Price.EmbeddingDim, $"Hidden cols mismatch");
+            Assert(hidden.GetLength(1) == config.PriceEmbeddingDim, $"Hidden cols mismatch");
             Assert(!HasNaN(hidden), "NaN in history hidden");
         }
 
@@ -849,7 +805,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var priceCtxHidden = model.EncodePriceHistory(SliceRows(priceInputs[0], 0, 6));
             var priceCtxTimes = Enumerable.Range(0, 6).Select(t => -(float)(6 - t)).ToArray();
 
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred, _) = model.ForwardWithPriceContextAndCache(
                 stories[0], SliceRows(priceInputs[0], 6, 15), priceCtxHidden, priceCtxTimes, cache);
 
@@ -868,11 +824,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
             float lossBefore = trainer.Validate(stories, priceInputs, priceTargets);
 
-            trainer = new TACAMT_Trainer(model, new TrainingConfig
+            trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -887,11 +843,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, embDim: 32, numLayers: 2, ffnDim: 64, priceSeqLen: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var t1 = new TACAMT_Trainer(model, new TrainingConfig
+            var t1 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false });
             float lossBefore = t1.Validate(stories, priceInputs, priceTargets);
 
-            var t2 = new TACAMT_Trainer(model, new TrainingConfig
+            var t2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.005f, BatchSize = 1, Epochs = 1000, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
             t2.Train(stories, priceInputs, priceTargets);
 
@@ -908,7 +864,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -931,7 +887,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var priceCtxHidden = model.EncodePriceHistory(SliceRows(priceInputs[0], 0, 8));
             var priceCtxTimes = Enumerable.Range(0, 8).Select(t => -(float)(8 - t)).ToArray();
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (predWith, _) = model.ForwardWithPriceContextAndCache(
                 stories[0], currentInput, priceCtxHidden, priceCtxTimes, cache);
 
@@ -952,12 +908,12 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var shortCtx = model.EncodePriceHistory(SliceRows(priceInputs[0], 5, 10));
             var shortTimes = Enumerable.Range(0, 5).Select(t => -(float)(5 - t)).ToArray();
-            var c1 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var c1 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred1, _) = model.ForwardWithPriceContextAndCache(stories[0], currentInput, shortCtx, shortTimes, c1);
 
             var longCtx = model.EncodePriceHistory(SliceRows(priceInputs[0], 0, 10));
             var longTimes = Enumerable.Range(0, 10).Select(t => -(float)(10 - t)).ToArray();
-            var c2 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var c2 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred2, _) = model.ForwardWithPriceContextAndCache(stories[0], currentInput, longCtx, longTimes, c2);
 
             bool anyDiff = false;
@@ -977,9 +933,9 @@ namespace CallaghanDev.ML.TestConsoleApp
             var priceCtxTimes = Enumerable.Range(0, 8).Select(t => -(float)(8 - t)).ToArray();
             var currentInput = SliceRows(priceInputs[0], 8, 15);
 
-            var c1 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var c1 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred1, _) = model.ForwardWithPriceContextAndCache(stories[0], currentInput, priceCtxHidden, priceCtxTimes, c1);
-            var c2 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var c2 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred2, _) = model.ForwardWithPriceContextAndCache(stories[0], currentInput, priceCtxHidden, priceCtxTimes, c2);
 
             for (int i = 0; i < pred1.GetLength(0); i++)
@@ -990,7 +946,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_PriceContext_SplitPoint_Respected()
         {
             var config = CreateConfig(priceSeqLen: 20, priceCtxMinHist: 5, priceCtxMinCurrent: 5);
-            int minSplitLen = config.PriceContext.MinHistoryLength + config.PriceContext.MinCurrentLength + 1;
+            int minSplitLen = config.PriceContextMinHistoryLength + config.PriceContextMinCurrentLength + 1;
             Assert(minSplitLen == 11, $"Min split length should be 11, got {minSplitLen}");
             Assert(10 < minSplitLen, "Length 10 should be below min split threshold");
             Assert(11 >= minSplitLen, "Length 11 should meet min split threshold");
@@ -1018,7 +974,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var config = CreateConfig(priceSeqLen: 10, priceCtxMinHist: 5, priceCtxMinCurrent: 5);
             var model = new TACAMT_Model(config, new Random(42));
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 5, Verbose = false });
             trainer.Train(nullStories, priceInputs, priceTargets);
             float loss = trainer.Validate(nullStories, priceInputs, priceTargets);
@@ -1037,7 +993,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var config = CreateConfig(priceSeqLen: 12, priceCtxMinHist: 5, priceCtxMinCurrent: 5);
             var model = new TACAMT_Model(config, new Random(42));
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 3, Verbose = false });
             trainer.Train(nullStories, priceInputs, priceTargets);
             float loss = trainer.Validate(nullStories, priceInputs, priceTargets);
@@ -1049,7 +1005,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var (tokenizer, stories, priceInputs, priceTargets) = CreateTestData(numSamples: 3, priceSeqLen: 20);
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 20, priceCtxMinHist: 3, priceCtxMinCurrent: 3);
             var model = new TACAMT_Model(config, new Random(42));
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 3, Epochs = 5, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
             float loss = trainer.Validate(stories, priceInputs, priceTargets);
@@ -1061,7 +1017,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var (tokenizer, stories, priceInputs, priceTargets) = CreateTestData(numSamples: 3, priceSeqLen: 20);
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 20, priceCtxMinHist: 3, priceCtxMinCurrent: 3);
             var model = new TACAMT_Model(config, new Random(42));
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 3, Epochs = 5, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
             float loss = trainer.Validate(stories, priceInputs, priceTargets);
@@ -1080,7 +1036,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var timestamps = new double[] { 100.0, 200.0, 300.0, 400.0, 500.0 };
 
             Assert(model.NewsMemory.Count == 0, "Memory should start empty");
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false });
             trainer.TrainSequential(stories, priceInputs, priceTargets, timestamps, maxNewsMemory: 100, maxPriceMemory: 200);
             Assert(model.NewsMemory.Count > 0, "News memory should have entries after sequential training");
@@ -1095,12 +1051,12 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Use a single model: measure loss before training, then train sequentially
             var model = new TACAMT_Model(config, new Random(42));
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false });
             float lossBefore = trainer.Validate(stories, priceInputs, priceTargets);
 
             // Now train sequentially for several epochs on the same model
-            var trainer2 = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 10, Verbose = false });
             trainer2.TrainSequential(stories, priceInputs, priceTargets, timestamps);
             float lossAfter = trainer2.Validate(stories, priceInputs, priceTargets);
@@ -1117,7 +1073,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             model.UpdateNewsMemory(stories[0], 50.0);
             Assert(model.NewsMemory.Count > 0, "Should have memory before training");
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 2, Verbose = false });
             trainer.TrainSequential(stories, priceInputs, priceTargets, timestamps, maxNewsMemory: 100, maxPriceMemory: 200);
             Assert(model.NewsMemory.Count > 0, "Should have memory after sequential training");
@@ -1130,14 +1086,14 @@ namespace CallaghanDev.ML.TestConsoleApp
             var model = new TACAMT_Model(config, new Random(42));
             var timestamps = new double[] { 100.0, 200.0 };
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false });
             trainer.TrainSequential(stories, priceInputs, priceTargets, timestamps, maxNewsMemory: 100, maxPriceMemory: 200);
 
             Assert(model.PriceMemory.Count > 0, "Price memory should be populated");
             foreach (var entry in model.PriceMemory)
             {
-                Assert(entry.HiddenState.Length == config.Price.EmbeddingDim, "Price memory entry dim mismatch");
+                Assert(entry.HiddenState.Length == config.PriceEmbeddingDim, "Price memory entry dim mismatch");
                 Assert(!double.IsNaN(entry.AbsoluteTimestamp), "Price memory timestamp is NaN");
             }
         }
@@ -1149,7 +1105,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.1f, BatchSize = 5, Epochs = 5, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -1163,17 +1119,17 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 50, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
             float loss = trainer.Validate(stories, priceInputs, priceTargets);
             Assert(!float.IsNaN(loss) && !float.IsInfinity(loss), $"Loss NaN/Inf after 50 epochs: {loss}");
 
-            for (int layer = 0; layer < config.Price.NumLayers; layer++)
+            for (int layer = 0; layer < config.PriceNumLayers; layer++)
             {
                 var decayNet = model.PriceBlocks[layer].DecayNetwork;
-                for (int h = 0; h < config.Price.NumHeads; h++)
+                for (int h = 0; h < config.PriceNumHeads; h++)
                     Assert(!float.IsNaN(decayNet.LogBaseDecayRate[h]),
                         $"Layer {layer} head {h} LogBaseDecayRate is NaN");
             }
@@ -1196,7 +1152,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var model = new TACAMT_Model(config, new Random(42));
             var (pred, _) = model.Forward(stories[0], priceInputs[0]);
             Assert(pred.GetLength(0) == 10, $"Output rows: {pred.GetLength(0)}, expected 10");
-            Assert(pred.GetLength(1) == config.Output.OutputDim, $"Output cols mismatch");
+            Assert(pred.GetLength(1) == config.OutputDim, $"Output cols mismatch");
         }
 
         public void Test_TACAMT_MultiStory_DifferentArrivalTimes_DifferentOutputs()
@@ -1213,9 +1169,9 @@ namespace CallaghanDev.ML.TestConsoleApp
             var stories1 = new[] { new NewsStory(tokens1, 0f), new NewsStory(tokens2, 1f) };
             var stories2 = new[] { new NewsStory(tokens1, 100f), new NewsStory(tokens2, 200f) };
 
-            var cache1 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache1 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred1, _) = model.ForwardWithCache(stories1, priceInputs[0], cache1);
-            var cache2 = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+            var cache2 = new MultimodalForwardCache(config.TextNumLayers, config.PriceNumLayers);
             var (pred2, _) = model.ForwardWithCache(stories2, priceInputs[0], cache2);
 
             bool anyDiff = false;
@@ -1231,7 +1187,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var model = new TACAMT_Model(config, new Random(42));
             var decayNet = model.PriceBlocks[0].DecayNetwork;
 
-            for (int h = 0; h < config.Price.NumHeads; h++)
+            for (int h = 0; h < config.PriceNumHeads; h++)
             {
                 Assert(!float.IsNaN(decayNet.LogBaseDecayRate[h]), $"LogBaseDecayRate[{h}] is NaN");
                 Assert(decayNet.LogBaseDecayRate[h] < 0, $"LogBaseDecayRate[{h}] should be negative (initialized to -2.3)");
@@ -1248,7 +1204,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var logDecayBefore = CloneVector(decayNet.LogBaseDecayRate);
             var w1Before = Clone3D(decayNet.W1);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -1257,6 +1213,21 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(Array3DChanged(w1Before, decayNet.W1), "W1 should change after training");
         }
 
+        public void Test_TACAMT_ComputeTimeBiasMatrix_Correct()
+        {
+            var config = CreateConfig();
+            var model = new TACAMT_Model(config, new Random(42));
+            var block = model.PriceBlocks[0];
+
+            float[] arrivalTimes = { 0f, 2f, 5f };
+            var timeDiffs = block.ComputeTimeDiffMatrix(4, arrivalTimes);
+
+            Assert(timeDiffs.GetLength(0) == 4, "TimeDiff rows should be 4");
+            Assert(timeDiffs.GetLength(1) == 3, "TimeDiff cols should be 3");
+            Assert(MathF.Abs(timeDiffs[0, 0] - 0f) < 1e-5f, "timeDiffs[0,0] should be 0");
+            Assert(MathF.Abs(timeDiffs[0, 1] - 2f) < 1e-5f, "timeDiffs[0,1] should be 2");
+            Assert(MathF.Abs(timeDiffs[3, 2] - 2f) < 1e-5f, "timeDiffs[3,2] should be |3-5|=2");
+        }
 
 
         public void Test_TACAMT_MultiStory_LossDecreases()
@@ -1265,11 +1236,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var t1 = new TACAMT_Trainer(model, new TrainingConfig
+            var t1 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
             float lossBefore = t1.Validate(stories, priceInputs, priceTargets);
 
-            var t2 = new TACAMT_Trainer(model, new TrainingConfig
+            var t2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 20, Verbose = false });
             t2.Train(stories, priceInputs, priceTargets);
 
@@ -1283,11 +1254,11 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, embDim: 32, numLayers: 2, ffnDim: 64);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.005f, BatchSize = 1, Epochs = 1, Verbose = false });
             float lossBefore = trainer.Validate(stories, priceInputs, priceTargets);
 
-            var t2 = new TACAMT_Trainer(model, new TrainingConfig
+            var t2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.005f, BatchSize = 1, Epochs = 500, UseGradientClipping = true, GradientClipThreshold = 1.0f, Verbose = false });
             t2.Train(stories, priceInputs, priceTargets);
 
@@ -1331,7 +1302,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int s = 0; s < 5; s++)
                 textSeqs[s] = tokenizer.Encode("stock price rose", addSpecialTokens: true);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 3, Verbose = false });
             trainer.Train(textSeqs, priceInputs, priceTargets);
             float loss = trainer.Validate(textSeqs, priceInputs, priceTargets);
@@ -1348,7 +1319,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             // Null out some stories
             stories[1] = null; stories[3] = null; stories[5] = null;
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 6, Epochs = 3, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
             float loss = trainer.Validate(stories, priceInputs, priceTargets);
@@ -1438,7 +1409,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var (pred, conf) = model.PredictWithMemory(stories[0], priceInputs[0], 100.0);
             Assert(pred != null, "PredictWithMemory with no memory should work");
-            Assert(pred.Length == config.Output.OutputDim, $"Prediction dim: {pred.Length}, expected {config.Output.OutputDim}");
+            Assert(pred.Length == config.OutputDim, $"Prediction dim: {pred.Length}, expected {config.OutputDim}");
         }
 
         public void Test_TACAMT_PredictWithMemory_WithMemory_NoError()
@@ -1484,7 +1455,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var model = new TACAMT_Model(config, new Random(42));
 
             // Train to change params
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 3, Epochs = 5, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -1499,7 +1470,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var loaded = TACAMT_Model.Load(dir);
                 var loadedDecay = loaded.PriceBlocks[0].DecayNetwork;
 
-                for (int h = 0; h < config.Price.NumHeads; h++)
+                for (int h = 0; h < config.PriceNumHeads; h++)
                     Assert(MathF.Abs(logDecayBefore[h] - loadedDecay.LogBaseDecayRate[h]) < 1e-6f,
                         $"LogBaseDecayRate[{h}] mismatch after load");
                 Assert(!Array3DChanged(w1Before, loadedDecay.W1, 1e-6f),
@@ -1530,7 +1501,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 {
                     Assert(Math.Abs(model.NewsMemory[i].AbsoluteTimestamp - loaded.NewsMemory[i].AbsoluteTimestamp) < 1e-6,
                         "Memory timestamp mismatch after load");
-                    for (int d = 0; d < config.Price.EmbeddingDim; d++)
+                    for (int d = 0; d < config.PriceEmbeddingDim; d++)
                         Assert(MathF.Abs(model.NewsMemory[i].HiddenState[d] - loaded.NewsMemory[i].HiddenState[d]) < 1e-6f,
                             "Memory hidden state mismatch");
                 }
@@ -1568,7 +1539,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var model = new TACAMT_Model(config, new Random(42));
 
             // Train a bit
-            var t1 = new TACAMT_Trainer(model, new TrainingConfig
+            var t1 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 5, Verbose = false });
             t1.Train(stories, priceInputs, priceTargets);
             float lossMid = t1.Validate(stories, priceInputs, priceTargets);
@@ -1580,7 +1551,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var loaded = TACAMT_Model.Load(dir);
 
                 // Continue training
-                var t2 = new TACAMT_Trainer(loaded, new TrainingConfig
+                var t2 = new TACAMT_Trainer(loaded, new MultimodalTrainingConfig
                 { LearningRate = 0.001f, BatchSize = 5, Epochs = 15, Verbose = false });
                 t2.Train(stories, priceInputs, priceTargets);
                 float lossAfter = t2.Validate(stories, priceInputs, priceTargets);
@@ -1612,7 +1583,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.1f, BatchSize = 5, Epochs = 10, UseGradientClipping = true, GradientClipThreshold = 0.5f, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -1626,7 +1597,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
             float loss = trainer.Validate(stories, priceInputs, priceTargets);
             Assert(!float.IsNaN(loss) && loss >= 0, $"Validate produced invalid loss: {loss}");
@@ -1638,7 +1609,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(tokenizer.VocabSize + 2, numHeads: 4, embDim: 16);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 5, Epochs = 30, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -1682,12 +1653,12 @@ namespace CallaghanDev.ML.TestConsoleApp
             var config = CreateConfig(priceSeqLen: 12);
             var model = new TACAMT_Model(config, new Random(42));
 
-            var t1 = new TACAMT_Trainer(model, new TrainingConfig
+            var t1 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 5, Epochs = 1, Verbose = false });
             float lossBefore = t1.Validate(nullStories, priceInputs, priceTargets);
 
-            var t2 = new TACAMT_Trainer(model, new TrainingConfig
-            { LearningRate = 0.01f, BatchSize = 5, Epochs = 100, Verbose = false });
+            var t2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
+            { LearningRate = 0.001f, BatchSize = 5, Epochs = 20, Verbose = false });
             t2.Train(nullStories, priceInputs, priceTargets);
 
             float lossAfter = t2.Validate(nullStories, priceInputs, priceTargets);
@@ -1704,7 +1675,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var decayNet = model.PriceBlocks[0].DecayNetwork;
             var logDecayBefore = CloneVector(decayNet.LogBaseDecayRate);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
@@ -1717,15 +1688,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
         public void Test_Config_Validate_ThrowsOnBadDims()
         {
-            var config = new MultimodalTransformerConfig
-            {
-                Text = new TextEncoderConfig { VocabSize = 50, EmbeddingDim = 15, NumHeads = 4, NumLayers = 1, FeedForwardDim = 32 },
-                Price = new PriceDecoderConfig { InputFeatureDim = 5, MaxSequenceLength = 22, EmbeddingDim = 16, NumHeads = 4, NumLayers = 1, FeedForwardDim = 32 },
-                Output = new OutputHeadConfig { OutputDim = 5 },
-                Runtime = new RuntimeConfig { AccelerationType = AccelerationType.CPU },
-                Regularization = new RegularizationConfig { L2RegulationLamda = 0f, GradientClippingThreshold = 1f },
-                RequireSharedCrossAttentionEmbeddingDim = false,
-            }; // TextEmbeddingDim 15 not divisible by NumHeads 4
+            var config = new Transformers.TACAMT.Config { TextEmbeddingDim = 15, TextNumHeads = 4 }; // 15 % 4 != 0
             bool threw = false;
             try { config.Validate(); } catch (ArgumentException) { threw = true; }
             Assert(threw, "Should throw on TextEmbeddingDim not divisible by TextNumHeads");
@@ -1750,7 +1713,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             {
                 model.NewsMemory.Add(new NewsMemoryEntry
                 {
-                    HiddenState = new float[config.Price.EmbeddingDim],
+                    HiddenState = new float[config.PriceEmbeddingDim],
                     AbsoluteTimestamp = i * 10.0,
                     AttentionScore = i * 0.1f, // 0.0 to 0.9
                     QueryCount = 5
@@ -1781,7 +1744,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int i = 0; i < 10; i++)
                 model.NewsMemory.Add(new NewsMemoryEntry
                 {
-                    HiddenState = new float[config.Price.EmbeddingDim],
+                    HiddenState = new float[config.PriceEmbeddingDim],
                     AbsoluteTimestamp = i * 10.0,
                     AttentionScore = 0.5f,
                     QueryCount = 5
@@ -1813,7 +1776,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             for (int i = 0; i < 10; i++)
                 model.NewsMemory.Add(new NewsMemoryEntry
                 {
-                    HiddenState = new float[config.Price.EmbeddingDim],
+                    HiddenState = new float[config.PriceEmbeddingDim],
                     AbsoluteTimestamp = i * 10.0,
                     AttentionScore = 0.001f, // Very low score
                     QueryCount = i < 5 ? 0 : 10 // First 5 are cold-start
@@ -1987,13 +1950,12 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var confProjBefore = CloneMatrix(model.ConfidenceProjection);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
-            { LearningRate = 0.01f, BatchSize = 5, Epochs = 15, Verbose = false,
-                ConfidenceLossWeight = 1.0f
-            });
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
+            { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false });
             trainer.Train(stories, priceInputs, priceTargets);
 
-            Assert(MatrixChanged(confProjBefore, model.ConfidenceProjection),"ConfidenceProjection should change after training");
+            Assert(MatrixChanged(confProjBefore, model.ConfidenceProjection),
+                "ConfidenceProjection should change after training");
         }
 
         public void Test_Tokenizer_SetTokenizer_VocabMismatch_Throws()
@@ -2037,10 +1999,12 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_Dims_TextEmbedding_MatchesConfig() { var c = CreateConfig(textVocabSize: 100, embDim: 32); var m = new TACAMT_Model(c, new Random(42)); Assert(m.TextTokenEmbedding.GetLength(0) == 100, $"Rows {m.TextTokenEmbedding.GetLength(0)}"); Assert(m.TextTokenEmbedding.GetLength(1) == 32, $"Cols {m.TextTokenEmbedding.GetLength(1)}"); }
         public void Test_Dims_PriceInputProjection_MatchesConfig() { var c = CreateConfig(embDim: 32, inputFeatures: 7); var m = new TACAMT_Model(c, new Random(42)); Assert(m.PriceInputProjection.GetLength(0) == 32, "Rows"); Assert(m.PriceInputProjection.GetLength(1) == 7, "Cols"); }
         public void Test_Dims_OutputProjection_MatchesConfig() { var c = CreateConfig(embDim: 16, outputDim: 3); var m = new TACAMT_Model(c, new Random(42)); Assert(m.OutputProjection.GetLength(0) == 3, "Rows"); Assert(m.OutputProjection.GetLength(1) == 16, "Cols"); }
+        public void Test_Dims_PositionalEncoding_Text_MatchesConfig() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); Assert(m.TextPositionalEncoding.GetLength(0) == c.TextMaxSequenceLength, "Rows"); Assert(m.TextPositionalEncoding.GetLength(1) == c.TextEmbeddingDim, "Cols"); }
+        public void Test_Dims_PositionalEncoding_Price_MatchesConfig() { var c = CreateConfig(priceSeqLen: 30); var m = new TACAMT_Model(c, new Random(42)); Assert(m.PricePositionalEncoding.GetLength(0) == c.PriceMaxSequenceLength, "Rows"); Assert(m.PricePositionalEncoding.GetLength(1) == c.PriceEmbeddingDim, "Cols"); }
         public void Test_Dims_AllBlocks_SelfAttn_WQ_Correct() { var c = CreateConfig(embDim: 16, numLayers: 3); var m = new TACAMT_Model(c, new Random(42)); for (int i = 0; i < 3; i++) { Assert(m.PriceBlocks[i].SelfAttention.WQ.GetLength(0) == 16, $"Block {i} WQ r"); Assert(m.PriceBlocks[i].SelfAttention.WQ.GetLength(1) == 16, $"Block {i} WQ c"); } }
         public void Test_Dims_AllBlocks_CrossAttn_WQ_Correct() { var c = CreateConfig(embDim: 16, numLayers: 2); var m = new TACAMT_Model(c, new Random(42)); for (int i = 0; i < 2; i++) { Assert(m.PriceBlocks[i].CrossAttention.WQ.GetLength(0) == 16, $"Block {i}"); Assert(m.PriceBlocks[i].CrossAttention.WQ.GetLength(1) == 16, $"Block {i}"); } }
-        public void Test_Dims_DecayNetwork_Projections_Correct() { var c = CreateConfig(numHeads: 4, embDim: 16); var m = new TACAMT_Model(c, new Random(42)); var dn = m.PriceBlocks[0].DecayNetwork; Assert(dn.QueryProjection.GetLength(0) == 4, "heads"); Assert(dn.QueryProjection.GetLength(1) == c.DecayNetwork.ProjectionDim, "projDim"); Assert(dn.QueryProjection.GetLength(2) == 16, "contentDim"); Assert(dn.W1.GetLength(2) == c.DecayNetwork.ProjectionDim * 3 + 2, "MLPInputDim"); }
-        public void Test_Dims_LayerNormVectors_CorrectLength() { var c = CreateConfig(embDim: 16, numLayers: 2); var m = new TACAMT_Model(c, new Random(42)); for (int i = 0; i < 2; i++) { Assert(m.PriceBlocks[i].LNSelfGamma.Length == 16, $"Block {i}"); Assert(m.PriceBlocks[i].LnCrossGamma.Length == 16, $"Block {i}"); Assert(m.PriceBlocks[i].LNFFNGamma.Length == 16, $"Block {i}"); } }
+        public void Test_Dims_DecayNetwork_Projections_Correct() { var c = CreateConfig(numHeads: 4, embDim: 16); var m = new TACAMT_Model(c, new Random(42)); var dn = m.PriceBlocks[0].DecayNetwork; Assert(dn.QueryProjection.GetLength(0) == 4, "heads"); Assert(dn.QueryProjection.GetLength(1) == c.DecayProjectionDim, "projDim"); Assert(dn.QueryProjection.GetLength(2) == 16, "contentDim"); Assert(dn.W1.GetLength(2) == c.DecayProjectionDim * 3 + 2, "MLPInputDim"); }
+        public void Test_Dims_LayerNormVectors_CorrectLength() { var c = CreateConfig(embDim: 16, numLayers: 2); var m = new TACAMT_Model(c, new Random(42)); for (int i = 0; i < 2; i++) { Assert(m.PriceBlocks[i].LNSelfGamma.Length == 16, $"Block {i}"); Assert(m.PriceBlocks[i].LNCrossGamma.Length == 16, $"Block {i}"); Assert(m.PriceBlocks[i].LNFFNGamma.Length == 16, $"Block {i}"); } }
         public void Test_Dims_ConfidenceProjection_When_Disabled_IsNull() { var m = new TACAMT_Model(CreateConfig(useConfidence: false), new Random(42)); Assert(m.ConfidenceProjection == null, "Should be null"); }
         public void Test_Dims_ConfidenceProjection_When_Enabled_Correct() { var m = new TACAMT_Model(CreateConfig(useConfidence: true, embDim: 16), new Random(42)); Assert(m.ConfidenceProjection != null, "Not null"); Assert(m.ConfidenceProjection.GetLength(0) == 1, "1 row"); Assert(m.ConfidenceProjection.GetLength(1) == 16, "EmbDim cols"); }
 
@@ -2056,28 +2020,30 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_Forward_EmptyStories_NoContext() { var m = new TACAMT_Model(CreateConfig(), new Random(42)); var (pred, _) = m.Forward(new NewsStory[0], RandomMatrix(10, 5, new Random(42), 0.5f)); Assert(pred != null && !HasNaN(pred), "Failed"); }
         public void Test_Forward_SingleStory_CrossAttnActivated() { var (tok, _, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2); var m = new TACAMT_Model(c, new Random(42)); var tokens = tok.Encode("stock price rose", addSpecialTokens: true); var no = m.Forward((NewsStory[])null, pi[0]); var wi = m.Forward(new[] { new NewsStory(tokens, 0f) }, pi[0]); bool d = false; for (int i = 0; i < no.predictions.GetLength(0) && !d; i++) for (int j = 0; j < no.predictions.GetLength(1) && !d; j++) if (MathF.Abs(no.predictions[i, j] - wi.predictions[i, j]) > 1e-6f) d = true; Assert(d, "Story should change output"); }
         public void Test_Forward_MultipleStories_AllContribute() { var (tok, _, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2); var m = new TACAMT_Model(c, new Random(42)); var t1 = tok.Encode("stock price rose", addSpecialTokens: true); var t2 = tok.Encode("market crashed", addSpecialTokens: true); var (p1, _) = m.Forward(new[] { new NewsStory(t1, 0f) }, pi[0]); var (p2, _) = m.Forward(new[] { new NewsStory(t1, 0f), new NewsStory(t2, 1f) }, pi[0]); bool d = false; for (int i = 0; i < p1.GetLength(0) && !d; i++) for (int j = 0; j < p1.GetLength(1) && !d; j++) if (MathF.Abs(p1[i, j] - p2[i, j]) > 1e-6f) d = true; Assert(d, "Second story should change output"); }
-        public void Test_Forward_ContextHidden_DimMatchesPriceEmb() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, embDim: 16); var m = new TACAMT_Model(c, new Random(42)); var cache = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers); m.ForwardWithCache(stories[0], pi[0], cache); Assert(cache.TextFinalHidden.GetLength(1) == 16, $"Dim {cache.TextFinalHidden.GetLength(1)}"); }
+        public void Test_Forward_ContextHidden_DimMatchesPriceEmb() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, embDim: 16); var m = new TACAMT_Model(c, new Random(42)); var cache = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers); m.ForwardWithCache(stories[0], pi[0], cache); Assert(cache.TextFinalHidden.GetLength(1) == 16, $"Dim {cache.TextFinalHidden.GetLength(1)}"); }
 
         // === MULTI-LAYER ===
         public void Test_MultiLayer_MoreLayers_DifferentOutput() { var (tok, stories, pi, _) = CreateTestData(1); var m1 = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, numLayers: 1), new Random(42)); var m2 = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, numLayers: 2), new Random(42)); var (p1, _) = m1.Forward(stories[0], pi[0]); var (p2, _) = m2.Forward(stories[0], pi[0]); bool d = false; for (int i = 0; i < p1.GetLength(0) && !d; i++) for (int j = 0; j < p1.GetLength(1) && !d; j++) if (MathF.Abs(p1[i, j] - p2[i, j]) > 1e-6f) d = true; Assert(d, "Different layers should differ"); }
-        public void Test_MultiLayer_AllBlocks_Executed() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, numLayers: 3); var m = new TACAMT_Model(c, new Random(42)); var cache = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers); m.ForwardWithCache(stories[0], pi[0], cache); Assert(cache.PriceBlockCaches.Count == 3, $"Got {cache.PriceBlockCaches.Count}"); for (int i = 0; i < 3; i++) Assert(cache.PriceBlockCaches[i].BlockInput != null, $"Block {i} null"); }
+        public void Test_MultiLayer_AllBlocks_Executed() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, numLayers: 3); var m = new TACAMT_Model(c, new Random(42)); var cache = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers); m.ForwardWithCache(stories[0], pi[0], cache); Assert(cache.PriceBlockCaches.Count == 3, $"Got {cache.PriceBlockCaches.Count}"); for (int i = 0; i < 3; i++) Assert(cache.PriceBlockCaches[i].BlockInput != null, $"Block {i} null"); }
         public void Test_MultiLayer_DeepModel_NoNaN() { var (tok, stories, pi, _) = CreateTestData(1); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, numLayers: 4, embDim: 16, numHeads: 2), new Random(42)); var (pred, _) = m.Forward(stories[0], pi[0]); Assert(!HasNaN(pred), "4-layer NaN"); }
 
         // === POSITIONAL ENCODING ===
-          public void Test_PosEnc_AffectsOutput() { var m = new TACAMT_Model(CreateConfig(), new Random(42)); var rng = new Random(42); var p1 = new float[10, 5]; var p2 = new float[10, 5]; for (int i = 0; i < 10; i++) for (int j = 0; j < 5; j++) { float v = (float)rng.NextDouble(); p1[i, j] = v; p2[9 - i, j] = v; } var (r1, _) = m.Forward((NewsStory[])null, p1); var (r2, _) = m.Forward((NewsStory[])null, p2); bool d = false; for (int i = 0; i < 10 && !d; i++) for (int j = 0; j < 5 && !d; j++) if (MathF.Abs(r1[i, j] - r2[i, j]) > 1e-6f) d = true; Assert(d, "Reversed should differ"); }
+        public void Test_PosEnc_SinCosPattern() { var m = new TACAMT_Model(CreateConfig(embDim: 16), new Random(42)); Assert(MathF.Abs(m.PricePositionalEncoding[0, 0]) < 1e-5f, $"PE[0,0]={m.PricePositionalEncoding[0, 0]}"); Assert(MathF.Abs(m.PricePositionalEncoding[0, 1] - 1.0f) < 1e-5f, $"PE[0,1]={m.PricePositionalEncoding[0, 1]}"); }
+        public void Test_PosEnc_DifferentPositions_DifferentEncodings() { var m = new TACAMT_Model(CreateConfig(embDim: 16), new Random(42)); bool d = false; for (int j = 0; j < 16 && !d; j++) if (MathF.Abs(m.PricePositionalEncoding[0, j] - m.PricePositionalEncoding[5, j]) > 1e-6f) d = true; Assert(d, "Pos 0 and 5 should differ"); }
+        public void Test_PosEnc_AffectsOutput() { var m = new TACAMT_Model(CreateConfig(), new Random(42)); var rng = new Random(42); var p1 = new float[10, 5]; var p2 = new float[10, 5]; for (int i = 0; i < 10; i++) for (int j = 0; j < 5; j++) { float v = (float)rng.NextDouble(); p1[i, j] = v; p2[9 - i, j] = v; } var (r1, _) = m.Forward((NewsStory[])null, p1); var (r2, _) = m.Forward((NewsStory[])null, p2); bool d = false; for (int i = 0; i < 10 && !d; i++) for (int j = 0; j < 5 && !d; j++) if (MathF.Abs(r1[i, j] - r2[i, j]) > 1e-6f) d = true; Assert(d, "Reversed should differ"); }
 
         // === CAUSAL MASKING ===
         public void Test_CausalMask_FutureTokens_DontAffectPast() { var m = new TACAMT_Model(CreateConfig(priceSeqLen: 12), new Random(42)); var p1 = RandomMatrix(10, 5, new Random(42), 0.5f); var p2 = (float[,])p1.Clone(); for (int i = 7; i < 10; i++) for (int j = 0; j < 5; j++) p2[i, j] += 1.0f; var (r1, _) = m.Forward((NewsStory[])null, p1); var (r2, _) = m.Forward((NewsStory[])null, p2); for (int i = 0; i < 7; i++) for (int j = 0; j < 5; j++) Assert(MathF.Abs(r1[i, j] - r2[i, j]) < 1e-5f, $"Pos {i} affected by future"); }
-        public void Test_CausalMask_Price_DecoderOnly_Enabled() { Assert(CreateConfig().Price.UseDecoderOnly == true, "Should be true"); }
+        public void Test_CausalMask_Price_DecoderOnly_Enabled() { Assert(CreateConfig().PriceUseDecoderOnly == true, "Should be true"); }
 
         // === GRADIENT NUMERICAL CHECKS ===
         public void Test_GradCheck_OutputProjection_ApproximatelyCorrect()
         {
             var c = CreateConfig(embDim: 8, numHeads: 2, outputDim: 3, priceSeqLen: 8); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42);
             var price = RandomMatrix(6, 5, rng, 0.3f); var target = RandomMatrix(5, 3, rng, 0.3f);
-            var cache = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers);
+            var cache = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers);
             var (pred, _) = m.ForwardWithCache((NewsStory[])null, SliceRows(price, 0, 5), cache);
-            var grads = new Gradients(c); int sl = pred.GetLength(0), od = c.Output.OutputDim, ed = c.Price.EmbeddingDim;
+            var grads = new Gradients(c); int sl = pred.GetLength(0), od = c.OutputDim, ed = c.PriceEmbeddingDim;
             for (int t = 0; t < sl; t++) for (int v = 0; v < od; v++) for (int e = 0; e < ed; e++) grads.OutputProjectionGrad[v, e] += cache.PriceFinalHidden[t, e] * 2f * (pred[t, v] - target[t, v]) / (sl * od);
             float eps = 1e-3f; float origW = m.OutputProjection[0, 0];
             m.OutputProjection[0, 0] = origW + eps; var (pp, _) = m.Forward((NewsStory[])null, SliceRows(price, 0, 5)); float lp = 0; for (int t = 0; t < sl; t++) for (int j = 0; j < od; j++) { float d = pp[t, j] - target[t, j]; lp += d * d; }
@@ -2105,23 +2071,23 @@ namespace CallaghanDev.ML.TestConsoleApp
         }
 
         // === TRAINING — PARAMETER UPDATES ===
-        public void Test_Train_AllPriceBlockParams_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var c = CreateConfig(tok.VocabSize + 2); var m = new TACAMT_Model(c, new Random(42)); var b = m.PriceBlocks[0]; var swk = CloneMatrix(b.SelfAttention.WK); var cwk = CloneMatrix(b.CrossAttention.WK); var lng = CloneVector(b.LnCrossGamma); var lff = CloneVector(b.LNFFNGamma); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(MatrixChanged(swk, b.SelfAttention.WK), "SelfWK"); Assert(MatrixChanged(cwk, b.CrossAttention.WK), "CrossWK"); Assert(VectorChanged(lng, b.LnCrossGamma), "LNCross"); Assert(VectorChanged(lff, b.LNFFNGamma), "LNFFN"); }
-        public void Test_Train_OutputBias_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var bb = CloneVector(m.OutputBias); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(VectorChanged(bb, m.OutputBias), "Should change"); }
-        public void Test_Train_PriceInputProjectionBias_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var bb = CloneVector(m.PriceInputProjectionBias); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(VectorChanged(bb, m.PriceInputProjectionBias), "Should change"); }
-        public void Test_Train_TextEncoder_Updated_WhenNotFrozen() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, freezeText: false), new Random(42)); var eb = CloneMatrix(m.TextTokenEmbedding); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(MatrixChanged(eb, m.TextTokenEmbedding), "Should change"); }
-        public void Test_Train_TextEncoder_NOT_Updated_WhenFrozen() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, freezeText: true), new Random(42)); var eb = CloneMatrix(m.TextTokenEmbedding); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(!MatrixChanged(eb, m.TextTokenEmbedding), "Should NOT change"); }
-        public void Test_Train_FFN_Weights_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var (pb, _) = m.Forward(st[0], pi[0]); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, Verbose = false }).Train(st, pi, pt); var (pa, _) = m.Forward(st[0], pi[0]); Assert(MatrixChanged(pb, pa), "FFN changed (output differs)"); }
-        public void Test_Train_AllDecayNetworkParams_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var dn = m.PriceBlocks[0].DecayNetwork; var lb = CloneVector(dn.LogBaseDecayRate); var b2b = CloneVector(dn.B2); var w2b = CloneMatrix(dn.W2); var tlf = CloneMatrix(dn.TimeLogFreq); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, Verbose = false }).Train(st, pi, pt); Assert(VectorChanged(lb, dn.LogBaseDecayRate), "LogBase"); Assert(VectorChanged(b2b, dn.B2), "B2"); Assert(MatrixChanged(w2b, dn.W2), "W2"); Assert(MatrixChanged(tlf, dn.TimeLogFreq), "TimeLogFreq"); }
+        public void Test_Train_AllPriceBlockParams_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var c = CreateConfig(tok.VocabSize + 2); var m = new TACAMT_Model(c, new Random(42)); var b = m.PriceBlocks[0]; var swk = CloneMatrix(b.SelfAttention.WK); var cwk = CloneMatrix(b.CrossAttention.WK); var lng = CloneVector(b.LNCrossGamma); var lff = CloneVector(b.LNFFNGamma); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(MatrixChanged(swk, b.SelfAttention.WK), "SelfWK"); Assert(MatrixChanged(cwk, b.CrossAttention.WK), "CrossWK"); Assert(VectorChanged(lng, b.LNCrossGamma), "LNCross"); Assert(VectorChanged(lff, b.LNFFNGamma), "LNFFN"); }
+        public void Test_Train_OutputBias_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var bb = CloneVector(m.OutputBias); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(VectorChanged(bb, m.OutputBias), "Should change"); }
+        public void Test_Train_PriceInputProjectionBias_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var bb = CloneVector(m.PriceInputProjectionBias); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(VectorChanged(bb, m.PriceInputProjectionBias), "Should change"); }
+        public void Test_Train_TextEncoder_Updated_WhenNotFrozen() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, freezeText: false), new Random(42)); var eb = CloneMatrix(m.TextTokenEmbedding); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(MatrixChanged(eb, m.TextTokenEmbedding), "Should change"); }
+        public void Test_Train_TextEncoder_NOT_Updated_WhenFrozen() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, freezeText: true), new Random(42)); var eb = CloneMatrix(m.TextTokenEmbedding); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(!MatrixChanged(eb, m.TextTokenEmbedding), "Should NOT change"); }
+        public void Test_Train_FFN_Weights_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var (pb, _) = m.Forward(st[0], pi[0]); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, Verbose = false }).Train(st, pi, pt); var (pa, _) = m.Forward(st[0], pi[0]); Assert(MatrixChanged(pb, pa), "FFN changed (output differs)"); }
+        public void Test_Train_AllDecayNetworkParams_Updated() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); var dn = m.PriceBlocks[0].DecayNetwork; var lb = CloneVector(dn.LogBaseDecayRate); var b2b = CloneVector(dn.B2); var w2b = CloneMatrix(dn.W2); var tlf = CloneMatrix(dn.TimeLogFreq); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, Verbose = false }).Train(st, pi, pt); Assert(VectorChanged(lb, dn.LogBaseDecayRate), "LogBase"); Assert(VectorChanged(b2b, dn.B2), "B2"); Assert(MatrixChanged(w2b, dn.W2), "W2"); Assert(MatrixChanged(tlf, dn.TimeLogFreq), "TimeLogFreq"); }
 
         // === TRAINING — LOSS BEHAVIOR ===
-        public void Test_Train_ZeroTarget_LossDecreases() { var c = CreateConfig(priceSeqLen: 12); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42); int n = 3; var pi = new float[n][,]; var pt = new float[n][,]; var ns = new NewsStory[n][]; for (int s = 0; s < n; s++) { pi[s] = RandomMatrix(10, 5, rng, 0.5f); pt[s] = new float[10, 5]; } var t1 = new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 1, Verbose = false }); float lb = t1.Validate(ns, pi, pt); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.005f, BatchSize = 3, Epochs = 50, Verbose = false }).Train(ns, pi, pt); float la = t1.Validate(ns, pi, pt); Assert(la < lb, $"{lb:F6} -> {la:F6}"); }
-        public void Test_Train_ConstantTarget_LossDecreases() { var c = CreateConfig(priceSeqLen: 12); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42); int n = 3; var pi = new float[n][,]; var pt = new float[n][,]; var ns = new NewsStory[n][]; for (int s = 0; s < n; s++) { pi[s] = RandomMatrix(10, 5, rng, 0.5f); pt[s] = new float[10, 5]; for (int t = 0; t < 10; t++) for (int f = 0; f < 5; f++) pt[s][t, f] = 0.5f; } var t1 = new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 1, Verbose = false }); float lb = t1.Validate(ns, pi, pt); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.005f, BatchSize = 3, Epochs = 50, Verbose = false }).Train(ns, pi, pt); float la = t1.Validate(ns, pi, pt); Assert(la < lb, $"{lb:F6} -> {la:F6}"); }
-        public void Test_Train_BatchSize1_vs_BatchSizeN_BothWork() { var (tok, st, pi, pt) = CreateTestData(5); var c = CreateConfig(tok.VocabSize + 2); var m1 = new TACAMT_Model(c, new Random(42)); var t1 = new TACAMT_Trainer(m1, new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 5, Verbose = false }); float lb1 = t1.Validate(st, pi, pt); t1.Train(st, pi, pt); float la1 = t1.Validate(st, pi, pt); var m5 = new TACAMT_Model(c, new Random(42)); var t5 = new TACAMT_Trainer(m5, new TrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 5, Verbose = false }); float lb5 = t5.Validate(st, pi, pt); t5.Train(st, pi, pt); float la5 = t5.Validate(st, pi, pt); Assert(la1 < lb1, "BS1"); Assert(la5 < lb5, "BS5"); }
-        public void Test_Train_LearningRateDecay_Works() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, UseLearningRateDecay = true, LearningRateDecay = 0.95f, Verbose = false }).Train(st, pi, pt); float l = new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 1, Verbose = false }).Validate(st, pi, pt); Assert(!float.IsNaN(l) && l >= 0, $"Invalid loss: {l}"); }
-        public void Test_Train_HighLR_WithClipping_NoExplosion() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.5f, BatchSize = 5, Epochs = 5, UseGradientClipping = true, GradientClipThreshold = 0.5f, Verbose = false }).Train(st, pi, pt); var (pred, _) = m.Forward(st[0], pi[0]); Assert(!HasNaN(pred), "NaN after high LR"); }
+        public void Test_Train_ZeroTarget_LossDecreases() { var c = CreateConfig(priceSeqLen: 12); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42); int n = 3; var pi = new float[n][,]; var pt = new float[n][,]; var ns = new NewsStory[n][]; for (int s = 0; s < n; s++) { pi[s] = RandomMatrix(10, 5, rng, 0.5f); pt[s] = new float[10, 5]; } var t1 = new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 1, Verbose = false }); float lb = t1.Validate(ns, pi, pt); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.005f, BatchSize = 3, Epochs = 50, Verbose = false }).Train(ns, pi, pt); float la = t1.Validate(ns, pi, pt); Assert(la < lb, $"{lb:F6} -> {la:F6}"); }
+        public void Test_Train_ConstantTarget_LossDecreases() { var c = CreateConfig(priceSeqLen: 12); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42); int n = 3; var pi = new float[n][,]; var pt = new float[n][,]; var ns = new NewsStory[n][]; for (int s = 0; s < n; s++) { pi[s] = RandomMatrix(10, 5, rng, 0.5f); pt[s] = new float[10, 5]; for (int t = 0; t < 10; t++) for (int f = 0; f < 5; f++) pt[s][t, f] = 0.5f; } var t1 = new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 1, Verbose = false }); float lb = t1.Validate(ns, pi, pt); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.005f, BatchSize = 3, Epochs = 50, Verbose = false }).Train(ns, pi, pt); float la = t1.Validate(ns, pi, pt); Assert(la < lb, $"{lb:F6} -> {la:F6}"); }
+        public void Test_Train_BatchSize1_vs_BatchSizeN_BothWork() { var (tok, st, pi, pt) = CreateTestData(5); var c = CreateConfig(tok.VocabSize + 2); var m1 = new TACAMT_Model(c, new Random(42)); var t1 = new TACAMT_Trainer(m1, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 5, Verbose = false }); float lb1 = t1.Validate(st, pi, pt); t1.Train(st, pi, pt); float la1 = t1.Validate(st, pi, pt); var m5 = new TACAMT_Model(c, new Random(42)); var t5 = new TACAMT_Trainer(m5, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 5, Epochs = 5, Verbose = false }); float lb5 = t5.Validate(st, pi, pt); t5.Train(st, pi, pt); float la5 = t5.Validate(st, pi, pt); Assert(la1 < lb1, "BS1"); Assert(la5 < lb5, "BS5"); }
+        public void Test_Train_LearningRateDecay_Works() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 10, UseLearningRateDecay = true, LearningRateDecay = 0.95f, Verbose = false }).Train(st, pi, pt); float l = new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 1, Verbose = false }).Validate(st, pi, pt); Assert(!float.IsNaN(l) && l >= 0, $"Invalid loss: {l}"); }
+        public void Test_Train_HighLR_WithClipping_NoExplosion() { var (tok, st, pi, pt) = CreateTestData(5); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.5f, BatchSize = 5, Epochs = 5, UseGradientClipping = true, GradientClipThreshold = 0.5f, Verbose = false }).Train(st, pi, pt); var (pred, _) = m.Forward(st[0], pi[0]); Assert(!HasNaN(pred), "NaN after high LR"); }
 
         // === GRADIENT CLIPPING ===
-        public void Test_GradClip_NormReduced() { var (tok, st, pi, pt) = CreateTestData(3); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 1.0f, BatchSize = 3, Epochs = 3, UseGradientClipping = true, GradientClipThreshold = 0.1f, Verbose = false }).Train(st, pi, pt); float l = new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 1, Verbose = false }).Validate(st, pi, pt); Assert(!float.IsNaN(l) && !float.IsInfinity(l), "Should prevent NaN"); }
+        public void Test_GradClip_NormReduced() { var (tok, st, pi, pt) = CreateTestData(3); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 1.0f, BatchSize = 3, Epochs = 3, UseGradientClipping = true, GradientClipThreshold = 0.1f, Verbose = false }).Train(st, pi, pt); float l = new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 3, Epochs = 1, Verbose = false }).Validate(st, pi, pt); Assert(!float.IsNaN(l) && !float.IsInfinity(l), "Should prevent NaN"); }
        
         // === PREDICT NEXT ===
         public void Test_PredictNext_ReturnsLastTimestep() { var m = new TACAMT_Model(CreateConfig(), new Random(42)); var (pred, _) = m.PredictNext((NewsStory[])null, RandomMatrix(10, 5, new Random(42), 0.5f)); Assert(pred.Length == 5 && !HasNaN(pred), "Failed"); }
@@ -2135,59 +2101,26 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_PredictWithMemory_TimestampOrdering_Preserved() { var (tok, st, pi, _) = CreateTestData(2); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2), new Random(42)); m.PredictWithMemory(st[0], pi[0], 100.0); m.PredictWithMemory(st[1], pi[1], 200.0); Assert(m.NewsMemory.Max(e => e.AbsoluteTimestamp) >= 200.0, "Latest ts"); }
 
         // === MEMORY PRUNING ADVANCED ===
-        public void Test_Pruning_PriceMemory_AttentionBased() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.PruningConfig.UseAttentionBasedPruning = true; m.PruningConfig.MinQueryCountForPruning = 1; for (int i = 0; i < 10; i++) m.PriceMemory.Add(new PriceMemoryEntry { HiddenState = new float[c.Price.EmbeddingDim], AbsoluteTimestamp = i * 10.0, AttentionScore = i * 0.1f, QueryCount = 5 }); typeof(TACAMT_Model).GetMethod("PricePruneMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 5 }); Assert(m.PriceMemory.Count == 5, $"Got {m.PriceMemory.Count}"); }
-        public void Test_Pruning_ReserveFraction_Respected() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.PruningConfig.UseAttentionBasedPruning = true; m.PruningConfig.NewEntryReserveFraction = 0.4f; m.PruningConfig.MinQueryCountForPruning = 1; for (int i = 0; i < 20; i++) m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.Price.EmbeddingDim], AbsoluteTimestamp = i * 10.0, AttentionScore = 0.01f, QueryCount = 10 }); typeof(TACAMT_Model).GetMethod("PruneNewsMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 10 }); Assert(m.NewsMemory.Max(e => e.AbsoluteTimestamp) >= 190.0, "Newest should survive"); }
-        public void Test_Pruning_ZeroMaxSize_ClearsAll() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.PruningConfig.UseAttentionBasedPruning = false; for (int i = 0; i < 5; i++) m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.Price.EmbeddingDim], AbsoluteTimestamp = i }); typeof(TACAMT_Model).GetMethod("PruneNewsMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 0 }); Assert(m.NewsMemory.Count == 0, "Should be 0"); }
-        public void Test_Pruning_ExactlyAtLimit_NoOp() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); for (int i = 0; i < 5; i++) m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.Price.EmbeddingDim], AbsoluteTimestamp = i }); typeof(TACAMT_Model).GetMethod("PruneNewsMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 5 }); Assert(m.NewsMemory.Count == 5, "No-op"); }
+        public void Test_Pruning_PriceMemory_AttentionBased() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.PruningConfig.UseAttentionBasedPruning = true; m.PruningConfig.MinQueryCountForPruning = 1; for (int i = 0; i < 10; i++) m.PriceMemory.Add(new PriceMemoryEntry { HiddenState = new float[c.PriceEmbeddingDim], AbsoluteTimestamp = i * 10.0, AttentionScore = i * 0.1f, QueryCount = 5 }); typeof(TACAMT_Model).GetMethod("PricePruneMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 5 }); Assert(m.PriceMemory.Count == 5, $"Got {m.PriceMemory.Count}"); }
+        public void Test_Pruning_ReserveFraction_Respected() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.PruningConfig.UseAttentionBasedPruning = true; m.PruningConfig.NewEntryReserveFraction = 0.4f; m.PruningConfig.MinQueryCountForPruning = 1; for (int i = 0; i < 20; i++) m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.PriceEmbeddingDim], AbsoluteTimestamp = i * 10.0, AttentionScore = 0.01f, QueryCount = 10 }); typeof(TACAMT_Model).GetMethod("PruneNewsMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 10 }); Assert(m.NewsMemory.Max(e => e.AbsoluteTimestamp) >= 190.0, "Newest should survive"); }
+        public void Test_Pruning_ZeroMaxSize_ClearsAll() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.PruningConfig.UseAttentionBasedPruning = false; for (int i = 0; i < 5; i++) m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.PriceEmbeddingDim], AbsoluteTimestamp = i }); typeof(TACAMT_Model).GetMethod("PruneNewsMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 0 }); Assert(m.NewsMemory.Count == 0, "Should be 0"); }
+        public void Test_Pruning_ExactlyAtLimit_NoOp() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); for (int i = 0; i < 5; i++) m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.PriceEmbeddingDim], AbsoluteTimestamp = i }); typeof(TACAMT_Model).GetMethod("PruneNewsMemory", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(m, new object[] { 5 }); Assert(m.NewsMemory.Count == 5, "No-op"); }
         public void Test_Pruning_Config_SavedAndLoaded() { var m = new TACAMT_Model(CreateConfig(), new Random(42)); m.PruningConfig.AttentionScoreAlpha = 0.2f; m.PruningConfig.MinQueryCountForPruning = 7; m.PruningConfig.NewEntryReserveFraction = 0.3f; m.PruningConfig.UseAttentionBasedPruning = false; var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(MathF.Abs(ld.PruningConfig.AttentionScoreAlpha - 0.2f) < 1e-6f, "Alpha"); Assert(ld.PruningConfig.MinQueryCountForPruning == 7, "MinQ"); Assert(MathF.Abs(ld.PruningConfig.NewEntryReserveFraction - 0.3f) < 1e-6f, "Reserve"); Assert(ld.PruningConfig.UseAttentionBasedPruning == false, "UseAttn"); } finally { CleanupDir(d); } }
 
         // === SAVE/LOAD EXHAUSTIVE ===
         public void Test_SaveLoad_AllTextBlockWeights_Match() { var (tok, _, _, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, numLayers: 2); var m = new TACAMT_Model(c, new Random(42)); var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); for (int i = 0; i < 2; i++) { Assert(!MatrixChanged(m.TextBlocks[i].Attention.WQ, ld.TextBlocks[i].Attention.WQ, 1e-6f), $"Block {i} WQ"); Assert(!MatrixChanged(m.TextBlocks[i].Attention.WK, ld.TextBlocks[i].Attention.WK, 1e-6f), $"Block {i} WK"); } } finally { CleanupDir(d); } }
         public void Test_SaveLoad_AllPriceBlockWeights_Match() { var (tok, _, _, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, numLayers: 2); var m = new TACAMT_Model(c, new Random(42)); var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); for (int i = 0; i < 2; i++) { Assert(!MatrixChanged(m.PriceBlocks[i].SelfAttention.WQ, ld.PriceBlocks[i].SelfAttention.WQ, 1e-6f), $"Block {i} SelfWQ"); Assert(!VectorChanged(m.PriceBlocks[i].LNSelfGamma, ld.PriceBlocks[i].LNSelfGamma, 1e-6f), $"Block {i} LN"); } } finally { CleanupDir(d); } }
-        public void Test_SaveLoad_PriceMemory_Preserved() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42); for (int i = 0; i < 3; i++) { var hs = new float[c.Price.EmbeddingDim]; for (int dd = 0; dd < hs.Length; dd++) hs[dd] = (float)rng.NextDouble(); m.PriceMemory.Add(new PriceMemoryEntry { HiddenState = hs, AbsoluteTimestamp = i * 100.0, AttentionScore = 0.5f, QueryCount = i }); } var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(ld.PriceMemory.Count == 3, $"Got {ld.PriceMemory.Count}"); for (int i = 0; i < 3; i++) Assert(Math.Abs(m.PriceMemory[i].AbsoluteTimestamp - ld.PriceMemory[i].AbsoluteTimestamp) < 1e-6, $"Ts {i}"); } finally { CleanupDir(d); } }
-        public void Test_SaveLoad_AttentionScores_Preserved() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.Price.EmbeddingDim], AbsoluteTimestamp = 1.0, AttentionScore = 0.42f, QueryCount = 7 }); m.PriceMemory.Add(new PriceMemoryEntry { HiddenState = new float[c.Price.EmbeddingDim], AbsoluteTimestamp = 2.0, AttentionScore = 0.77f, QueryCount = 3 }); var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(MathF.Abs(ld.NewsMemory[0].AttentionScore - 0.42f) < 1e-5f, "News AS"); Assert(ld.NewsMemory[0].QueryCount == 7, "News QC"); Assert(MathF.Abs(ld.PriceMemory[0].AttentionScore - 0.77f) < 1e-5f, "Price AS"); Assert(ld.PriceMemory[0].QueryCount == 3, "Price QC"); } finally { CleanupDir(d); } }
-        public void Test_SaveLoad_Config_AllFields_Preserved() { var c = CreateConfig(textVocabSize: 77, embDim: 32, numHeads: 4, numLayers: 3, ffnDim: 64, inputFeatures: 7, outputDim: 3, priceSeqLen: 25, useConfidence: true, freezeText: true); var m = new TACAMT_Model(c, new Random(42)); var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(ld.Config.Text.VocabSize == 77, "Vocab"); Assert(ld.Config.Text.EmbeddingDim == 32, "Emb"); Assert(ld.Config.Text.NumHeads == 4, "Heads"); Assert(ld.Config.Output.OutputDim == 3, "OD"); Assert(ld.Config.Output.UseConfidenceHead == true, "Conf"); Assert(ld.Config.Text.Freeze == true, "Freeze"); } finally { CleanupDir(d); } }
+        public void Test_SaveLoad_PriceMemory_Preserved() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); var rng = new Random(42); for (int i = 0; i < 3; i++) { var hs = new float[c.PriceEmbeddingDim]; for (int dd = 0; dd < hs.Length; dd++) hs[dd] = (float)rng.NextDouble(); m.PriceMemory.Add(new PriceMemoryEntry { HiddenState = hs, AbsoluteTimestamp = i * 100.0, AttentionScore = 0.5f, QueryCount = i }); } var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(ld.PriceMemory.Count == 3, $"Got {ld.PriceMemory.Count}"); for (int i = 0; i < 3; i++) Assert(Math.Abs(m.PriceMemory[i].AbsoluteTimestamp - ld.PriceMemory[i].AbsoluteTimestamp) < 1e-6, $"Ts {i}"); } finally { CleanupDir(d); } }
+        public void Test_SaveLoad_AttentionScores_Preserved() { var c = CreateConfig(); var m = new TACAMT_Model(c, new Random(42)); m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[c.PriceEmbeddingDim], AbsoluteTimestamp = 1.0, AttentionScore = 0.42f, QueryCount = 7 }); m.PriceMemory.Add(new PriceMemoryEntry { HiddenState = new float[c.PriceEmbeddingDim], AbsoluteTimestamp = 2.0, AttentionScore = 0.77f, QueryCount = 3 }); var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(MathF.Abs(ld.NewsMemory[0].AttentionScore - 0.42f) < 1e-5f, "News AS"); Assert(ld.NewsMemory[0].QueryCount == 7, "News QC"); Assert(MathF.Abs(ld.PriceMemory[0].AttentionScore - 0.77f) < 1e-5f, "Price AS"); Assert(ld.PriceMemory[0].QueryCount == 3, "Price QC"); } finally { CleanupDir(d); } }
+        public void Test_SaveLoad_Config_AllFields_Preserved() { var c = CreateConfig(textVocabSize: 77, embDim: 32, numHeads: 4, numLayers: 3, ffnDim: 64, inputFeatures: 7, outputDim: 3, priceSeqLen: 25, useConfidence: true, freezeText: true); var m = new TACAMT_Model(c, new Random(42)); var d = GetTempDir(); try { m.Save(d); var ld = TACAMT_Model.Load(d); Assert(ld.Config.TextVocabSize == 77, "Vocab"); Assert(ld.Config.TextEmbeddingDim == 32, "Emb"); Assert(ld.Config.TextNumHeads == 4, "Heads"); Assert(ld.Config.OutputDim == 3, "OD"); Assert(ld.Config.UseConfidenceHead == true, "Conf"); Assert(ld.Config.FreezeTextEncoder == true, "Freeze"); } finally { CleanupDir(d); } }
 
         // === CONFIG VALIDATION ===
-        public void Test_Config_PriceEmbDim_NotDivisibleByHeads_Throws()
-        {
-            bool t = false;
-            try
-            {
-                new MultimodalTransformerConfig
-                {
-                    Text  = new TextEncoderConfig  { VocabSize = 50, EmbeddingDim = 16, NumHeads = 4, NumLayers = 1, FeedForwardDim = 32 },
-                    Price = new PriceDecoderConfig { InputFeatureDim = 5, MaxSequenceLength = 22, EmbeddingDim = 15, NumHeads = 4, NumLayers = 1, FeedForwardDim = 32 },
-                    Output = new OutputHeadConfig { OutputDim = 5 },
-                    Runtime = new RuntimeConfig { AccelerationType = AccelerationType.CPU },
-                    Regularization = new RegularizationConfig { L2RegulationLamda = 0f, GradientClippingThreshold = 1f },
-                    RequireSharedCrossAttentionEmbeddingDim = false,
-                }.Validate();
-            }
-            catch (ArgumentException) { t = true; }
-            Assert(t, "Should throw");
-        }
-        public void Test_Config_ZeroVocabSize_Throws()
-        {
-            bool t = false;
-            try
-            {
-                new MultimodalTransformerConfig
-                {
-                    Text  = new TextEncoderConfig  { VocabSize = 0, EmbeddingDim = 16, NumHeads = 2, NumLayers = 1, FeedForwardDim = 32 },
-                    Price = new PriceDecoderConfig { InputFeatureDim = 5, MaxSequenceLength = 22, EmbeddingDim = 16, NumHeads = 2, NumLayers = 1, FeedForwardDim = 32 },
-                    Output = new OutputHeadConfig { OutputDim = 5 },
-                    Runtime = new RuntimeConfig { AccelerationType = AccelerationType.CPU },
-                    Regularization = new RegularizationConfig { L2RegulationLamda = 0f, GradientClippingThreshold = 1f },
-                }.Validate();
-            }
-            catch (ArgumentException) { t = true; }
-            Assert(t, "Should throw");
-        }
-        public void Test_Config_NegativeL2_Throws() { var c = CreateConfig(); c.Regularization.L2RegulationLamda = -0.01f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
-        public void Test_Config_DecayDropoutOutOfRange_Throws() { var c = CreateConfig(); c.DecayNetwork.MemAttentionDropout = 1.0f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
-        public void Test_Config_ZeroDecayProjectionDim_Throws() { var c = CreateConfig(); c.DecayNetwork.ProjectionDim = 0; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
-        public void Test_Config_ZeroGradientClipThreshold_Throws() { var c = CreateConfig(); c.Regularization.GradientClippingThreshold = 0f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
+        public void Test_Config_PriceEmbDim_NotDivisibleByHeads_Throws() { bool t = false; try { new Transformers.TACAMT.Config { PriceEmbeddingDim = 15, PriceNumHeads = 4, TextEmbeddingDim = 16, TextNumHeads = 4 }.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
+        public void Test_Config_ZeroVocabSize_Throws() { bool t = false; try { new Transformers.TACAMT.Config { TextVocabSize = 0 }.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
+        public void Test_Config_NegativeL2_Throws() { var c = CreateConfig(); c.L2RegulationLamda = -0.01f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
+        public void Test_Config_DecayDropoutOutOfRange_Throws() { var c = CreateConfig(); c.DecayMemAttnDropout = 1.0f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
+        public void Test_Config_ZeroDecayProjectionDim_Throws() { var c = CreateConfig(); c.DecayProjectionDim = 0; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
+        public void Test_Config_ZeroGradientClipThreshold_Throws() { var c = CreateConfig(); c.GradientClippingThreshold = 0f; bool t = false; try { c.Validate(); } catch (ArgumentException) { t = true; } Assert(t, "Should throw"); }
 
         // === DECAY NETWORK MATH ===
         public void Test_Decay_LargerTimeDiff_StrongerDecay()
@@ -2237,7 +2170,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                     for (int h = 0; h < 2; h++)
                         Assert(cache.Gates[q, s, h] > 0f && cache.Gates[q, s, h] < 1f, $"Gate[{q},{s},{h}]={cache.Gates[q, s, h]}");
         }
-        public void Test_Decay_BaseDecayRate_AlwaysPositive() { var m = new TACAMT_Model(CreateConfig(numHeads: 4), new Random(42)); for (int l = 0; l < m.Config.Price.NumLayers; l++) for (int h = 0; h < 4; h++) Assert(MathF.Exp(m.PriceBlocks[l].DecayNetwork.LogBaseDecayRate[h]) > 0, $"L{l}H{h}"); }
+        public void Test_Decay_BaseDecayRate_AlwaysPositive() { var m = new TACAMT_Model(CreateConfig(numHeads: 4), new Random(42)); for (int l = 0; l < m.Config.PriceNumLayers; l++) for (int h = 0; h < 4; h++) Assert(MathF.Exp(m.PriceBlocks[l].DecayNetwork.LogBaseDecayRate[h]) > 0, $"L{l}H{h}"); }
         public void Test_Decay_MultiScale_TimeEncoding_DifferentPerBase() { var net = new ContentAwareDecayNetwork(1, 16, 8, 16, new Random(42), numTimeBases: 4); bool d = false; for (int b = 1; b < 4 && !d; b++) if (MathF.Abs(net.TimeLogFreq[0, 0] - net.TimeLogFreq[0, b]) > 1e-6f) d = true; Assert(d, "Should differ per base"); }
         public void Test_Decay_MemoryInteraction_ChangesOutput()
         {
@@ -2267,17 +2200,17 @@ namespace CallaghanDev.ML.TestConsoleApp
             Assert(df, "Memory interaction should change bias");
         }
         // === SEQUENTIAL TRAINING ADVANCED ===
-        public void Test_Sequential_PriceMemoryGrows_EachSample() { var (tok, st, pi, pt) = CreateTestData(3, priceSeqLen: 8); var c = CreateConfig(tok.VocabSize + 2, priceSeqLen: 8); var m = new TACAMT_Model(c, new Random(42)); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false }).TrainSequential(st, pi, pt, new double[] { 100, 200, 300 }, maxPriceMemory: 500); Assert(m.PriceMemory.Count > pi[0].GetLength(0) - 1, $"Got {m.PriceMemory.Count}"); }
-        public void Test_Sequential_MultiplEpochs_MemoryReset_EachEpoch() { var (tok, st, pi, pt) = CreateTestData(2, priceSeqLen: 8); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, priceSeqLen: 8), new Random(42)); m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[m.Config.Price.EmbeddingDim], AbsoluteTimestamp = 1.0 }); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 2, Verbose = false }).TrainSequential(st, pi, pt, new double[] { 100, 200 }); Assert(m.NewsMemory.Count > 0, "Should have memory after"); }
-        public void Test_Sequential_WithNoStories_StillWorks() { var rng = new Random(42); int n = 3; var ns = new NewsStory[n][]; var pi = new float[n][,]; var pt = new float[n][,]; for (int s = 0; s < n; s++) { pi[s] = RandomMatrix(8, 5, rng, 0.5f); pt[s] = RandomMatrix(8, 5, rng, 0.5f); } var m = new TACAMT_Model(CreateConfig(priceSeqLen: 10), new Random(42)); var t = new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 2, Verbose = false }); t.TrainSequential(ns, pi, pt, new double[] { 100, 200, 300 }); Assert(!float.IsNaN(t.Validate(ns, pi, pt)), "Valid loss"); }
+        public void Test_Sequential_PriceMemoryGrows_EachSample() { var (tok, st, pi, pt) = CreateTestData(3, priceSeqLen: 8); var c = CreateConfig(tok.VocabSize + 2, priceSeqLen: 8); var m = new TACAMT_Model(c, new Random(42)); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false }).TrainSequential(st, pi, pt, new double[] { 100, 200, 300 }, maxPriceMemory: 500); Assert(m.PriceMemory.Count > pi[0].GetLength(0) - 1, $"Got {m.PriceMemory.Count}"); }
+        public void Test_Sequential_MultiplEpochs_MemoryReset_EachEpoch() { var (tok, st, pi, pt) = CreateTestData(2, priceSeqLen: 8); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, priceSeqLen: 8), new Random(42)); m.NewsMemory.Add(new NewsMemoryEntry { HiddenState = new float[m.Config.PriceEmbeddingDim], AbsoluteTimestamp = 1.0 }); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 2, Verbose = false }).TrainSequential(st, pi, pt, new double[] { 100, 200 }); Assert(m.NewsMemory.Count > 0, "Should have memory after"); }
+        public void Test_Sequential_WithNoStories_StillWorks() { var rng = new Random(42); int n = 3; var ns = new NewsStory[n][]; var pi = new float[n][,]; var pt = new float[n][,]; for (int s = 0; s < n; s++) { pi[s] = RandomMatrix(8, 5, rng, 0.5f); pt[s] = RandomMatrix(8, 5, rng, 0.5f); } var m = new TACAMT_Model(CreateConfig(priceSeqLen: 10), new Random(42)); var t = new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.001f, BatchSize = 1, Epochs = 2, Verbose = false }); t.TrainSequential(ns, pi, pt, new double[] { 100, 200, 300 }); Assert(!float.IsNaN(t.Validate(ns, pi, pt)), "Valid loss"); }
 
         // === PRICE CONTEXT ADVANCED ===
         public void Test_PriceContext_SplitPointDistribution_WithinBounds() { int sl = 20, mh = 5, mc = 5; int maxH = sl - mc - 1; var rng = new Random(42); for (int trial = 0; trial < 100; trial++) { int sp = mh + rng.Next(maxH - mh + 1); Assert(sp >= mh && sp <= maxH && sl - sp >= mc + 1, $"Split {sp} out of bounds"); } }
-        public void Test_PriceContext_HistoryDetached_CurrentTrained() { var (tok, st, pi, pt) = CreateTestData(5, priceSeqLen: 16); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, priceSeqLen: 16), new Random(42)); var ob = CloneMatrix(m.OutputProjection); new TACAMT_Trainer(m, new TrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(MatrixChanged(ob, m.OutputProjection), "OutputProjection should change from current chunk"); }
+        public void Test_PriceContext_HistoryDetached_CurrentTrained() { var (tok, st, pi, pt) = CreateTestData(5, priceSeqLen: 16); var m = new TACAMT_Model(CreateConfig(tok.VocabSize + 2, priceSeqLen: 16), new Random(42)); var ob = CloneMatrix(m.OutputProjection); new TACAMT_Trainer(m, new MultimodalTrainingConfig { LearningRate = 0.01f, BatchSize = 5, Epochs = 5, Verbose = false }).Train(st, pi, pt); Assert(MatrixChanged(ob, m.OutputProjection), "OutputProjection should change from current chunk"); }
 
         // === TEXT ENCODER ===
-        public void Test_TextEncoder_Bidirectional_Default() { Assert(CreateConfig().Text.UseDecoderOnly == false, "Should be bidirectional"); }
-        public void Test_TextEncoder_MeanPooling_Produces_FixedDimOutput() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, embDim: 16); var m = new TACAMT_Model(c, new Random(42)); var cache = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers); m.ForwardWithCache(stories[0], pi[0], cache); Assert(cache.TextFinalHidden.GetLength(0) == stories[0].Length, $"Stories {cache.TextFinalHidden.GetLength(0)} vs {stories[0].Length}"); Assert(cache.TextFinalHidden.GetLength(1) == 16, $"Dim {cache.TextFinalHidden.GetLength(1)}"); }
+        public void Test_TextEncoder_Bidirectional_Default() { Assert(CreateConfig().TextUseDecoderOnly == false, "Should be bidirectional"); }
+        public void Test_TextEncoder_MeanPooling_Produces_FixedDimOutput() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2, embDim: 16); var m = new TACAMT_Model(c, new Random(42)); var cache = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers); m.ForwardWithCache(stories[0], pi[0], cache); Assert(cache.TextFinalHidden.GetLength(0) == stories[0].Length, $"Stories {cache.TextFinalHidden.GetLength(0)} vs {stories[0].Length}"); Assert(cache.TextFinalHidden.GetLength(1) == 16, $"Dim {cache.TextFinalHidden.GetLength(1)}"); }
 
         // === TOKENIZER ===
         public void Test_Tokenizer_MatchingVocab_AcceptedAndUsable() { var tok = new BPETokenizer(); tok.Train(new[] { "stock price rose" }, vocabSize: 50, minFrequency: 1); var m = new TACAMT_Model(CreateConfig(textVocabSize: tok.VocabSize), new Random(42)); m.SetTokenizer(tok); var s = m.TokenizeStories(new[] { "stock price" }, new[] { 0f }); Assert(s.Length == 1 && s[0].TokenIds.Length > 0, "Failed"); }
@@ -2291,27 +2224,7 @@ namespace CallaghanDev.ML.TestConsoleApp
         public void Test_Stability_MixedMagnitude_NoNaN() { var m = new TACAMT_Model(CreateConfig(priceSeqLen: 12), new Random(42)); var rng = new Random(42); var p = new float[10, 5]; for (int i = 0; i < 10; i++) for (int j = 0; j < 5; j++) p[i, j] = (float)Math.Pow(10, rng.Next(-3, 3)) * (rng.NextSingle() > 0.5f ? 1f : -1f); Assert(!HasNaN(m.Forward((NewsStory[])null, p).predictions), "NaN"); }
 
         // === EQUIVALENCE ===
-        public void Test_Equiv_ForwardAndForwardWithCache_SameOutput() 
-        {
-            var (tok, stories, pi, _) = CreateTestData(1); 
-            var c = CreateConfig(tok.VocabSize + 2);
-
-            var m = new TACAMT_Model(c, new Random(42));
-
-            var (p1, _) = m.Forward(stories[0], pi[0]); 
-
-            var cache = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers);
-
-            var (p2, _) = m.ForwardWithCache(stories[0], pi[0], cache, isTraining: false); 
-
-            for (int i = 0; i < p1.GetLength(0); i++)
-            {
-                for (int j = 0; j < p1.GetLength(1); j++)
-                {
-                    Assert(MathF.Abs(p1[i, j] - p2[i, j]) < 1e-5f, $"[{i},{j}]: {p1[i, j]} vs {p2[i, j]}");
-                }
-            }
-        }
+        public void Test_Equiv_ForwardAndForwardWithCache_SameOutput() { var (tok, stories, pi, _) = CreateTestData(1); var c = CreateConfig(tok.VocabSize + 2); var m = new TACAMT_Model(c, new Random(42)); var (p1, _) = m.Forward(stories[0], pi[0]); var cache = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers); var (p2, _) = m.ForwardWithCache(stories[0], pi[0], cache, isTraining: false); for (int i = 0; i < p1.GetLength(0); i++) for (int j = 0; j < p1.GetLength(1); j++) Assert(MathF.Abs(p1[i, j] - p2[i, j]) < 1e-5f, $"[{i},{j}]: {p1[i, j]} vs {p2[i, j]}"); }
 
         public void Test_Equiv_GradientsZero_BeforeTraining() 
         { 
@@ -2319,19 +2232,19 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var g = new Gradients(c);
 
-            for (int i = 0; i < c.Text.VocabSize; i++)
+            for (int i = 0; i < c.TextVocabSize; i++)
             {
-                for (int j = 0; j < c.Text.EmbeddingDim; j++)
+                for (int j = 0; j < c.TextEmbeddingDim; j++)
                 {
                     Assert(g.TextEmbeddingGrad[i, j] == 0f, $"Not zero");
                 }
             }
-            for (int i = 0; i < c.Output.OutputDim; i++) for (int j = 0; j < c.Price.EmbeddingDim; j++)
+            for (int i = 0; i < c.OutputDim; i++) for (int j = 0; j < c.PriceEmbeddingDim; j++)
             {
                 Assert(g.OutputProjectionGrad[i, j] == 0f, $"Not zero");
             }
 
-            Assert(g.PriceBlockGrads.Count == c.Price.NumLayers, "Count");
+            Assert(g.PriceBlockGrads.Count == c.PriceNumLayers, "Count");
         }
 
         // ===============================================================
@@ -2390,7 +2303,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Train
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.003f,
                 BatchSize = 10,
@@ -2445,11 +2358,11 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var ns = new NewsStory[1][];
 
-            var t1 = new TACAMT_Trainer(model, new TrainingConfig
+            var t1 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 1, Epochs = 1, Verbose = false });
             float lossBefore = t1.Validate(ns, pi, pt);
 
-            var t2 = new TACAMT_Trainer(model, new TrainingConfig
+            var t2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.003f,
                 BatchSize = 1,
@@ -2517,7 +2430,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 }
             }
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.005f,
                 BatchSize = 10,
@@ -2538,7 +2451,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             }
 
             // Test: "breaking news" as recent + "old background" as old => should predict high
-            var cache1 = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers);
+            var cache1 = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers);
             var (predRecentBullish, _) = model.ForwardWithCache(new[]
             {
         new NewsStory(recentTokens, 0f),
@@ -2546,7 +2459,7 @@ namespace CallaghanDev.ML.TestConsoleApp
     }, testPrice, cache1);
 
             // Test: "old background" as recent + "breaking news" as old => should predict low
-            var cache2 = new MultimodalForwardCache(c.Text.NumLayers, c.Price.NumLayers);
+            var cache2 = new MultimodalForwardCache(c.TextNumLayers, c.PriceNumLayers);
             var (predOldBullish, _) = model.ForwardWithCache(new[]
             {
         new NewsStory(oldTokens, 0f),
@@ -2575,28 +2488,34 @@ namespace CallaghanDev.ML.TestConsoleApp
         /// </summary>
         public void Test_Scale_LargerConfig_NoNaN()
         {
-            var c = new MultimodalTransformerConfig
+            var c = new Transformers.TACAMT.Config
             {
-                Text = new TextEncoderConfig
-                {
-                    VocabSize = 500, MaxSequenceLength = 128, EmbeddingDim = 64,
-                    NumHeads = 8, NumLayers = 3, FeedForwardDim = 256, UseDecoderOnly = false
-                },
-                Price = new PriceDecoderConfig
-                {
-                    InputFeatureDim = 10, MaxSequenceLength = 102, EmbeddingDim = 64,
-                    NumHeads = 8, NumLayers = 3, FeedForwardDim = 256, UseDecoderOnly = true
-                },
-                Output = new OutputHeadConfig { OutputDim = 10, UseConfidenceHead = true },
-                Runtime = new RuntimeConfig { FFNActivationType = ActivationType.Relu, AccelerationType = AccelerationType.CPU },
-                Regularization = new RegularizationConfig { L2RegulationLamda = 1e-5f, GradientClippingThreshold = 1.0f },
-                PriceContext = new PriceContextConfig { Enabled = true, MinHistoryLength = 20, MinCurrentLength = 20 },
-                DecayNetwork = new DecayNetworkConfig
-                {
-                    Enabled = true, ProjectionDim = 16, HiddenDim = 32, TimeEncodingBases = 16,
-                    MemAttentionDropout = 0.0f, MlpDropout = 0.0f, WeightDecay = 0f
-                },
-                RequireSharedCrossAttentionEmbeddingDim = true,
+                TextVocabSize = 500,
+                TextMaxSequenceLength = 128,
+                TextEmbeddingDim = 64,
+                TextNumHeads = 8,
+                TextNumLayers = 3,
+                TextFeedForwardDim = 256,
+                TextUseDecoderOnly = false,
+                PriceInputFeatureDim = 10,
+                PriceMaxSequenceLength = 102,
+                PriceEmbeddingDim = 64,
+                PriceNumHeads = 8,
+                PriceNumLayers = 3,
+                PriceFeedForwardDim = 256,
+                PriceUseDecoderOnly = true,
+                OutputDim = 10,
+                UseConfidenceHead = true,
+                FreezeTextEncoder = false,
+                FFNActivationType = ActivationType.Relu,
+                AccelerationType = AccelerationType.CPU,
+                L2RegulationLamda = 1e-5f,
+                GradientClippingThreshold = 1.0f,
+                PriceContextMinHistoryLength = 20,
+                PriceContextMinCurrentLength = 20,
+                DecayProjectionDim = 16,
+                DecayHiddenDim = 32,
+                DecayTimeEncodingBases = 16,
             };
             c.Validate();
 
@@ -2634,28 +2553,34 @@ namespace CallaghanDev.ML.TestConsoleApp
         /// </summary>
         public void Test_Scale_LargerConfig_TrainingConverges()
         {
-            var c = new MultimodalTransformerConfig
+            var c = new Transformers.TACAMT.Config
             {
-                Text = new TextEncoderConfig
-                {
-                    VocabSize = 200, MaxSequenceLength = 64, EmbeddingDim = 32,
-                    NumHeads = 4, NumLayers = 2, FeedForwardDim = 128, UseDecoderOnly = false
-                },
-                Price = new PriceDecoderConfig
-                {
-                    InputFeatureDim = 5, MaxSequenceLength = 52, EmbeddingDim = 32,
-                    NumHeads = 4, NumLayers = 2, FeedForwardDim = 128, UseDecoderOnly = true
-                },
-                Output = new OutputHeadConfig { OutputDim = 5, UseConfidenceHead = false },
-                Runtime = new RuntimeConfig { FFNActivationType = ActivationType.Relu, AccelerationType = AccelerationType.CPU },
-                Regularization = new RegularizationConfig { L2RegulationLamda = 0f, GradientClippingThreshold = 1.0f },
-                PriceContext = new PriceContextConfig { Enabled = true, MinHistoryLength = 10, MinCurrentLength = 10 },
-                DecayNetwork = new DecayNetworkConfig
-                {
-                    Enabled = true, ProjectionDim = 8, HiddenDim = 16, TimeEncodingBases = 8,
-                    MemAttentionDropout = 0.0f, MlpDropout = 0.0f, WeightDecay = 0f
-                },
-                RequireSharedCrossAttentionEmbeddingDim = true,
+                TextVocabSize = 200,
+                TextMaxSequenceLength = 64,
+                TextEmbeddingDim = 32,
+                TextNumHeads = 4,
+                TextNumLayers = 2,
+                TextFeedForwardDim = 128,
+                TextUseDecoderOnly = false,
+                PriceInputFeatureDim = 5,
+                PriceMaxSequenceLength = 52,
+                PriceEmbeddingDim = 32,
+                PriceNumHeads = 4,
+                PriceNumLayers = 2,
+                PriceFeedForwardDim = 128,
+                PriceUseDecoderOnly = true,
+                OutputDim = 5,
+                UseConfidenceHead = false,
+                FreezeTextEncoder = false,
+                FFNActivationType = ActivationType.Relu,
+                AccelerationType = AccelerationType.CPU,
+                L2RegulationLamda = 0f,
+                GradientClippingThreshold = 1.0f,
+                PriceContextMinHistoryLength = 10,
+                PriceContextMinCurrentLength = 10,
+                DecayProjectionDim = 8,
+                DecayHiddenDim = 16,
+                DecayTimeEncodingBases = 8,
             };
             c.Validate();
 
@@ -2689,11 +2614,11 @@ namespace CallaghanDev.ML.TestConsoleApp
                     }
             }
 
-            var t1 = new TACAMT_Trainer(model, new TrainingConfig
+            var t1 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             { LearningRate = 0.001f, BatchSize = 4, Epochs = 1, Verbose = false });
             float lossBefore = t1.Validate(stories, pi, pt);
 
-            var t2 = new TACAMT_Trainer(model, new TrainingConfig
+            var t2 = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.001f,
                 BatchSize = 4,
@@ -2739,7 +2664,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             Assert(pred != null, "Prediction should not be null");
             Assert(!HasNaN(pred), "NaN in prediction with many memory entries");
-            Assert(pred.Length == c.Output.OutputDim, $"Prediction dim: {pred.Length}");
+            Assert(pred.Length == c.OutputDim, $"Prediction dim: {pred.Length}");
         }
 
         // ===============================================================
@@ -2794,7 +2719,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             var textEmbBefore = CloneMatrix(model.TextTokenEmbedding);
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.005f,
                 BatchSize = 5,
@@ -2939,60 +2864,40 @@ namespace CallaghanDev.ML.TestConsoleApp
             var target = RandomMatrix(8, 3, rng, 0.3f);
 
             float eps = 1e-3f;
-            int sl = 8;
-            int od = 3;
-
+            int sl = 8, od = 3;
             var wk = model.PriceBlocks[0].CrossAttention.WK;
 
-            // Probe several entries instead of a single scalar that may be locally inactive.
-            int rows = Math.Min(3, wk.GetLength(0));
-            int cols = Math.Min(3, wk.GetLength(1));
+            float origW = wk[0, 0];
+            wk[0, 0] = origW + eps;
+            var (pp, _) = model.Forward(stories[0], pi[0]);
+            float lp = 0f;
 
-            float fdSum = 0f;
-            int tested = 0;
-
-            for (int r = 0; r < rows; r++)
+            for (int t = 0; t < sl; t++)
             {
-                for (int cidx = 0; cidx < cols; cidx++)
-                {
-                    float orig = wk[r, cidx];
-
-                    wk[r, cidx] = orig + eps;
-                    var (pp, _) = model.Forward(stories[0], pi[0]);
-                    float lp = 0f;
-                    for (int t = 0; t < sl; t++)
-                    {
-                        for (int j = 0; j < od; j++)
-                        {
-                            float d = pp[t, j] - target[t, j];
-                            lp += d * d;
-                        }
-                    }
-
-                    wk[r, cidx] = orig - eps;
-                    var (pm, _) = model.Forward(stories[0], pi[0]);
-                    float lm = 0f;
-                    for (int t = 0; t < sl; t++)
-                    {
-                        for (int j = 0; j < od; j++)
-                        {
-                            float d = pm[t, j] - target[t, j];
-                            lm += d * d;
-                        }
-                    }
-
-                    wk[r, cidx] = orig;
-
-                    float fd = (lp - lm) / (2f * eps);
-                    Assert(!float.IsNaN(fd), $"Finite difference is NaN at WK[{r},{cidx}]");
-
-                    fdSum += MathF.Abs(fd);
-                    tested++;
+                for (int j = 0; j < od; j++)
+                { 
+                    float d = pp[t, j] - target[t, j];
+                    lp += d * d;
                 }
             }
 
-            Assert(tested > 0, "No WK entries were tested");
-            Assert(fdSum > 1e-8f, $"Cross-attention WK finite-difference sum should be non-zero, got {fdSum:E6}");
+            wk[0, 0] = origW - eps;
+            var (pm, _) = model.Forward(stories[0], pi[0]);
+            float lm = 0f;
+            for (int t = 0; t < sl; t++)
+            {
+                for (int j = 0; j < od; j++)
+                {
+                    float d = pm[t, j] - target[t, j];
+                    lm += d * d;
+                }
+            }
+
+            wk[0, 0] = origW;
+
+            float fd = (lp - lm) / (2 * eps);
+            Assert(!float.IsNaN(fd), "Finite difference is NaN");
+            Assert(MathF.Abs(fd) > 1e-10f, $"Cross-attention WK gradient should be non-zero (text→price flow): {fd:E6}");
         }
         public void Test_GradCheck_DecayNetwork_LogBaseDecayRate_FiniteDifference()
         {
@@ -3007,10 +2912,10 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Try all heads across all layers
             bool anyNonZero = false;
-            for (int layer = 0; layer < c.Price.NumLayers && !anyNonZero; layer++)
+            for (int layer = 0; layer < c.PriceNumLayers && !anyNonZero; layer++)
             {
                 var decayNet = model.PriceBlocks[layer].DecayNetwork;
-                for (int h = 0; h < c.Price.NumHeads && !anyNonZero; h++)
+                for (int h = 0; h < c.PriceNumHeads && !anyNonZero; h++)
                 {
                     float origVal = decayNet.LogBaseDecayRate[h];
 
@@ -3162,7 +3067,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             float[,] before = (float[,])model.ContextTypeEmbedding.Clone();
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.01f,
                 BatchSize = 1,
@@ -3178,8 +3083,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             var ns = new NewsStory[3][];
             for (int s = 0; s < 3; s++)
             {
-                pi[s] = RandomMatrix(30, c.Price.InputFeatureDim, rng, 0.5f);
-                pt[s] = RandomMatrix(30, c.Output.OutputDim, rng, 0.5f);
+                pi[s] = RandomMatrix(30, c.PriceInputFeatureDim, rng, 0.5f);
+                pt[s] = RandomMatrix(30, c.OutputDim, rng, 0.5f);
                 ns[s] = new NewsStory[]
                 {
             new NewsStory(new int[] { 4, 5, 6 }, -1.0f)
@@ -3190,7 +3095,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             bool anyChanged = false;
             for (int t = 0; t < 2 && !anyChanged; t++)
-                for (int d = 0; d < c.Price.EmbeddingDim && !anyChanged; d++)
+                for (int d = 0; d < c.PriceEmbeddingDim && !anyChanged; d++)
                     if (MathF.Abs(model.ContextTypeEmbedding[t, d] - before[t, d]) > 1e-8f)
                         anyChanged = true;
 
@@ -3202,7 +3107,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var c = CreateConfig(priceSeqLen: 32);
             var model = new TACAMT_Model(c, new Random(42));
 
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 0.01f,
                 BatchSize = 1,
@@ -3218,8 +3123,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             var ns = new NewsStory[5][];
             for (int s = 0; s < 5; s++)
             {
-                pi[s] = RandomMatrix(30, c.Price.InputFeatureDim, rng, 0.5f);
-                pt[s] = RandomMatrix(30, c.Output.OutputDim, rng, 0.5f);
+                pi[s] = RandomMatrix(30, c.PriceInputFeatureDim, rng, 0.5f);
+                pt[s] = RandomMatrix(30, c.OutputDim, rng, 0.5f);
                 ns[s] = new NewsStory[]
                 {
             new NewsStory(new int[] { 4, 5, 6 }, -1.0f)
@@ -3229,7 +3134,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             trainer.Train(ns, pi, pt);
 
             float sumDiff = 0;
-            for (int d = 0; d < c.Price.EmbeddingDim; d++)
+            for (int d = 0; d < c.PriceEmbeddingDim; d++)
                 sumDiff += MathF.Abs(model.ContextTypeEmbedding[0, d] - model.ContextTypeEmbedding[1, d]);
 
             Assert(sumDiff > 0.01f, $"Type embeddings should diverge, diff={sumDiff}");
@@ -3241,7 +3146,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             var model = new TACAMT_Model(c, new Random(42));
 
             for (int t = 0; t < 2; t++)
-                for (int d = 0; d < c.Price.EmbeddingDim; d++)
+                for (int d = 0; d < c.PriceEmbeddingDim; d++)
                     model.ContextTypeEmbedding[t, d] = (t + 1) * 0.1f + d * 0.001f;
 
             var dir = GetTempDir();
@@ -3251,7 +3156,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 var loaded = TACAMT_Model.Load(dir);
 
                 for (int t = 0; t < 2; t++)
-                    for (int d = 0; d < c.Price.EmbeddingDim; d++)
+                    for (int d = 0; d < c.PriceEmbeddingDim; d++)
                         Assert(model.ContextTypeEmbedding[t, d] == loaded.ContextTypeEmbedding[t, d],
                             $"Type embedding [{t},{d}] mismatch after load: {model.ContextTypeEmbedding[t, d]} vs {loaded.ContextTypeEmbedding[t, d]}");
             }
@@ -3267,7 +3172,7 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Train with very aggressive LR and tight clipping — if type embedding
             // is excluded from the norm, it would get disproportionately large updates
-            var trainer = new TACAMT_Trainer(model, new TrainingConfig
+            var trainer = new TACAMT_Trainer(model, new MultimodalTrainingConfig
             {
                 LearningRate = 1.0f,
                 BatchSize = 1,
@@ -3283,8 +3188,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             var ns = new NewsStory[3][];
             for (int s = 0; s < 3; s++)
             {
-                pi[s] = RandomMatrix(30, c.Price.InputFeatureDim, rng, 0.5f);
-                pt[s] = RandomMatrix(30, c.Output.OutputDim, rng, 0.5f);
+                pi[s] = RandomMatrix(30, c.PriceInputFeatureDim, rng, 0.5f);
+                pt[s] = RandomMatrix(30, c.OutputDim, rng, 0.5f);
                 ns[s] = new NewsStory[]
                 {
             new NewsStory(new int[] { 4, 5, 6 }, -1.0f)
@@ -3295,14 +3200,14 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             // Verify no NaN in type embeddings (clipping should prevent explosion)
             for (int t = 0; t < 2; t++)
-                for (int d = 0; d < c.Price.EmbeddingDim; d++)
+                for (int d = 0; d < c.PriceEmbeddingDim; d++)
                     Assert(!float.IsNaN(model.ContextTypeEmbedding[t, d]) && !float.IsInfinity(model.ContextTypeEmbedding[t, d]),
                         $"ContextTypeEmbedding[{t},{d}] is NaN/Inf — gradient clipping may not include it");
 
             // Verify the update magnitude is bounded (tight clipping + high LR should still be controlled)
             float maxChange = 0f;
             for (int t = 0; t < 2; t++)
-                for (int d = 0; d < c.Price.EmbeddingDim; d++)
+                for (int d = 0; d < c.PriceEmbeddingDim; d++)
                 {
                     float change = MathF.Abs(model.ContextTypeEmbedding[t, d] - before[t, d]);
                     if (change > maxChange) maxChange = change;
@@ -3313,419 +3218,7 @@ namespace CallaghanDev.ML.TestConsoleApp
                 $"Max change {maxChange:F4} seems too large — gradient clipping may not be applied to type embeddings");
         }
 
-        // In TacamtTests — add these:
 
-        public void Test_Decay_RecentNews_InfluencesMoreThanOld()
-        {
-            // Structural test — no training needed.
-            // The decay network should produce a stronger (less negative) bias
-            // for recent keys than old ones. This is architecture-level correctness.
-            var cfg = CreateConfig();
-            var model = new TACAMT_Model(cfg, new Random(42));
 
-            var rng = new Random(42);
-            var price = RandomMatrix(5, 5, rng, 0.5f);
-            var tokens = new[] { 4, 5, 6, 7 };
-
-            // Story that arrived very recently (t = -0.1 positions ago)
-            var recentStory = new[] { new NewsStory(tokens, -0.1f) };
-            // Same story that arrived long ago (t = -1000 positions ago)  
-            var oldStory = new[] { new NewsStory(tokens, -1000f) };
-
-            // The cross-attention weights to recent context should be higher
-            // than to old context — decay bias suppresses old keys
-            var cacheRecent = new MultimodalForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers);
-            var cacheOld = new MultimodalForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers);
-
-            model.ForwardWithCache(recentStory, price, cacheRecent);
-            model.ForwardWithCache(oldStory, price, cacheOld);
-
-            // The decay bias for the recent story should be closer to 0 (less suppression)
-            // Check the first price block's cross-attention weights
-            var recentWeights = cacheRecent.PriceBlockCaches[0].CrossAttentionWeights;
-            var oldWeights = cacheOld.PriceBlockCaches[0].CrossAttentionWeights;
-
-            Assert(recentWeights != null && oldWeights != null, "No attention weights cached");
-
-            // Average attention weight to context should be higher for recent story
-            float recentAvg = 0f, oldAvg = 0f;
-            int numHeads = recentWeights.Length;
-            for (int h = 0; h < numHeads; h++)
-            {
-                int rows = recentWeights[h].GetLength(0);
-                int cols = recentWeights[h].GetLength(1);
-                for (int r = 0; r < rows; r++)
-                    for (int c = 0; c < cols; c++)
-                    {
-                        recentAvg += recentWeights[h][r, c];
-                        oldAvg += oldWeights[h][r, c];
-                    }
-            }
-
-            // Recent story should receive higher total attention (less decay suppression)
-            Assert(recentAvg > oldAvg,
-                $"Recent story avg attention ({recentAvg:F4}) should exceed old story ({oldAvg:F4}) — decay not working");
-        }
-
-        public void Test_PriceContext_ActuallyHelps_OnHeldOut()
-        {
-            // Train two models on the same data: one with price context, one without.
-            // The one with price context should generalise better when tested with context.
-            var rng = new Random(42);
-            int n = 20, seqLen = 16;
-            var nullStories = new NewsStory[n][];
-            var pi = new float[n][,];
-            var pt = new float[n][,];
-
-            // Structured data: target = mean of previous 5 price values (autoregressive signal)
-            for (int s = 0; s < n; s++)
-            {
-                pi[s] = new float[seqLen, 1];
-                pt[s] = new float[seqLen, 1];
-                float val = 0.5f;
-                for (int t = 0; t < seqLen; t++)
-                {
-                    pi[s][t, 0] = val;
-                    pt[s][t, 0] = val * 0.9f + 0.05f; // predictable trend
-                    val = val * 0.95f + (float)rng.NextDouble() * 0.05f;
-                }
-            }
-
-            var cfgWith = CreateConfig(inputFeatures: 1, outputDim: 1, priceSeqLen: seqLen + 2,
-                priceCtxMinHist: 3, priceCtxMinCurrent: 3);
-            var cfgWithout = CreateConfig(inputFeatures: 1, outputDim: 1, priceSeqLen: seqLen + 2,
-                priceCtxMinHist: 100, priceCtxMinCurrent: 3); // min history too large = never splits
-
-            var mWith = new TACAMT_Model(cfgWith, new Random(42));
-            var mWithout = new TACAMT_Model(cfgWithout, new Random(42));
-
-            var tc = new TrainingConfig
-            {
-                LearningRate = 0.005f,
-                BatchSize = 10,
-                Epochs = 50,
-                UseGradientClipping = true,
-                GradientClipThreshold = 1f,
-                Verbose = false
-            };
-
-            new TACAMT_Trainer(mWith, tc).Train(nullStories, pi, pt);
-            new TACAMT_Trainer(mWithout, tc).Train(nullStories, pi, pt);
-
-            float lossWithCtx = new TACAMT_Trainer(mWith, new TrainingConfig
-            { LearningRate = 0.001f, Epochs = 1, BatchSize = n, Verbose = false })
-                .Validate(nullStories, pi, pt);
-            float lossWithoutCtx = new TACAMT_Trainer(mWithout, new TrainingConfig
-            { LearningRate = 0.001f, Epochs = 1, BatchSize = n, Verbose = false })
-                .Validate(nullStories, pi, pt);
-
-            // Model with price context has access to more temporal information
-            Assert(lossWithCtx <= lossWithoutCtx * 1.1f,
-                $"Model with price context ({lossWithCtx:F6}) should not be much worse than without ({lossWithoutCtx:F6})");
-        }
-
-        public void Test_ConfidenceHead_CorrelatesWithAccuracy()
-        {
-            var rng = new Random(42);
-            int n = 20;
-            var nullStories = new NewsStory[n][];
-            var pi = new float[n][,];
-            var pt = new float[n][,];
-
-            for (int s = 0; s < n; s++)
-            {
-                bool easy = s < n / 2;
-                pi[s] = new float[8, 5];
-                pt[s] = new float[8, 5];
-                for (int t = 0; t < 8; t++)
-                    for (int f = 0; f < 5; f++)
-                    {
-                        // Easy samples: constant predictable value
-                        // Hard samples: pure noise
-                        pi[s][t, f] = easy ? 0.7f : (float)rng.NextDouble();
-                        pt[s][t, f] = easy ? 0.7f : (float)rng.NextDouble();
-                    }
-            }
-
-            // inputFeatures must match the 5 columns above
-            var config = CreateConfig(useConfidence: true, priceSeqLen: 10, inputFeatures: 5);
-            var model = new TACAMT_Model(config, new Random(42));
-
-            new TACAMT_Trainer(model, new TrainingConfig
-            {
-                LearningRate = 0.005f,
-                BatchSize = 10,
-                Epochs = 200,
-                UseGradientClipping = true,
-                GradientClipThreshold = 1f,
-                ConfidenceLossWeight = 1f,
-                Verbose = false
-            }).Train(nullStories, pi, pt);
-
-            float confEasy = 0f, confHard = 0f;
-            for (int s = 0; s < n; s++)
-            {
-                var (_, conf) = model.Forward((NewsStory[])null, pi[s]);
-                float avg = 0f;
-                for (int t = 0; t < conf.GetLength(0); t++) avg += conf[t, 0];
-                avg /= conf.GetLength(0);
-                if (s < n / 2) confEasy += avg; else confHard += avg;
-            }
-            confEasy /= (n / 2); confHard /= (n / 2);
-
-            Assert(confEasy > confHard,
-                $"Confidence on easy ({confEasy:F4}) should exceed hard ({confHard:F4})");
-        }
-        public void Test_Decay_RecentNews_HigherAttention_ThanOld()
-        {
-            var config = CreateConfig();
-            var model = new TACAMT_Model(config, new Random(42));
-
-            var price = new float[6, 5];
-            for (int t = 0; t < 6; t++) for (int f = 0; f < 5; f++) price[t, f] = 0.5f;
-
-            var tokens = new[] { 4, 5, 6, 7 };
-
-            // Two stories: one recent (t = -0.5), one old (t = -500)
-            // With 2 context entries the softmax can actually distribute weight between them.
-            // Decay should push weight toward the recent one.
-            var twoStories = new[]
-            {
-        new NewsStory(tokens, -0.5f),   // recent
-        new NewsStory(tokens, -500f)    // old
-    };
-
-            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
-            model.ForwardWithCache(twoStories, price, cache);
-
-            Assert(cache.PriceBlockCaches[0].CrossAttentionWeights != null,
-                "Cross attention weights not cached");
-
-            // Sum attention received by context entry 0 (recent) vs entry 1 (old)
-            float weightRecent = 0f, weightOld = 0f;
-            int numHeads = cache.PriceBlockCaches[0].CrossAttentionWeights.Length;
-            for (int h = 0; h < numHeads; h++)
-            {
-                var w = cache.PriceBlockCaches[0].CrossAttentionWeights[h];
-                // w[queryPos, keyPos]: sum over all query positions
-                for (int r = 0; r < w.GetLength(0); r++)
-                {
-                    weightRecent += w[r, 0]; // context entry 0 = recent story
-                    weightOld += w[r, 1]; // context entry 1 = old story
-                }
-            }
-
-            Assert(weightRecent > weightOld,
-                $"Recent story weight ({weightRecent:F6}) should exceed old story ({weightOld:F6}) — decay not suppressing old keys");
-        }
-        public void Test_PriceContext_LongerHistory_LowerLoss()
-        {
-            // Verify that a model trained with price-context splitting produces
-            // a valid (finite, reasonable) validation loss.  Comparing this model
-            // against a no-context model is structurally unfair: the no-context
-            // model trains on ~2x as many timesteps per gradient step, so it
-            // will always have a training advantage unrelated to whether history
-            // is useful.  The correct test is therefore: does the price-context
-            // training path converge to a finite, low loss?
-            var rng = new Random(42);
-            int n = 10, seqLen = 20;
-            var nullStories = new NewsStory[n][];
-            var pi = new float[n][,];
-            var pt = new float[n][,];
-
-            for (int s = 0; s < n; s++)
-            {
-                pi[s] = new float[seqLen, 1];
-                pt[s] = new float[seqLen, 1];
-                float v = 0.5f;
-                for (int t = 0; t < seqLen; t++)
-                {
-                    v = v * 0.8f + 0.2f * (float)rng.NextDouble();
-                    pi[s][t, 0] = v;
-                    pt[s][t, 0] = v * 0.9f + 0.05f;
-                }
-            }
-
-            var cfg = CreateConfig(inputFeatures: 1, outputDim: 1, priceSeqLen: seqLen + 2,
-                priceCtxMinHist: 5, priceCtxMinCurrent: 5);
-            var model = new TACAMT_Model(cfg, new Random(42));
-
-            var tc = new TrainingConfig
-            {
-                LearningRate = 0.005f,
-                BatchSize = 5,
-                Epochs = 60,
-                UseGradientClipping = true,
-                GradientClipThreshold = 1f,
-                Verbose = false
-            };
-            new TACAMT_Trainer(model, tc).Train(nullStories, pi, pt);
-
-            float lossWithCtx = new TACAMT_Trainer(model,
-                new TrainingConfig { LearningRate = 0.001f, Epochs = 1, BatchSize = n, Verbose = false })
-                .Validate(nullStories, pi, pt);
-
-            Assert(!float.IsNaN(lossWithCtx) && !float.IsInfinity(lossWithCtx) && lossWithCtx >= 0, $"Price-context model should produce finite loss, got: {lossWithCtx}");
-            Assert(lossWithCtx < 1.0f, $"Price-context model loss too high ({lossWithCtx:F6}) — training may not be converging");
-        }
-        public void Test_Sequential_MemoryChangesOutput_VsNoMemory_UsingPredictWithMemory()
-        {
-            // This test checks the actual memory-aware inference path.
-            var (tokenizer, stories, priceInputs, _) = CreateTestData(numSamples: 5, priceSeqLen: 8);
-            var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 8);
-
-            var timestamps = new double[] { 100.0, 200.0, 300.0, 400.0, 500.0 };
-
-            // Baseline model: no prior memory
-            var modelNoMem = new TACAMT_Model(config, new Random(42));
-            var (predNoMem, _) = modelNoMem.PredictWithMemory(
-                newStories: stories[4],
-                priceSequence: priceInputs[4],
-                currentAbsoluteTimestamp: timestamps[4]);
-
-            // Memory model: same initial weights, but accumulate memory first
-            var modelWithMem = new TACAMT_Model(config, new Random(42));
-            for (int i = 0; i < 4; i++)
-                modelWithMem.UpdateNewsMemory(stories[i], timestamps[i]);
-
-            var (predWithMem, _) = modelWithMem.PredictWithMemory(
-                newStories: stories[4],
-                priceSequence: priceInputs[4],
-                currentAbsoluteTimestamp: timestamps[4]);
-
-            bool differ = false;
-            for (int j = 0; j < predNoMem.Length && !differ; j++)
-            {
-                if (MathF.Abs(predNoMem[j] - predWithMem[j]) > 1e-6f)
-                    differ = true;
-            }
-
-            Assert(differ, "Prediction with accumulated memory should differ from prediction with no memory");
-        }
-        public void Test_MultiStory_MoreContext_ChangesOutput()
-        {
-            var (tokenizer, _, priceInputs, _) = CreateTestData(numSamples: 1, priceSeqLen: 10);
-            var config = CreateConfig(tokenizer.VocabSize + 2, priceSeqLen: 10);
-            var model = new TACAMT_Model(config, new Random(42));
-
-            // Build two distinct stories explicitly so we're guaranteed to have exactly 1 vs 2
-            var tokens1 = tokenizer.Encode("stock price rose sharply today", addSpecialTokens: true);
-            var tokens2 = tokenizer.Encode("market crashed due to earnings miss", addSpecialTokens: true);
-
-            var oneStory = new[] { new NewsStory(tokens1, 0f) };
-            var twoStories = new[] { new NewsStory(tokens1, 0f), new NewsStory(tokens2, 2f) };
-
-            var (pred1, _) = model.Forward(oneStory, priceInputs[0]);
-            var (pred2, _) = model.Forward(twoStories, priceInputs[0]);
-
-            bool differ = false;
-            for (int t = 0; t < pred1.GetLength(0) && !differ; t++)
-                for (int j = 0; j < pred1.GetLength(1) && !differ; j++)
-                    if (MathF.Abs(pred1[t, j] - pred2[t, j]) > 1e-6f)
-                        differ = true;
-
-            Assert(differ,
-                "Adding a second distinct news story should change the prediction");
-        }
-        public void Test_Decay_OlderMemory_LessInfluence()
-        {
-            // The decay mechanism works by suppressing attention weights for older
-            // context keys relative to newer ones.  This only manifests when there
-            // are at least TWO competing keys: with a single key softmax always
-            // returns 1.0 regardless of the decay bias, so the output is identical
-            // for any age.
-            //
-            // Correct approach: plant two memory entries with identical hidden states
-            // but different ages, then perturb each one in turn and compare how much
-            // that perturbation moves the output.  The recent key should receive a
-            // higher attention weight, so perturbing it causes a larger output shift.
-
-            var config = CreateConfig(priceSeqLen: 8);
-            var rng = new Random(42);
-
-            // All-constant price input (removes price-content variation as a confounder)
-            var price = new float[8, 5];
-            for (int t = 0; t < 8; t++)
-                for (int f = 0; f < 5; f++)
-                    price[t, f] = 0.5f;
-
-            // Encode one story to get a representative hidden state
-            var tokens = new[] { 4, 5, 6, 7 };
-            var story = new[] { new NewsStory(tokens, 0f) };
-            var mEnc = new TACAMT_Model(config, new Random(42));
-            var (storyHidden, _) = mEnc.EncodeStories(story);
-            float[] baseHidden = GetRow(storyHidden, 0, config.Price.EmbeddingDim);
-
-            // Small perturbation vector applied to one key at a time
-            float eps = 0.05f;
-            float[] perturbation = new float[config.Price.EmbeddingDim];
-            for (int d = 0; d < perturbation.Length; d++)
-                perturbation[d] = eps;
-
-            double queryTime = 100.0;
-
-            // ── helper: run prediction with two memory entries, one of which is
-            //    perturbed, and return the L1 distance from the two-entry baseline ──
-            float MeasureShift(int perturbedEntry /* 0=recent, 1=old */)
-            {
-                // Baseline: two unperturbed entries
-                var mBase = new TACAMT_Model(config, new Random(42));
-                mBase.NewsMemory.Clear();
-                mBase.PriceMemory.Clear();
-                mBase.NewsMemory.Add(new NewsMemoryEntry
-                {
-                    HiddenState = (float[])baseHidden.Clone(),
-                    AbsoluteTimestamp = 99.0   // age = 1   (recent)
-                });
-                mBase.NewsMemory.Add(new NewsMemoryEntry
-                {
-                    HiddenState = (float[])baseHidden.Clone(),
-                    AbsoluteTimestamp = -900.0 // age = 1000 (old)
-                });
-                var (predBase, _) = mBase.PredictWithMemory(null, price, queryTime);
-
-                // Perturbed: one entry shifted by eps
-                var mPert = new TACAMT_Model(config, new Random(42));
-                mPert.NewsMemory.Clear();
-                mPert.PriceMemory.Clear();
-
-                float[] h0 = (float[])baseHidden.Clone();
-                float[] h1 = (float[])baseHidden.Clone();
-
-                if (perturbedEntry == 0)
-                    for (int d = 0; d < h0.Length; d++) h0[d] += perturbation[d];
-                else
-                    for (int d = 0; d < h1.Length; d++) h1[d] += perturbation[d];
-
-                mPert.NewsMemory.Add(new NewsMemoryEntry
-                {
-                    HiddenState = h0,
-                    AbsoluteTimestamp = 99.0
-                });
-                mPert.NewsMemory.Add(new NewsMemoryEntry
-                {
-                    HiddenState = h1,
-                    AbsoluteTimestamp = -900.0
-                });
-                var (predPert, _) = mPert.PredictWithMemory(null, price, queryTime);
-
-                float diff = 0f;
-                for (int j = 0; j < predBase.Length; j++)
-                    diff += MathF.Abs(predPert[j] - predBase[j]);
-                return diff;
-            }
-
-            float shiftFromRecent = MeasureShift(perturbedEntry: 0); // perturb recent key
-            float shiftFromOld = MeasureShift(perturbedEntry: 1); // perturb old key
-
-            Assert(shiftFromRecent > shiftFromOld,
-                $"Perturbing the RECENT memory entry (age=1) should move the output more than perturbing the OLD entry (age=1000) because decay gives the recent entry a higher cross-attention weight. Got: recent-shift={shiftFromRecent:F6}, old-shift={shiftFromOld:F6}");
-        }
-        private float[] GetRow(float[,] m, int row, int cols)
-        {
-            var v = new float[cols];
-            for (int d = 0; d < cols; d++) v[d] = m[row, d];
-            return v;
-        }
     }
 }

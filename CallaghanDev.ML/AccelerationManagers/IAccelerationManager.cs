@@ -193,7 +193,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, CallaghanDev.ML.Transformers.TACAMT.ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null);
 
-        float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TransformerBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null);
+        float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null);
 
         void VectorAccumulate(float[] target, float[] source);
         void MatrixAddInPlace(float[,] target, float[,] addend);

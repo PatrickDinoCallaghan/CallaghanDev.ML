@@ -328,6 +328,9 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return result;
         }
+
+
+
         #region Multi-head attention
 
         public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
@@ -394,7 +397,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             int embeddingDim = Q.GetLength(1);
             int headDim = embeddingDim / numHeads;
             if (embeddingDim % numHeads != 0)
-            { 
+            {
                 throw new ArgumentException("Embedding dim must be divisible by numHeads");
             }
             var dQ_full = new float[seqLenQ, embeddingDim];
@@ -459,7 +462,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     for (int j = 0; j < seqLenK; j++)
                     {
                         //attnWeights[i, j] /= (expSum + 1e-10f);
-                        attnWeights[i, j] = attnWeights[i, j]/ expSum;
+                        attnWeights[i, j] = attnWeights[i, j] / expSum;
                     }
                 }
 
@@ -580,41 +583,42 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #endregion
 
+
         public void BackpropLinearProjection(float[,] input, float[,] dOutput, float[,] weights, float[,] weightGrad, float[] biasGrad, float[,] dInput)
         {
             int seqLen = input.GetLength(0);
-            int embeddingDim = input.GetLength(1);
+            int inDim = input.GetLength(1);
+            int outDim = dOutput.GetLength(1);
 
             for (int i = 0; i < seqLen; i++)
             {
-                for (int j = 0; j < embeddingDim; j++)
+                // weight + bias grads
+                for (int j = 0; j < outDim; j++)
                 {
                     float dOutVal = dOutput[i, j];
 
-                    for (int k = 0; k < embeddingDim; k++)
+                    for (int k = 0; k < inDim; k++)
                     {
-                        //These bugs were symetric would never have seen them
-                        //weightGrad[k, j] += input[i, k] * dOutVal;
                         weightGrad[j, k] += dOutVal * input[i, k];
                     }
 
                     biasGrad[j] += dOutVal;
                 }
 
-                for (int k = 0; k < embeddingDim; k++)
+                // input grad
+                for (int k = 0; k < inDim; k++)
                 {
                     float sum = 0;
-                    for (int j = 0; j < embeddingDim; j++)
+
+                    for (int j = 0; j < outDim; j++)
                     {
-                        //These bugs were symetric would never have seen them
-                        //sum += dOutput[i, j] * weights[k, j];
                         sum += dOutput[i, j] * weights[j, k];
                     }
+
                     dInput[i, k] += sum;
                 }
             }
         }
-
         public (float[,] output, float[] means, float[] variances, float[,] normalized) LayerNormForward(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
         {
             int batchSize = input.GetLength(0);
@@ -1047,7 +1051,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
-        public void Dispose() { }
+
         public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
         {
             int psl = Q.GetLength(0);
@@ -1110,11 +1114,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return output;
         }
 
-        public float[,] FFNForwardBatch(
-            float[,] input,
-            int seqLen,
-            int outputDim,
-            Func<float[], float[]> forwardPassFn)
+        public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
         {
             var result = new float[seqLen, outputDim];
 
@@ -1133,10 +1133,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public void ApplyContextTypeEmbedding(
-            float[,] contextHidden,
-            float[,] typeEmbedding,
-            int[] typeIndices)
+        public void ApplyContextTypeEmbedding(float[,] contextHidden, float[,] typeEmbedding, int[] typeIndices)
         {
             int n = contextHidden.GetLength(0);
             int embDim = contextHidden.GetLength(1);
@@ -1149,9 +1146,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
 
-        public float[,] ComputeTimeDiffMatrix(
-            int priceSeqLen,
-            float[] keyArrivalTimes)
+        public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
         {
             int numKeys = keyArrivalTimes.Length;
             var td = new float[priceSeqLen, numKeys];
@@ -1163,12 +1158,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return td;
         }
 
-        public float[,] MeanPoolRows(
-            float[,] hidden,
-            int[] storyOffsets,
-            int[] storyCounts,
-            int numStories,
-            int embeddingDim)
+        public float[,] MeanPoolRows(float[,] hidden, int[] storyOffsets, int[] storyCounts, int numStories, int embeddingDim)
         {
             var result = new float[numStories, embeddingDim];
 
@@ -1193,12 +1183,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public float[,] EmbedWithBiasAndPositional(
-            float[,] projected,
-            float[] bias,
-            float[,] positionalEncoding,
-            int seqLen,
-            int embeddingDim)
+        public float[,] EmbedWithBiasAndPositional(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
         {
             var result = new float[seqLen, embeddingDim];
 
@@ -1209,12 +1194,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public float[] ComputeMemoryAttentionScores(
-            float[,] priceHidden,
-            int lastPos,
-            float[,] contextHidden,
-            int totalCtx,
-            float scale)
+        public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos, float[,] contextHidden, int totalCtx, float scale)
         {
             int embDim = priceHidden.GetLength(1);
             var scores = new float[totalCtx];
@@ -1230,12 +1210,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return scores;
         }
 
-        public float[,] ProjectOutputBatch(
-            float[,] hidden,
-            float[,] outputProjection,
-            float[] outputBias,
-            int seqLen,
-            int outputDim)
+        public float[,] ProjectOutputBatch(float[,] hidden, float[,] outputProjection, float[] outputBias, int seqLen, int outputDim)
         {
             int embDim = hidden.GetLength(1);
             var pred = new float[seqLen, outputDim];
@@ -1251,13 +1226,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return pred;
         }
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
-    float[,] queryEmbeddings,
-    float[,] keyEmbeddings,
-    float[,] timeDiffs,
-    float[] keyTimesFromRef,
-    ContentAwareDecayNetwork network,
-    bool isTraining = false, Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
         {
             int queryLen = timeDiffs.GetLength(0);
             int keyLen = timeDiffs.GetLength(1);
@@ -1447,7 +1416,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                             for (int k = 0; k < mlpInputDim; k++)
                                 val += network.W1[h, j, k] * cache.MLPInput[qi, si, h, k];
                             cache.MLPHiddenPreAct[qi, si, h, j] = val;
-                            float activated = val > 0 ? val : 0;
+                            float activated = val > 0 ? val : 0.01f * val;
 
                             // Dropout on MLP hidden
                             if (useMLPDrop)
@@ -1491,49 +1460,127 @@ namespace CallaghanDev.ML.AccelerationManagers
                 return ex / (1f + ex);
             }
         }
-
-        public float[,] ContentAwareCrossAttentionWithCache(
-            float[,] Q,
-            float[,] K,
-            float[,] V,
-            float[,] timeDiffs,
-            float[] keyTimesFromRef,
-            float[,] queryEmbeddings,
-            float[,] keyEmbeddings,
-    CallaghanDev.ML.Transformers.TACAMT.TransformerBlock block,
-            BlockCache bc,
-            int PriceEmbeddingDim,
-            int PriceNumHeads,
-            bool isTraining = false,
-            Random dropoutRng = null)
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
             int tsl = K.GetLength(0);
             int ed = PriceEmbeddingDim;
             int nh = PriceNumHeads;
             int hd = ed / nh;
+
             float scale = 1.0f / MathF.Sqrt(hd);
 
+            // =============================
+            // 1. Compute decay (optional)
+            // =============================
             float[,,] decayBias = null;
 
             if (timeDiffs != null)
             {
-                var (bias, decayCache) = ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, block.DecayNetwork, isTraining, dropoutRng);
+                var (bias, decayCache) = ContentAwareDecayForward(
+                    queryEmbeddings,
+                    keyEmbeddings,
+                    timeDiffs,
+                    keyTimesFromRef,
+                    block.DecayNetwork,
+                    isTraining,
+                    dropoutRng);
+
                 decayBias = bias;
                 bc.DecayCache = decayCache;
             }
+            else
+            {
+                bc.DecayCache = null;
+            }
 
-            float[][,] attentionWeights;
-            float[][,] scoresPreSoftmax;
+            // =============================
+            // 2. Standard multi-head attention (IDENTICAL math)
+            // =============================
 
-            var output = ContentAwareCrossAttentionForward(Q, K, V, nh, scale, decayBias,out attentionWeights, out scoresPreSoftmax);
+            var output = new float[psl, ed];
+            var attentionWeights = new float[nh][,];
+            var scoresPreSoftmax = new float[nh][,];
 
+            for (int h = 0; h < nh; h++)
+            {
+                int offset = h * hd;
+
+                var scores = new float[psl, tsl];
+                var weights = new float[psl, tsl];
+
+                for (int p = 0; p < psl; p++)
+                {
+                    float max = float.NegativeInfinity;
+
+                    // --- compute scores ---
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        float dot = 0f;
+
+                        for (int d = 0; d < hd; d++)
+                        {
+                            dot += Q[p, offset + d] * K[s, offset + d];
+                        }
+
+                        float sc = dot * scale;
+
+                        // 🔥 IMPORTANT: decay added BEFORE softmax
+                        if (decayBias != null)
+                        {
+                            sc += decayBias[p, s, h];
+                        }
+
+                        scores[p, s] = sc;
+
+                        if (sc > max) max = sc;
+                    }
+
+                    // --- softmax (stable) ---
+                    float sum = 0f;
+
+                    for (int s = 0; s < tsl; s++)
+                    {
+                        float w = MathF.Exp(scores[p, s] - max);
+                        weights[p, s] = w;
+                        sum += w;
+                    }
+
+                    if (sum > 0f)
+                    {
+                        float inv = 1f / sum;
+                        for (int s = 0; s < tsl; s++)
+                        {
+                            weights[p, s] *= inv;
+                        }
+                    }
+
+                    // --- weighted sum ---
+                    for (int d = 0; d < hd; d++)
+                    {
+                        float val = 0f;
+
+                        for (int s = 0; s < tsl; s++)
+                        {
+                            val += weights[p, s] * V[s, offset + d];
+                        }
+
+                        output[p, offset + d] = val;
+                    }
+                }
+
+                attentionWeights[h] = weights;
+                scoresPreSoftmax[h] = scores;
+            }
+
+            // =============================
+            // 3. Store cache (CRITICAL for backprop)
+            // =============================
             bc.CrossAttentionWeights = attentionWeights;
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
 
             return output;
         }
-
 
         public void VectorAccumulate(float[] target, float[] source) => AccumulateVectorGradients(target, source);
 
@@ -1577,6 +1624,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             return sum;
         }
+
+
+        public void Dispose() { }
     }
 
 }

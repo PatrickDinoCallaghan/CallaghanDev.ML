@@ -8,6 +8,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Archive\**" />
+    <EmbeddedResource Remove="Archive\**" />
+    <None Remove="Archive\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="AccelerationConsistencyTests.cs" />
+    <Compile Remove="NeuralNetworkBooleanLogicTests.cs" />
+    <Compile Remove="Tests.cs" />
     <Compile Remove="TimeDecayNewsExample.cs" />
   </ItemGroup>
 

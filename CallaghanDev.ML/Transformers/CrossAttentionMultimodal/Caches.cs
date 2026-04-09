@@ -1,4 +1,5 @@
 using CallaghanDev.ML.Transformers.Cache;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System.Collections.Generic;
 
 namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal

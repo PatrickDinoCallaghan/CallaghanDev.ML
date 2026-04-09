@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace CallaghanDev.ML.Transformers
+namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 {   
     public enum TransformerDataType
     {
