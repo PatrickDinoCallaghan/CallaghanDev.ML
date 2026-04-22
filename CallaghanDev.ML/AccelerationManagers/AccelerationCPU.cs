@@ -1,6 +1,8 @@
 ﻿using CallaghanDev.ML.Enums;
-using static CallaghanDev.ML.Functions;
 using CallaghanDev.ML.Transformers.TACAMT;
+using ILGPU.Algorithms;
+using MathNet.Numerics;
+using static CallaghanDev.ML.Functions;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
@@ -797,33 +799,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public float[,] EmbedTokensWithPosition(float[,] tokenEmbedding, int[] tokenIds, float[,] positionalEncoding, int seqLen, int embeddingDim)
-        {
-            var result = new float[seqLen, embeddingDim];
-            for (int i = 0; i < seqLen; i++)
-            {
-                int tokenId = tokenIds[i];
-                for (int j = 0; j < embeddingDim; j++)
-                {
-                    result[i, j] = tokenEmbedding[tokenId, j] + positionalEncoding[i, j];
-                }
-            }
-            return result;
-        }
-
-        public float[,] AddBiasAndPositionalEncoding(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
-        {
-            var result = new float[seqLen, embeddingDim];
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j < embeddingDim; j++)
-                {
-                    result[i, j] = projected[i, j] + bias[j] + positionalEncoding[i, j];
-                }
-            }
-            return result;
-        }
-
         public (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen)
         {
             int outputDim = logits.GetLength(1);
@@ -967,6 +942,10 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public float[,] SliceRows(float[,] matrix, int startRow, int endRow)
         {
+            if (startRow < 0 || endRow > matrix.GetLength(0) || startRow > endRow)
+            {
+                throw new ArgumentOutOfRangeException();
+            }
             int cols = matrix.GetLength(1);
             int numRows = endRow - startRow;
             var result = new float[numRows, cols];
@@ -1141,57 +1120,27 @@ namespace CallaghanDev.ML.AccelerationManagers
             for (int i = 0; i < n; i++)
             {
                 int t = typeIndices[i];
+
                 for (int d = 0; d < embDim; d++)
+                {
                     contextHidden[i, d] += typeEmbedding[t, d];
+                }
             }
         }
-
         public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
         {
             int numKeys = keyArrivalTimes.Length;
             var td = new float[priceSeqLen, numKeys];
 
             for (int p = 0; p < priceSeqLen; p++)
-                for (int s = 0; s < numKeys; s++)
-                    td[p, s] = MathF.Abs(p - keyArrivalTimes[s]);
-
-            return td;
-        }
-
-        public float[,] MeanPoolRows(float[,] hidden, int[] storyOffsets, int[] storyCounts, int numStories, int embeddingDim)
-        {
-            var result = new float[numStories, embeddingDim];
-
-            for (int s = 0; s < numStories; s++)
             {
-                int start = storyOffsets[s];
-                int count = storyCounts[s];
-
-                if (count <= 0) continue;
-
-                float inv = 1f / count;
-
-                for (int d = 0; d < embeddingDim; d++)
+                for (int s = 0; s < numKeys; s++)
                 {
-                    float sum = 0f;
-                    for (int t = start; t < start + count; t++)
-                        sum += hidden[t, d];
-                    result[s, d] = sum * inv;
+                    td[p, s] = p - keyArrivalTimes[s];
                 }
             }
 
-            return result;
-        }
-
-        public float[,] EmbedWithBiasAndPositional(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
-        {
-            var result = new float[seqLen, embeddingDim];
-
-            for (int i = 0; i < seqLen; i++)
-                for (int j = 0; j < embeddingDim; j++)
-                    result[i, j] = projected[i, j] + bias[j] + positionalEncoding[i, j];
-
-            return result;
+            return td;
         }
 
         public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos, float[,] contextHidden, int totalCtx, float scale)
@@ -1238,12 +1187,25 @@ namespace CallaghanDev.ML.AccelerationManagers
             int numBases = network.NumTimeBases;
             int rawDim = network.TimeRawDim;
 
-            // Allocate cache
+            var normalizedTimeDiffs = new float[queryLen, keyLen];
+            float timeNorm = MathF.Max(network.TimeNormalizationHours, 1e-4f);
+
+            for (int qi = 0; qi < queryLen; qi++)
+            {
+                for (int si = 0; si < keyLen; si++)
+                {
+                    float td = timeDiffs[qi, si];
+                    if (td < 0f) td = 0f;
+                    normalizedTimeDiffs[qi, si] = td / timeNorm;
+                }
+            }
+
             var cache = new ContentAwareDecayCache
             {
                 QueryEmbeddings = queryEmbeddings,
                 KeyEmbeddings = keyEmbeddings,
                 TimeDiffs = timeDiffs,
+                NormalizedTimeDiffs = normalizedTimeDiffs,
                 KeyTimesFromRef = keyTimesFromRef,
                 QueryProj = new float[numHeads, queryLen, projDim],
                 KeyProj = new float[numHeads, keyLen, projDim],
@@ -1263,20 +1225,20 @@ namespace CallaghanDev.ML.AccelerationManagers
                 MLPDropoutMask = null
             };
 
-            bool useMemAttnDrop = isTraining && network.MemoryAttentionDropout > 0 && dropoutRng != null;
-            bool useMLPDrop = isTraining && network.MLPDropout > 0 && dropoutRng != null;
+            bool useMemAttnDrop = isTraining && network.MemoryAttentionDropout > 0f && dropoutRng != null;
+            bool useMLPDrop = isTraining && network.MLPDropout > 0f && dropoutRng != null;
 
             if (useMemAttnDrop)
                 cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
+
             if (useMLPDrop)
                 cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
 
             var decayBias = new float[queryLen, keyLen, numHeads];
 
-            // Process each head sequentially
             for (int h = 0; h < numHeads; h++)
             {
-                // 1. Project queries
+                // 1. Query projection
                 for (int q = 0; q < queryLen; q++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -1284,11 +1246,12 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.QueryProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
                             val += network.QueryProjection[h, p, d] * queryEmbeddings[q, d];
+
                         cache.QueryProj[h, q, p] = val;
                     }
                 }
 
-                // 2. Project keys
+                // 2. Key projection
                 for (int s = 0; s < keyLen; s++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -1296,14 +1259,16 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.KeyProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
                             val += network.KeyProjection[h, p, d] * keyEmbeddings[s, d];
+
                         cache.KeyProj[h, s, p] = val;
                     }
                 }
 
-                // 3. Multi-scale sinusoidal time encoding
+                // 3. Multi-scale time encoding
                 for (int s = 0; s < keyLen; s++)
                 {
                     float t = keyTimesFromRef != null ? keyTimesFromRef[s] : 0f;
+
                     for (int b = 0; b < numBases; b++)
                     {
                         float freq = MathF.Exp(network.TimeLogFreq[h, b]);
@@ -1311,11 +1276,13 @@ namespace CallaghanDev.ML.AccelerationManagers
                         cache.TimeRawFeatures[h, s, b * 2] = MathF.Sin(angle);
                         cache.TimeRawFeatures[h, s, b * 2 + 1] = MathF.Cos(angle);
                     }
+
                     for (int p = 0; p < projDim; p++)
                     {
                         float val = network.TimeProjBias[h, p];
                         for (int r = 0; r < rawDim; r++)
                             val += network.TimeProj[h, p, r] * cache.TimeRawFeatures[h, s, r];
+
                         cache.TimeEncoding[h, s, p] = val;
                     }
                 }
@@ -1327,8 +1294,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                 {
                     for (int p = 0; p < projDim; p++)
                     {
-                        cache.MemAttnQInput[h, s, p] = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
-                        cache.MemAttnKInput[h, s, p] = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
+                        float kp = cache.KeyProj[h, s, p] + cache.TimeEncoding[h, s, p];
+                        cache.MemAttnQInput[h, s, p] = kp;
+                        cache.MemAttnKInput[h, s, p] = kp;
                     }
                 }
 
@@ -1339,49 +1307,52 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                     for (int j = 0; j < keyLen; j++)
                     {
-                        float dot = 0;
+                        float dot = 0f;
                         for (int p = 0; p < projDim; p++)
                             dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+
                         scores[j] = dot * memScale;
                         if (scores[j] > maxScore) maxScore = scores[j];
                     }
 
-                    float sumExp = 0;
+                    float sumExp = 0f;
                     for (int j = 0; j < keyLen; j++)
                     {
-                        cache.MemAttnWeights[h, i, j] = MathF.Exp(scores[j] - maxScore);
-                        sumExp += cache.MemAttnWeights[h, i, j];
+                        float w = MathF.Exp(scores[j] - maxScore);
+                        cache.MemAttnWeights[h, i, j] = w;
+                        sumExp += w;
                     }
-                    if (sumExp > 0)
+
+                    if (sumExp > 0f)
                     {
                         for (int j = 0; j < keyLen; j++)
                             cache.MemAttnWeights[h, i, j] /= sumExp;
                     }
 
-                    // Dropout on memory attention
                     if (useMemAttnDrop)
                     {
                         float keepProb = 1.0f - network.MemoryAttentionDropout;
-                        float dscale = 1.0f / keepProb;
+                        float scaleDrop = 1.0f / keepProb;
+
                         for (int j = 0; j < keyLen; j++)
                         {
-                            float mask = dropoutRng.NextSingle() < keepProb ? dscale : 0f;
+                            float mask = dropoutRng.NextSingle() < keepProb ? scaleDrop : 0f;
                             cache.MemAttnDropoutMask[h, i, j] = mask;
                             cache.MemAttnWeights[h, i, j] *= mask;
                         }
                     }
 
-                    // Weighted sum
                     for (int p = 0; p < projDim; p++)
                     {
-                        float val = 0;
+                        float val = 0f;
                         for (int j = 0; j < keyLen; j++)
                             val += cache.MemAttnWeights[h, i, j] * cache.KeyProj[h, j, p];
+
                         cache.MemAttnOutput[h, i, p] = val;
                     }
                 }
 
-                // 5. Output projection (refined key)
+                // 5. Refined key
                 for (int s = 0; s < keyLen; s++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -1389,36 +1360,39 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.MemAttnOutputB[h, p];
                         for (int q = 0; q < projDim; q++)
                             val += network.MemAttnOutputW[h, p, q] * cache.MemAttnOutput[h, s, q];
+
                         cache.RefinedKey[h, s, p] = val + cache.KeyProj[h, s, p];
                     }
                 }
 
-                // 6. Gating MLP
+                // 6. Gating MLP + decay bias
+                float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
+
                 for (int qi = 0; qi < queryLen; qi++)
                 {
                     for (int si = 0; si < keyLen; si++)
                     {
-                        float td = timeDiffs[qi, si];
-                        float logTd = MathF.Log(1f + td);
+                        float td = MathF.Max(0f, timeDiffs[qi, si]);
+                        float normTd = normalizedTimeDiffs[qi, si];
+                        float logTd = MathF.Log(1f + normTd);
 
-                        // Build MLP input
                         int idx = 0;
                         for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
                         for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
                         for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p] * cache.RefinedKey[h, si, p];
-                        cache.MLPInput[qi, si, h, idx++] = td;
+                        cache.MLPInput[qi, si, h, idx++] = normTd;
                         cache.MLPInput[qi, si, h, idx++] = logTd;
 
-                        // Hidden layer (ReLU)
                         for (int j = 0; j < hiddenDim; j++)
                         {
                             float val = network.B1[h, j];
                             for (int k = 0; k < mlpInputDim; k++)
                                 val += network.W1[h, j, k] * cache.MLPInput[qi, si, h, k];
-                            cache.MLPHiddenPreAct[qi, si, h, j] = val;
-                            float activated = val > 0 ? val : 0.01f * val;
 
-                            // Dropout on MLP hidden
+                            cache.MLPHiddenPreAct[qi, si, h, j] = val;
+
+                            float activated = val > 0f ? val : 0.01f * val;
+
                             if (useMLPDrop)
                             {
                                 float keepProb = 1.0f - network.MLPDropout;
@@ -1426,28 +1400,29 @@ namespace CallaghanDev.ML.AccelerationManagers
                                 cache.MLPDropoutMask[qi, si, h, j] = mask;
                                 activated *= mask;
                             }
+
                             cache.MLPHidden[qi, si, h, j] = activated;
                         }
 
-                        // Output layer
                         float logit = network.B2[h];
                         for (int j = 0; j < hiddenDim; j++)
                             logit += network.W2[h, j] * cache.MLPHidden[qi, si, h, j];
+
                         cache.GateLogits[qi, si, h] = logit;
 
                         float gate = StableSigmoid(logit);
+                        gate = network.ClampGate(gate);
                         cache.Gates[qi, si, h] = gate;
 
-                        float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
-                        decayBias[qi, si, h] = -(baseRate * gate) * td;
+                        // Strong default recency prior; gate can relax it for persistent/high-impact news
+                        decayBias[qi, si, h] = -(baseRate * (1f - gate)) * normTd;
                     }
                 }
             }
 
             return (decayBias, cache);
         }
-
-        private static float StableSigmoid(float x)
+        private float StableSigmoid(float x)
         {
             if (x >= 0)
             {
@@ -1525,7 +1500,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                         float sc = dot * scale;
 
-                        // 🔥 IMPORTANT: decay added BEFORE softmax
+                        //  IMPORTANT: decay added BEFORE softmax
                         if (decayBias != null)
                         {
                             sc += decayBias[p, s, h];

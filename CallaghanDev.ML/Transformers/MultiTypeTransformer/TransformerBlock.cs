@@ -75,7 +75,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         /// <summary>
         /// Explicit-parameter constructor. Takes only what TransformerBlock
-        /// actually uses — no throwaway TransformerConfig needed at call sites.
+        /// actually uses - no throwaway TransformerConfig needed at call sites.
         /// </summary>
         public TransformerBlock(
             int embeddingDim,

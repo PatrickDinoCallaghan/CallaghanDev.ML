@@ -12,12 +12,12 @@ namespace CallaghanDev.ML.Transformers.MMTAC
     /// Multimodal Market Transformer with Additional Context (MMTAC).
     ///
     /// Output heads (per timestep):
-    ///   Regression  : High, Low, Close          — linear,   MSE
-    ///   Range       : High - Low                — softplus, MSE
-    ///   Quality     : reliability score [0,1]   — sigmoid,  MSE
-    ///   Direction   : P(close_t+1 > close_t)    — sigmoid,  BCE
-    ///   MidDir      : P(mid-window up-move)      — sigmoid,  BCE
-    ///   Confidence  : optional reliability       — sigmoid,  BCE
+    ///   Regression  : High, Low, Close          - linear,   MSE
+    ///   Range       : High - Low                - softplus, MSE
+    ///   Quality     : reliability score [0,1]   - sigmoid,  MSE
+    ///   Direction   : P(close_t+1 > close_t)    - sigmoid,  BCE
+    ///   MidDir      : P(mid-window up-move)      - sigmoid,  BCE
+    ///   Confidence  : optional reliability       - sigmoid,  BCE
     /// </summary>
     public class MmtacModel
     {
@@ -156,7 +156,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             return ProjectToOutputs(priceHidden);
         }
 
-        /// <summary>Convenience overload — returns only the last-timestep prediction.</summary>
+        /// <summary>Convenience overload - returns only the last-timestep prediction.</summary>
         public ModelPrediction PredictNext(MultimodalInput input)
         {
             var (reg, range, quality, dir, midDir, conf) = Forward(input);
@@ -221,10 +221,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 cache.GlobalTokenEmbedded = globalToken;
                 cache.GlobalRawInput = input.GlobalFeatures;
             }
-
             //  Build combined context matrix 
             float[,] contextHidden; float[] contextTimes;
             BuildContext(sh, st, null, globalToken, cache, out contextHidden, out contextTimes);
+
+            // In this path, any news comes directly from the current input, so it is all live news.
+            // BackpropPriceDecoder uses these fields to slice dLiveNewsHidden correctly.
+            cache.NumStoredNewsContext = 0;
+            cache.NumLiveNewsContext = sh != null ? sh.GetLength(0) : 0;
+            cache.NumNewsContext = cache.NumLiveNewsContext;
+            cache.NumPriceContext = 0;
 
             cache.TextFinalHidden = contextHidden;
             cache.StoryArrivalTimes = contextTimes;
@@ -260,7 +266,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ctxTypes.Add(2);
             }
 
-            // News memory — pass the raw hidden state without any pre-scaling.
+            // News memory - pass the raw hidden state without any pre-scaling.
             // Temporal decay is handled entirely by the ContentAwareDecayNetwork inside
             // TacamtBlock.CrossAttentionForward, which receives the time-diff matrix
             // built from ctxT by ForwardPriceDecoder. Pre-multiplying the vector here
@@ -271,7 +277,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
                 var v = new float[embDim];
                 for (int d = 0; d < embDim; d++)
+                {
                     v[d] = e.HiddenState[d];
+                }
                 ctxH.Add(v);
                 ctxT.Add(relTime);
                 ctxTypes.Add(0);
@@ -287,20 +295,24 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 {
                     var v = new float[embDim];
                     for (int d = 0; d < embDim; d++)
+                    {
                         v[d] = newSH[i, d];
+                    }
                     ctxH.Add(v);
                     ctxT.Add(nst[i]);
                     ctxTypes.Add(0);
                 }
             }
 
-            // Price memory — raw hidden states, same reasoning as news memory above.
+            // Price memory - raw hidden states, same reasoning as news memory above.
             foreach (var e in PriceMemory)
             {
                 float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
                 var v = new float[embDim];
                 for (int d = 0; d < embDim; d++)
+                {
                     v[d] = e.HiddenState[d];
+                }
                 ctxH.Add(v);
                 ctxT.Add(relTime);
                 ctxTypes.Add(1);
@@ -314,11 +326,14 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             {
                 cH = new float[totalCtx, embDim];
                 cT = new float[totalCtx];
+
                 for (int i = 0; i < totalCtx; i++)
                 {
                     int cd = Math.Min(embDim, ctxH[i].Length);
                     for (int d = 0; d < cd; d++)
+                    {
                         cH[i, d] = ctxH[i][d];
+                    }
                     cT[i] = ctxT[i];
                 }
                 // Bake context-type offsets into the rows (news=0, price=1, global=2).
@@ -327,14 +342,19 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 // Mirror the BypassDecay logic in ForwardPriceDecoderWithCache: zero the
                 // time-diff columns for the global token so the decay network ignores it.
                 // ForwardPriceDecoder recomputes td internally, so we set it on the block
-                // indirectly — the bypass is already handled inside ForwardPriceDecoder.
+                // indirectly - the bypass is already handled inside ForwardPriceDecoder.
             }
 
             var priceHidden = ForwardPriceDecoder(input.PriceSequence, cH, cT);
             var (reg, range, quality, dir, midDir, conf) = ProjectToOutputs(priceHidden);
             int last = reg.GetLength(0) - 1;
 
-            UpdateMemoryAttentionScores(priceHidden, cH, totalCtx, globalToken != null ? 1 : 0);
+            int storedNewsMemoryCount = NewsMemory?.Count ?? 0;
+            int liveNewsCount = input.NewsStories?.Length ?? 0;
+            int storedPriceMemoryCount = PriceMemory?.Count ?? 0;
+            int globalOffset = globalToken != null ? 1 : 0;
+
+            UpdateMemoryAttentionScores(priceHidden, cH, totalCtx, globalOffset, storedNewsMemoryCount, liveNewsCount, storedPriceMemoryCount);
 
             // Commit live news stories to memory using their raw (unscaled) hidden states.
             if (newSH != null)
@@ -343,7 +363,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 {
                     var hv = new float[embDim];
                     for (int d = 0; d < embDim; d++)
+                    {
                         hv[d] = newSH[i, d];
+                    }
                     NewsMemory.Add(new NewsMemoryEntry
                     {
                         HiddenState = hv,
@@ -357,7 +379,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             {
                 var pv = new float[embDim];
                 for (int d = 0; d < embDim; d++)
+                {
                     pv[d] = priceHidden[t, d];
+                }
                 PriceMemory.Add(new PriceMemoryEntry
                 {
                     HiddenState = pv,
@@ -382,9 +406,19 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 Confidence = conf != null ? conf[last, 0] : 1f
             };
         }
-        public void ClearNewsMemory() => NewsMemory.Clear();
-        public void ClearPriceMemory() => PriceMemory.Clear();
-        public void ClearAllMemory() { ClearNewsMemory(); ClearPriceMemory(); }
+        public void ClearNewsMemory()
+        {
+            NewsMemory.Clear();
+        }
+        public void ClearPriceMemory()
+        {
+            PriceMemory.Clear();
+        }
+        public void ClearAllMemory() 
+        {
+            ClearNewsMemory(); 
+            ClearPriceMemory();
+        }
 
         // 
         // Global feature embedding
@@ -413,13 +447,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Context assembly
         // 
 
-        internal void BuildContext(
-            float[,] newsHidden, float[] newsTimes,
-            float[] globalFeatures,
-            float[] preEmbeddedGlobal,
-            MmtacForwardCache cache,
-            out float[,] contextHidden,
-            out float[] contextTimes)
+        internal void BuildContext(float[,] newsHidden, float[] newsTimes, float[] globalFeatures, float[] preEmbeddedGlobal, MmtacForwardCache cache, out float[,] contextHidden, out float[] contextTimes)
         {
             int ed = _config.Price.EmbeddingDim;
 
@@ -644,33 +672,43 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 if (globalToken != null)
                 {
                     for (int d = 0; d < ed; d++)
+                    {
                         combinedHidden[row, d] = globalToken[d] + ContextTypeEmbedding[2, d];
+                    }
                     combinedTimes[row] = 0f; row++;
                 }
                 for (int i = 0; i < numNews; i++)
                 {
                     for (int d = 0; d < ed; d++)
+                    {
                         combinedHidden[row, d] = newsHidden[i, d] + ContextTypeEmbedding[0, d];
+                    }
                     combinedTimes[row] = newsTimes != null ? newsTimes[i] : 0f; row++;
                 }
                 for (int i = 0; i < numPriceCtx; i++)
                 {
                     for (int d = 0; d < ed; d++)
+                    {
                         combinedHidden[row, d] = priceCtxHidden[i, d] + ContextTypeEmbedding[1, d];
+                    }
                     combinedTimes[row] = priceCtxTimes != null ? priceCtxTimes[i] : 0f; row++;
                 }
             }
 
             cache.NumGlobalContext = numGlobal;
+
+            // In this path, the sample's news is live news.
+            // Price-context rows are separate and must not be counted as live news.
+            cache.NumStoredNewsContext = 0;
+            cache.NumLiveNewsContext = numNews;
             cache.NumNewsContext = numNews;
             cache.NumPriceContext = numPriceCtx;
+
             cache.PriceContextHidden = priceCtxHidden;
             cache.TextFinalHidden = combinedHidden;
             cache.StoryArrivalTimes = combinedTimes;
 
-            var priceHidden = ForwardPriceDecoderWithCache(
-                input.PriceSequence, 0, input.PriceSequence.GetLength(0),
-                combinedHidden, combinedTimes, cache, isTraining, dropoutRng);
+            var priceHidden = ForwardPriceDecoderWithCache(input.PriceSequence, 0, input.PriceSequence.GetLength(0), combinedHidden, combinedTimes, cache, isTraining, dropoutRng);
 
             cache.PriceFinalHidden = priceHidden;
             return ProjectToOutputs(priceHidden);
@@ -710,10 +748,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             int ed = _config.Price.EmbeddingDim;
             int rDim = MmtacOutputConfig.RegressionOutputCount; // 3
 
-            //  Regression: High, Low, Close — linear 
+            //  Regression: High, Low, Close - linear 
             var regression = _accel.ProjectOutputBatch(hidden, RegressionProjection, RegressionBias, sl, rDim);
 
-            //  Range — softplus: log(1 + exp(x)) 
+            //  Range - softplus: log(1 + exp(x)) 
             var range = new float[sl, 1];
             var rangeLogits = new float[sl];
             for (int t = 0; t < sl; t++)
@@ -725,7 +763,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 range[t, 0] = l > 20f ? l : MathF.Log(1f + MathF.Exp(l));
             }
 
-            //  Quality — sigmoid 
+            //  Quality - sigmoid 
             var quality = new float[sl, 1];
             var qualityLogits = new float[sl];
             for (int t = 0; t < sl; t++)
@@ -736,7 +774,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 quality[t, 0] = Sigmoid(l);
             }
 
-            //  Direction — sigmoid 
+            //  Direction - sigmoid 
             var direction = new float[sl, 1];
             for (int t = 0; t < sl; t++)
             {
@@ -745,7 +783,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 direction[t, 0] = Sigmoid(l);
             }
 
-            //  MidWindowDirection — sigmoid 
+            //  MidWindowDirection - sigmoid 
             var midDirection = new float[sl, 1];
             for (int t = 0; t < sl; t++)
             {
@@ -754,7 +792,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 midDirection[t, 0] = Sigmoid(l);
             }
 
-            //  Confidence — sigmoid (optional) 
+            //  Confidence - sigmoid (optional) 
             float[,] confidence = null;
             if (_config.Output.UseConfidenceHead)
             {
@@ -803,7 +841,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         internal void PricePruneMemory(int maxSize)
         {
-            if (PriceMemory.Count <= maxSize) return;
+            if (PriceMemory.Count <= maxSize)
+            {
+                return;
+            }
             if (!PruningConfig.UseAttentionBasedPruning)
             {
                 PriceMemory = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).Take(maxSize).ToList();
@@ -813,44 +854,74 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             int reserve = PruningConfig.NewEntryReserveFraction <= 0f ? 0 : Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
             var byTime = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).ToList();
             var kept = byTime.Take(reserve)
-                             .Concat(byTime.Skip(reserve)
-                                 .OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning
-                                     ? e.AttentionScore : float.MaxValue)
-                                 .Take(maxSize - reserve))
+                             .Concat(byTime.Skip(reserve).OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning  ? e.AttentionScore : float.MinValue).Take(maxSize - reserve))
                              .ToList();
             PriceMemory = kept;
         }
 
-        private void UpdateMemoryAttentionScores(float[,] priceHidden, float[,] ctxH, int total, int globalOffset)
+        private void UpdateMemoryAttentionScores(float[,] priceHidden, float[,] ctxH, int total, int globalOffset, int storedNewsMemoryCount, int liveNewsCount, int storedPriceMemoryCount)
         {
-            if (ctxH == null || total == 0) return;
+            if (ctxH == null || total == 0)
+            {
+                return;
+            }
+
             int ed = _config.Price.EmbeddingDim;
             int last = priceHidden.GetLength(0) - 1;
             float alpha = PruningConfig.AttentionScoreAlpha;
             float scale = 1.0f / MathF.Sqrt(ed);
 
             var scores = _accel.ComputeMemoryAttentionScores(priceHidden, last, ctxH, total, scale);
+
             float max = scores.Length > 0 ? scores.Max() : float.MinValue;
-            float sum = 0;
-            for (int s = 0; s < total; s++) { scores[s] = MathF.Exp(scores[s] - max); sum += scores[s]; }
-            if (sum > 0) for (int s = 0; s < total; s++) scores[s] /= sum;
+            float sum = 0f;
 
-            int newsCount = NewsMemory?.Count ?? 0;
-            int priceCount = PriceMemory?.Count ?? 0;
-            int newsOffset = globalOffset;
-
-            for (int i = 0; i < newsCount && (newsOffset + i) < total; i++)
+            for (int s = 0; s < total; s++)
             {
+                scores[s] = MathF.Exp(scores[s] - max);
+                sum += scores[s];
+            }
+
+            if (sum > 0f)
+            {
+                for (int s = 0; s < total; s++)
+                {
+                    scores[s] /= sum;
+                }
+            }
+
+            // Context layout in PredictWithMemory:
+            // [global?] [stored news memory] [live news from this call] [stored price memory]
+
+            int storedNewsOffset = globalOffset;
+
+            for (int i = 0; i < storedNewsMemoryCount && i < NewsMemory.Count; i++)
+            {
+                int ctxIdx = storedNewsOffset + i;
+
+                if (ctxIdx >= total)
+                {
+                    break;
+                }
+
                 var e = NewsMemory[i];
-                e.AttentionScore = alpha * scores[newsOffset + i] + (1 - alpha) * e.AttentionScore;
+                e.AttentionScore = alpha * scores[ctxIdx] + (1f - alpha) * e.AttentionScore;
                 e.QueryCount++;
             }
 
-            int priceOffset = globalOffset + newsCount;
-            for (int i = 0; i < priceCount && (priceOffset + i) < total; i++)
+            int storedPriceOffset = globalOffset + storedNewsMemoryCount + liveNewsCount;
+
+            for (int i = 0; i < storedPriceMemoryCount && i < PriceMemory.Count; i++)
             {
+                int ctxIdx = storedPriceOffset + i;
+
+                if (ctxIdx >= total)
+                {
+                    break;
+                }
+
                 var e = PriceMemory[i];
-                e.AttentionScore = alpha * scores[priceOffset + i] + (1 - alpha) * e.AttentionScore;
+                e.AttentionScore = alpha * scores[ctxIdx] + (1f - alpha) * e.AttentionScore;
                 e.QueryCount++;
             }
         }
@@ -879,9 +950,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         }
 
         internal (float[,] hidden, float[] times) EncodeStoriesForMemory(NewsStory[] stories)
-            => EncodeStories(stories);
+        {
+            return EncodeStories(stories);
+        }
 
-        private (float[,] hidden, float[] times) EncodeStoriesWithCache(NewsStory[] stories, MmtacForwardCache cache)
+        internal (float[,] hidden, float[] times) EncodeStoriesWithCache(NewsStory[] stories, MmtacForwardCache cache)
         {
             int ns = stories.Length;
             int ed = _config.Text.EmbeddingDim;
@@ -969,18 +1042,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Content-aware cross-attention wrapper
         // 
 
-        private float[,] ContentAwareCrossAttentionWithCache(
-            float[,] Q, float[,] K, float[,] V,
-            float[,] timeDiffs, float[] keyTimesFromRef,
-            float[,] queryEmbeddings, float[,] keyEmbeddings,
-            TacamtBlock block, BlockCache bc,
-            bool isTraining, Random dropoutRng,
-            int globalBypassCount)
+        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, bool isTraining, Random dropoutRng, int globalBypassCount)
         {
-            return _accel.ContentAwareCrossAttentionWithCache(
-                Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings,
-                block, bc, _config.Price.EmbeddingDim, _config.Price.NumHeads,
-                isTraining, dropoutRng);
+            return _accel.ContentAwareCrossAttentionWithCache(Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings, block, bc, _config.Price.EmbeddingDim, _config.Price.NumHeads, isTraining, dropoutRng);
         }
 
         // 
@@ -1060,25 +1124,26 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 _ => throw new NotSupportedException($"Unsupported AccelerationType: {rt.AccelerationType}")
             };
         }
-
+        internal float[,] ForwardPriceDecoderForMemoryBuild(float[,] priceSequence, float[,] contextHidden, float[] contextTimes)
+        {
+            return ForwardPriceDecoder(priceSequence, contextHidden, contextTimes);
+        }
         // 
         // Init helpers
         // 
 
         private void InitTextEncoder()
         {
-            TextTokenEmbedding = new float[_config.Text.VocabSize, _config.Text.EmbeddingDim];
             int v = _config.Text.VocabSize;
             int ed = _config.Text.EmbeddingDim;
+            float std = MathF.Sqrt(2.0f / (v + ed));
+            TextTokenEmbedding = InitWeights(v, ed, std);
             TextBlocks = new TransformerBlock[_config.Text.NumLayers];
+
             for (int i = 0; i < _config.Text.NumLayers; i++)
-                TextBlocks[i] = new TransformerBlock(
-                    ed, _config.Text.NumHeads, _config.Text.FeedForwardDim,
-                    _config.Runtime.FFNActivationType,
-                    CostFunctionType.mse, ActivationDistribution.Normal,
-                    _config.Reg.L2RegulationLamda, _config.Reg.GradientClippingThreshold,
-                    _config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId,
-                    _accel, _random);
+            {
+                TextBlocks[i] = new TransformerBlock(ed, _config.Text.NumHeads, _config.Text.FeedForwardDim, _config.Runtime.FFNActivationType, CostFunctionType.mse, ActivationDistribution.Normal, _config.Reg.L2RegulationLamda, _config.Reg.GradientClippingThreshold, _config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId, _accel, _random);
+            }
         }
 
         private void InitPriceDecoder()
@@ -1129,27 +1194,27 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             float regStd = MathF.Sqrt(2.0f / (ed + rDim));
             float clsStd = MathF.Sqrt(2.0f / (ed + 1));
 
-            // Regression (High, Low, Close) — linear
+            // Regression (High, Low, Close) - linear
             RegressionProjection = InitWeights(rDim, ed, regStd);
             RegressionBias = new float[rDim];
 
-            // Range — softplus
+            // Range - softplus
             RangeProjection = InitWeights(1, ed, clsStd);
             RangeBias = new float[1];
 
-            // Quality — sigmoid
+            // Quality - sigmoid
             QualityProjection = InitWeights(1, ed, clsStd);
             QualityBias = new float[1];
 
-            // Direction — sigmoid
+            // Direction - sigmoid
             DirectionProjection = InitWeights(1, ed, clsStd);
             DirectionBias = new float[1];
 
-            // MidWindowDirection — sigmoid
+            // MidWindowDirection - sigmoid
             MidDirectionProjection = InitWeights(1, ed, clsStd);
             MidDirectionBias = new float[1];
 
-            // Confidence (optional) — sigmoid
+            // Confidence (optional) - sigmoid
             if (_config.Output.UseConfidenceHead)
             {
                 ConfidenceProjection = InitWeights(1, ed, clsStd);
@@ -1192,6 +1257,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ["MidDirectionLossWeight"] = _config.Output.MidDirectionLossWeight,
                 ["RangeLossWeight"] = _config.Output.RangeLossWeight,
                 ["QualityLossWeight"] = _config.Output.QualityLossWeight,
+                ["CloseDirectionConsistencyWeight"] = _config.Output.CloseDirectionConsistencyWeight,
+                ["CloseDirectionConsistencyMargin"] = _config.Output.CloseDirectionConsistencyMargin,
 
                 ["FFNActivationType"] = (int)_config.Runtime.FFNActivationType,
                 ["AccelerationType"] = (int)_config.Runtime.AccelerationType,
@@ -1301,7 +1368,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     DirectionLossWeight = d.ContainsKey("DirectionLossWeight") ? d["DirectionLossWeight"].GetSingle() : 1f,
                     MidDirectionLossWeight = d.ContainsKey("MidDirectionLossWeight") ? d["MidDirectionLossWeight"].GetSingle() : 0.5f,
                     RangeLossWeight = d.ContainsKey("RangeLossWeight") ? d["RangeLossWeight"].GetSingle() : 1f,
-                    QualityLossWeight = d.ContainsKey("QualityLossWeight") ? d["QualityLossWeight"].GetSingle() : 1f
+                    QualityLossWeight = d.ContainsKey("QualityLossWeight") ? d["QualityLossWeight"].GetSingle() : 1f,
+                    CloseDirectionConsistencyWeight = d.ContainsKey("CloseDirectionConsistencyWeight") ? d["CloseDirectionConsistencyWeight"].GetSingle()  : 1.0f,
+                    CloseDirectionConsistencyMargin = d.ContainsKey("CloseDirectionConsistencyMargin") ? d["CloseDirectionConsistencyMargin"].GetSingle() : 0.02f,
                 },
                 Runtime = new RuntimeConfig
                 {
@@ -1456,10 +1525,54 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
             }
         }
-        static void WV(BinaryWriter w, float[] v) { w.Write(v.Length); for (int i = 0; i < v.Length; i++) w.Write(v[i]); }
-        static void WA(BinaryWriter w, MultiHeadAttention a) { WM(w, a.WQ); WM(w, a.WK); WM(w, a.WV); WM(w, a.WO); WV(w, a.BiasQ); WV(w, a.BiasK); WV(w, a.BiasV); WV(w, a.BiasO); }
-        static void RM(BinaryReader r, float[,] m) { int rows = r.ReadInt32(), cols = r.ReadInt32(); for (int i = 0; i < rows; i++) for (int j = 0; j < cols; j++) m[i, j] = r.ReadSingle(); }
-        static void RV(BinaryReader r, float[] v) { int l = r.ReadInt32(); for (int i = 0; i < l; i++) v[i] = r.ReadSingle(); }
-        static void RA(BinaryReader r, MultiHeadAttention a) { RM(r, a.WQ); RM(r, a.WK); RM(r, a.WV); RM(r, a.WO); RV(r, a.BiasQ); RV(r, a.BiasK); RV(r, a.BiasV); RV(r, a.BiasO); }
+        static void WV(BinaryWriter w, float[] v)
+        { 
+            w.Write(v.Length); 
+            for (int i = 0; i < v.Length; i++)
+            {
+                w.Write(v[i]);
+            }
+        }
+        static void WA(BinaryWriter w, MultiHeadAttention a)
+        {
+            WM(w, a.WQ);
+            WM(w, a.WK);
+            WM(w, a.WV); 
+            WM(w, a.WO); 
+            WV(w, a.BiasQ); 
+            WV(w, a.BiasK); 
+            WV(w, a.BiasV);
+            WV(w, a.BiasO);
+        }
+        static void RM(BinaryReader r, float[,] m) 
+        {
+            int rows = r.ReadInt32(), cols = r.ReadInt32(); 
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    m[i, j] = r.ReadSingle();
+                }
+            }
+        }
+        static void RV(BinaryReader r, float[] v) 
+        {
+            int l = r.ReadInt32(); 
+            for (int i = 0; i < l; i++)
+            {
+                v[i] = r.ReadSingle();
+            }
+        }
+        static void RA(BinaryReader r, MultiHeadAttention a) 
+        {
+            RM(r, a.WQ);
+            RM(r, a.WK);
+            RM(r, a.WV); 
+            RM(r, a.WO); 
+            RV(r, a.BiasQ); 
+            RV(r, a.BiasK); 
+            RV(r, a.BiasV); 
+            RV(r, a.BiasO);
+        }
     }
 }

@@ -14,10 +14,10 @@ namespace CallaghanDev.ML.Transformers.Configuration
     /// <para>
     /// Architecture notes:
     /// <list type="bullet">
-    ///   <item>MultiTypeTransformer  — uses all fields; ConfidenceLossWeight unused (leave 0f)</item>
-    ///   <item>CrossAttentionMultimodal — uses all fields; WarmupEpochs unused (leave 0)</item>
-    ///   <item>TACAMT                — uses all fields including WarmupEpochs</item>
-    ///   <item>MMTAC                 — uses all fields including WarmupEpochs</item>
+    ///   <item>MultiTypeTransformer  - uses all fields; ConfidenceLossWeight unused (leave 0f)</item>
+    ///   <item>CrossAttentionMultimodal - uses all fields; WarmupEpochs unused (leave 0)</item>
+    ///   <item>TACAMT                - uses all fields including WarmupEpochs</item>
+    ///   <item>MMTAC                 - uses all fields including WarmupEpochs</item>
     /// </list>
     /// </para>
     /// </summary>

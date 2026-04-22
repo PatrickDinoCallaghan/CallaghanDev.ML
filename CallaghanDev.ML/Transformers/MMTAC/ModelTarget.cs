@@ -23,7 +23,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public float Direction { get; set; }
         public float MidWindowDirection { get; set; }
 
-        /// <summary>Returns [High, Low, Close] — the 3 linear regression targets only.</summary>
+        /// <summary>Returns [High, Low, Close] - the 3 linear regression targets only.</summary>
         public float[] ToRegressionArray() => new[] { High, Low, Close };
 
         public static ModelTarget FromArrays(float[] regression, float range, float quality, float direction, float midDir)

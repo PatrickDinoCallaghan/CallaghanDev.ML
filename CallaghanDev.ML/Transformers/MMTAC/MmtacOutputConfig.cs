@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML.Transformers.MMTAC
 {
-
     /// <summary>
     /// MMTAC output head and per-head loss weights.
     /// MMTAC decomposes prediction into High/Low/Close regression plus
@@ -25,12 +24,27 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public float RangeLossWeight { get; set; } = 1.0f;
         public float QualityLossWeight { get; set; } = 1.0f;
 
+        /// <summary>
+        /// Auxiliary loss that encourages predicted Close to move in the same
+        /// direction as the Direction target relative to the previous observed close.
+        /// </summary>
+        public float CloseDirectionConsistencyWeight { get; set; } = 1.0f;
+
+        /// <summary>
+        /// Optional margin for the close-direction consistency loss.
+        /// A positive margin requires predicted Close to move at least this far
+        /// in the target direction relative to the previous close.
+        /// </summary>
+        public float CloseDirectionConsistencyMargin { get; set; } = 0.02f;
+
         public override void Validate()
         {
             RequireNonNegative(DirectionLossWeight, nameof(DirectionLossWeight));
             RequireNonNegative(MidDirectionLossWeight, nameof(MidDirectionLossWeight));
             RequireNonNegative(RangeLossWeight, nameof(RangeLossWeight));
             RequireNonNegative(QualityLossWeight, nameof(QualityLossWeight));
+            RequireNonNegative(CloseDirectionConsistencyWeight, nameof(CloseDirectionConsistencyWeight));
+            RequireNonNegative(CloseDirectionConsistencyMargin, nameof(CloseDirectionConsistencyMargin));
         }
     }
 }

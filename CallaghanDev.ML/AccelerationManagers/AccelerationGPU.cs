@@ -1289,7 +1289,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             bufs.w.CopyFromCPU(weights);
 
-            // ✅ Create temporary CPU slice (required)
+            // Create temporary CPU slice (required)
             var slice = new float[rowCount, inputDim];
 
             for (int i = 0; i < rowCount; i++)

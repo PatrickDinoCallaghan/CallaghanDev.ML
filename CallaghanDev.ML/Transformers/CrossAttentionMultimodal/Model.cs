@@ -65,7 +65,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 for (int j = 0; j < _config.Text.EmbeddingDim; j++)
                     TextTokenEmbedding[i, j] = SampleGaussian() * std;
              
-            // No throwaway TransformerConfig needed — pass parameters directly.
+            // No throwaway TransformerConfig needed - pass parameters directly.
             TextBlocks = new MultiTypeTransformer.TransformerBlock[_config.Text.NumLayers];
             for (int i = 0; i < _config.Text.NumLayers; i++)
             {

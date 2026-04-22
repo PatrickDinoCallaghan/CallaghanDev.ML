@@ -43,7 +43,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public float[] RangeLogits { get; set; }
         /// <summary>Pre-sigmoid logits for Quality head [seqLen].  Set by ProjectToOutputs.</summary>
         public float[] QualityLogits { get; set; }
-
+        public int NumStoredNewsContext { get; set; } = 0;
+        public int NumLiveNewsContext { get; set; } = 0;
         public MmtacForwardCache(int textNumLayers, int priceNumLayers)
         {
             TextLayerInputs = new List<float[,]>();
@@ -108,6 +109,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             NumNewsContext = 0;
             NumPriceContext = 0;
             NumGlobalContext = 0;
+            NumStoredNewsContext = 0;
+            NumLiveNewsContext = 0;
 
             for (int i = 0; i < PriceBlockCaches.Count; i++)
             {

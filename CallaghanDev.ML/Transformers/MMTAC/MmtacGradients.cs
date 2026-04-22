@@ -51,7 +51,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public float[,] ConfidenceProjectionGrad { get; set; }
         public float[] ConfidenceBiasGrad { get; set; }
 
-        // Context-type embedding: 3 rows — news(0), price(1), global(2)
+        // Context-type embedding: 3 rows - news(0), price(1), global(2)
         public float[,] ContextTypeEmbeddingGrad { get; set; }
 
         public MmtacGradients(MmtacConfig cfg)

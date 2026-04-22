@@ -764,6 +764,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             float mse = 0f;
             float[,] dPred = new float[sequenceLength, outputDim];
 
+            int totalCount = sequenceLength * outputDim;
+
             for (int t = 0; t < sequenceLength; t++)
             {
                 int tgtRow = tgtRowStart + t;
@@ -774,11 +776,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                     mse += diff * diff;
 
-                    dPred[t, j] = 2f * diff / sequenceLength;
+                    dPred[t, j] = 2f * diff / totalCount;
                 }
             }
 
-            mse /= sequenceLength;
+            mse /= totalCount;
 
             // Projection backward (unchanged)
             float[,] dHidden = _accel.BackpropOutputProjection(
@@ -1402,9 +1404,15 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             int ntb = net.NumTimeBases;
             int rawDim = net.TimeRawDim;
 
+            float minLogRate = net.GetMinLogBaseDecayRate();
+            float maxLogRate = net.GetMaxLogBaseDecayRate();
+
             for (int h = 0; h < nh; h++)
             {
                 net.LogBaseDecayRate[h] -= lr * g.LogBaseDecayRateGrad[h];
+                if (net.LogBaseDecayRate[h] < minLogRate) net.LogBaseDecayRate[h] = minLogRate;
+                if (net.LogBaseDecayRate[h] > maxLogRate) net.LogBaseDecayRate[h] = maxLogRate;
+
                 net.B2[h] -= lr * g.B2Grad[h];
 
                 for (int p = 0; p < pd; p++)
@@ -1414,27 +1422,34 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         net.QueryProjection[h, p, d] -= lr * g.QueryProjectionGrad[h, p, d];
                         net.KeyProjection[h, p, d] -= lr * g.KeyProjectionGrad[h, p, d];
                     }
+
                     net.QueryProjectionBias[h, p] -= lr * g.QueryProjectionBiasGrad[h, p];
                     net.KeyProjectionBias[h, p] -= lr * g.KeyProjectionBiasGrad[h, p];
 
-                    for (int r = 0; r < rawDim; r++) net.TimeProj[h, p, r] -= lr * g.TimeProjGrad[h, p, r];
+                    for (int r = 0; r < rawDim; r++)
+                        net.TimeProj[h, p, r] -= lr * g.TimeProjGrad[h, p, r];
+
                     net.TimeProjBias[h, p] -= lr * g.TimeProjBiasGrad[h, p];
 
-                    for (int q = 0; q < pd; q++) net.MemAttnOutputW[h, p, q] -= lr * g.MemAttnOutputWGrad[h, p, q];
+                    for (int q = 0; q < pd; q++)
+                        net.MemAttnOutputW[h, p, q] -= lr * g.MemAttnOutputWGrad[h, p, q];
+
                     net.MemAttnOutputB[h, p] -= lr * g.MemAttnOutputBGrad[h, p];
                 }
 
-                for (int b = 0; b < ntb; b++) net.TimeLogFreq[h, b] -= lr * g.TimeLogFreqGrad[h, b];
+                for (int b = 0; b < ntb; b++)
+                    net.TimeLogFreq[h, b] -= lr * g.TimeLogFreqGrad[h, b];
 
                 for (int j = 0; j < hd; j++)
                 {
                     net.B1[h, j] -= lr * g.B1Grad[h, j];
                     net.W2[h, j] -= lr * g.W2Grad[h, j];
-                    for (int k = 0; k < mid; k++) net.W1[h, j, k] -= lr * g.W1Grad[h, j, k];
+
+                    for (int k = 0; k < mid; k++)
+                        net.W1[h, j, k] -= lr * g.W1Grad[h, j, k];
                 }
             }
         }
-
         private void ZeroAllGradients()
         {
             _gradients.Zero();

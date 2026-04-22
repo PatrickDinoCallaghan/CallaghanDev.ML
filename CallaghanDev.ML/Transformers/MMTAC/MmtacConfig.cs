@@ -27,7 +27,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         /// <summary>
         /// Number of learnable context-type embeddings (news, price-memory, …).
-        /// Baked into model weight shapes — do not change after initialisation.
+        /// Baked into model weight shapes - do not change after initialisation.
         /// </summary>
         public const int ContextTypeCount = 3;
 

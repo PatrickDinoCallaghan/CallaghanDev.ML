@@ -188,11 +188,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             int sl = priceSequence.GetLength(0);
 
-            return ForwardWithCache(stories, priceSequence, rowStart: 0, rowCount: sl,  cache, isTraining, dropoutRng);
+            return ForwardWithCache(stories, priceSequence, rowStart: 0, rowCount: sl, cache, isTraining, dropoutRng);
         }
 
 
-        public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, int rowStart, int rowCount,  MultimodalForwardCache cache, bool isTraining = false, Random dropoutRng = null)
+        public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, int rowStart, int rowCount, MultimodalForwardCache cache, bool isTraining = false, Random dropoutRng = null)
         {
             // --- Correctness guards ---
             if (priceSequence == null)
@@ -235,7 +235,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 _accel.ApplyContextTypeEmbedding(sh, ContextTypeEmbedding, typeIndices);
             }
-             
+
             var ph = ForwardPriceDecoderWithCache(
                 priceSequence,
                 rowStart,
@@ -280,13 +280,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return PredictNext(stories, priceSequence);
         }
 
-        public (float[] prediction, float confidence) PredictWithMemory(
-       NewsStory[] newStories,
-       float[,] priceSequence,
-       double currentAbsoluteTimestamp,
-       double timeUnitsPerPosition = 1.0,
-       int maxNewsMemorySize = 100,
-       int maxPriceMemorySize = 200)
+        public (float[] prediction, float confidence) PredictWithMemory(NewsStory[] newStories, float[,] priceSequence, double currentAbsoluteTimestamp, double timeUnitsPerPosition = 1.0, int maxNewsMemorySize = 100, int maxPriceMemorySize = 200)
         {
             int embDim = _config.Price.EmbeddingDim;
 
@@ -422,6 +416,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return (prediction, conf);
         }
+
         /// <summary>
         /// Updates the running attention scores for all memory entries by computing
         /// approximate attention weights from the last price position to each context entry.
@@ -637,7 +632,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             var emb = EmbedPriceSequence(priceSequence, sl);
 
-            bool[,] mask = _config.Price.UseDecoderOnly  ? CreateCausalMask(sl)  : null;
+            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
 
             var x = emb;
 
@@ -703,7 +698,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         // Existing signature remains for compatibility.
         // It now delegates to the new overload.
-        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, float[,] storyHidden, float[] storyTimes,  MultimodalForwardCache cache,  bool isTraining = true,  Random dropoutRng = null)
+        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
             int sl = priceSequence.GetLength(0);
             return ForwardPriceDecoderWithCache(
@@ -718,7 +713,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         }
 
         // accepts rowStart/rowCount so caller can avoid SliceRows.
-        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] storyHidden, float[] storyTimes,  MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
             if (priceSequence == null)
             {
@@ -745,12 +740,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             float scale = 1.0f / MathF.Sqrt(hd);
 
-            // IMPORTANT: this requires an EmbedPriceSequence overload that supports offsets.
-            // See "Methods you must change" below.
-            //var emb = EmbedPriceSequence(priceSequence, rowStart, sl);
-            var emb = EmbedPriceSequence(priceSequence, sl);
+            var emb = EmbedPriceSequence(priceSequence, rowStart, rowCount);
+
             cache.PriceEmbedded = emb;
-            cache.PriceContinuousInput = priceSequence; // same as before (reference)
+            cache.PriceContinuousInput = (rowStart == 0) ? priceSequence : _accel.SliceRows(priceSequence, rowStart, rowStart + rowCount);
 
             bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
             var x = emb;
@@ -897,7 +890,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             int PriceNumHeads = _config.Price.NumHeads;
 
             return _accel.ContentAwareCrossAttentionWithCache(Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings, block, bc, PriceEmbeddingDim, PriceNumHeads, isTraining, dropoutRng);
-         
+
         }
 
         internal (float[,], float[,]) ProjectToOutput(float[,] hidden)
@@ -1023,7 +1016,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     TextTokenEmbedding[i, j] = SampleGaussian() * std;
 
 
-            // No throwaway TransformerConfig needed — pass parameters directly.
+            // No throwaway TransformerConfig needed - pass parameters directly.
             TextBlocks = new TransformerBlock[_config.Text.NumLayers];
             for (int i = 0; i < _config.Text.NumLayers; i++)
             {
@@ -1174,34 +1167,25 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private float[,] EmbedPriceSequence(float[,] ps, int rowStart, int rowCount)
         {
             if (ps == null)
+            {
                 throw new ArgumentNullException(nameof(ps));
+            }
             if (rowStart < 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(rowStart));
+            }
             if (rowCount < 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(rowCount));
+            }
             if (rowStart + rowCount > ps.GetLength(0))
+            {
                 throw new ArgumentException("rowStart + rowCount exceeds ps row count.");
+            }
 
-            var projected = _accel.BatchDotProduct(
-                PriceInputProjection,
-                ps,
-                rowStart,
-                rowCount);
+            var projected = _accel.BatchDotProduct(PriceInputProjection, ps, rowStart, rowCount);
 
             return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
-        }
-        private float[,] CreatePositionalEncoding(int ml, int d) 
-        {
-            var pe = new float[ml, d];
-
-            for (int p = 0; p < ml; p++)
-            {
-                for (int i = 0; i < d; i++)
-                {
-                    float a = p / MathF.Pow(10000, 2.0f * (i / 2) / d); pe[p, i] = (i % 2 == 0) ? MathF.Sin(a) : MathF.Cos(a);
-                }
-            }
-            return pe; 
         }
         private bool[,] CreateCausalMask(int sl)
         {
@@ -1218,11 +1202,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         }
 
         private float[,] ComputeProjection(float[,] input, float[,] w, float[] b)
-        { 
-            var p = _accel.BatchDotProduct(w, input); 
-            int r = p.GetLength(0), c = p.GetLength(1); 
-            var res = new float[r, c]; 
-            
+        {
+            var p = _accel.BatchDotProduct(w, input);
+            int r = p.GetLength(0), c = p.GetLength(1);
+            var res = new float[r, c];
+
             for (int i = 0; i < r; i++)
             {
                 for (int j = 0; j < c; j++)
@@ -1230,7 +1214,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     res[i, j] = p[i, j] + b[j];
                 }
             }
-            return res; 
+            return res;
         }
 
         private float[,] AttentionForwardWithCache(MultiHeadAttention attn, float[,] qs, float[,] ks, float[,] vs, bool[,] mask, AttentionCache cache)
@@ -1256,25 +1240,25 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return ComputeProjection(c, attn.WO, attn.BiasO);
         }
-        protected float SampleGaussian() 
-        { 
-            float u1 = 1f - _random.NextSingle(), u2 = 1f - _random.NextSingle(); 
-            
-            return MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2);
-        
-        }
-        private static float Sigmoid(float x) 
+        protected float SampleGaussian()
         {
-            if (x >= 0) 
-            { 
-                float ex = MathF.Exp(-x); 
-                return 1f / (1f + ex); 
-            } 
-            else 
-            { 
+            float u1 = 1f - _random.NextSingle(), u2 = 1f - _random.NextSingle();
+
+            return MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2);
+
+        }
+        private static float Sigmoid(float x)
+        {
+            if (x >= 0)
+            {
+                float ex = MathF.Exp(-x);
+                return 1f / (1f + ex);
+            }
+            else
+            {
                 float ex = MathF.Exp(x);
-                return ex / (1f + ex); 
-            } 
+                return ex / (1f + ex);
+            }
         }
 
         public float[,] EncodePriceHistory(float[,] histPrices)
@@ -1283,7 +1267,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             var emb = EmbedPriceSequence(histPrices, sl);
 
-            bool[,] mask = _config.Price.UseDecoderOnly  ? CreateCausalMask(sl)  : null;
+            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
 
             var x = emb;
 
@@ -1304,7 +1288,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             int ed = _config.Price.EmbeddingDim;
 
-            float[,] newsHidden = null; 
+            float[,] newsHidden = null;
             float[] newsTimes = null;
             int numNews = 0;
 
@@ -1425,23 +1409,54 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 DecayNetwork = new DecayNetworkConfig
                 {
-                    Enabled = d.ContainsKey("DecayProjectionDim"),
-                    ProjectionDim = d.ContainsKey("DecayProjectionDim") ? d["DecayProjectionDim"].GetInt32() : 16,
-                    HiddenDim = d.ContainsKey("DecayHiddenDim") ? d["DecayHiddenDim"].GetInt32() : 32,
-                    MemAttentionDropout = d.ContainsKey("DecayMemAttnDropout") ? d["DecayMemAttnDropout"].GetSingle() : 0.2f,
-                    MlpDropout = d.ContainsKey("DecayMLPDropout") ? d["DecayMLPDropout"].GetSingle() : 0.2f,
-                    WeightDecay = d.ContainsKey("DecayWeightDecay") ? d["DecayWeightDecay"].GetSingle() : 0f,
-                    TimeEncodingBases = d.ContainsKey("DecayTimeEncodingBases") ? d["DecayTimeEncodingBases"].GetInt32() : 16
+                    Enabled = d.ContainsKey("DecayEnabled")
+                        ? d["DecayEnabled"].GetBoolean()
+                        : d.ContainsKey("DecayProjectionDim"),
+
+                    ProjectionDim = d.ContainsKey("DecayProjectionDim")
+                        ? d["DecayProjectionDim"].GetInt32()
+                        : 16,
+
+                    HiddenDim = d.ContainsKey("DecayHiddenDim")
+                        ? d["DecayHiddenDim"].GetInt32()
+                        : 32,
+
+                    MemAttentionDropout = d.ContainsKey("DecayMemAttnDropout")
+                        ? d["DecayMemAttnDropout"].GetSingle()
+                        : 0.2f,
+
+                    MlpDropout = d.ContainsKey("DecayMLPDropout")
+                        ? d["DecayMLPDropout"].GetSingle()
+                        : 0.2f,
+
+                    WeightDecay = d.ContainsKey("DecayWeightDecay")
+                        ? d["DecayWeightDecay"].GetSingle()
+                        : 0f,
+
+                    TimeEncodingBases = d.ContainsKey("DecayTimeEncodingBases")
+                        ? d["DecayTimeEncodingBases"].GetInt32()
+                        : 16
                 },
 
                 PriceContext = new PriceContextConfig
                 {
-                    Enabled = d.ContainsKey("PriceContextMinHistoryLength"),
-                    MinHistoryLength = d.ContainsKey("PriceContextMinHistoryLength") ? d["PriceContextMinHistoryLength"].GetInt32() : 5,
-                    MinCurrentLength = d.ContainsKey("PriceContextMinCurrentLength") ? d["PriceContextMinCurrentLength"].GetInt32() : 5
+                    Enabled = d.ContainsKey("PriceContextEnabled")
+                        ? d["PriceContextEnabled"].GetBoolean()
+                        : d.ContainsKey("PriceContextMinHistoryLength"),
+
+                    MinHistoryLength = d.ContainsKey("PriceContextMinHistoryLength")
+                        ? d["PriceContextMinHistoryLength"].GetInt32()
+                        : 5,
+
+                    MinCurrentLength = d.ContainsKey("PriceContextMinCurrentLength")
+                        ? d["PriceContextMinCurrentLength"].GetInt32()
+                        : 5
                 },
 
-                RequireSharedCrossAttentionEmbeddingDim = true
+                RequireSharedCrossAttentionEmbeddingDim =
+                    d.ContainsKey("RequireSharedCrossAttentionEmbeddingDim")
+                        ? d["RequireSharedCrossAttentionEmbeddingDim"].GetBoolean()
+                        : true
             };
         }
         public void Save(string dir)
@@ -1480,6 +1495,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 ["L2RegulationLamda"] = _config.Regularization.L2RegulationLamda,
                 ["GradientClippingThreshold"] = _config.Regularization.GradientClippingThreshold,
 
+                ["DecayEnabled"] = _config.DecayNetwork.Enabled,
                 ["DecayProjectionDim"] = _config.DecayNetwork.ProjectionDim,
                 ["DecayHiddenDim"] = _config.DecayNetwork.HiddenDim,
                 ["DecayMemAttnDropout"] = _config.DecayNetwork.MemAttentionDropout,
@@ -1487,8 +1503,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 ["DecayWeightDecay"] = _config.DecayNetwork.WeightDecay,
                 ["DecayTimeEncodingBases"] = _config.DecayNetwork.TimeEncodingBases,
 
+                ["PriceContextEnabled"] = _config.PriceContext.Enabled,
                 ["PriceContextMinHistoryLength"] = _config.PriceContext.MinHistoryLength,
                 ["PriceContextMinCurrentLength"] = _config.PriceContext.MinCurrentLength,
+
+                ["RequireSharedCrossAttentionEmbeddingDim"] = _config.RequireSharedCrossAttentionEmbeddingDim,
 
                 ["PruningAttentionScoreAlpha"] = PruningConfig.AttentionScoreAlpha,
                 ["PruningMinQueryCountForPruning"] = PruningConfig.MinQueryCountForPruning,
@@ -1496,10 +1515,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 ["PruningUseAttentionBasedPruning"] = PruningConfig.UseAttentionBasedPruning
             };
 
-            File.WriteAllText(
-                Path.Combine(dir, "config.json"),
-                JsonSerializer.Serialize(cd, new JsonSerializerOptions { WriteIndented = true })
-            );
+            File.WriteAllText(Path.Combine(dir, "config.json"), JsonSerializer.Serialize(cd, new JsonSerializerOptions { WriteIndented = true })
+        );
 
             // ===============================
             // WEIGHTS
@@ -1507,7 +1524,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             using (var s = new FileStream(Path.Combine(dir, "weights.bin"), FileMode.Create))
             using (var w = new BinaryWriter(s))
             {
-                w.Write(1); // 🔥 VERSION
+                w.Write(1); //  VERSION
 
                 WM(w, TextTokenEmbedding);
 
@@ -1547,7 +1564,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     WV(w, ConfidenceBias);
                 }
 
-                WM(w, ContextTypeEmbedding); // 🔥 ALWAYS
+                WM(w, ContextTypeEmbedding);
             }
 
             // ===============================
@@ -1604,8 +1621,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         }
         public static Model Load(string dir)
         {
-            var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
-                File.ReadAllText(Path.Combine(dir, "config.json")));
+            var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(Path.Combine(dir, "config.json")));
 
             var cfg = BuildConfig(d);
             cfg.Validate();
@@ -1616,71 +1632,81 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             // PRUNING CONFIG
             // ===============================
             if (d.ContainsKey("PruningAttentionScoreAlpha"))
+            {
                 m.PruningConfig.AttentionScoreAlpha = d["PruningAttentionScoreAlpha"].GetSingle();
+            }
 
             if (d.ContainsKey("PruningMinQueryCountForPruning"))
+            {
                 m.PruningConfig.MinQueryCountForPruning = d["PruningMinQueryCountForPruning"].GetInt32();
+            }
 
             if (d.ContainsKey("PruningNewEntryReserveFraction"))
+            {
                 m.PruningConfig.NewEntryReserveFraction = d["PruningNewEntryReserveFraction"].GetSingle();
+            }
 
             if (d.ContainsKey("PruningUseAttentionBasedPruning"))
+            {
                 m.PruningConfig.UseAttentionBasedPruning = d["PruningUseAttentionBasedPruning"].GetBoolean();
+            }
 
             // ===============================
             // WEIGHTS
             // ===============================
             using (var s = new FileStream(Path.Combine(dir, "weights.bin"), FileMode.Open))
-            using (var r = new BinaryReader(s))
             {
-                int version = r.ReadInt32(); // 🔥
-
-                RM(r, m.TextTokenEmbedding);
-
-                for (int i = 0; i < cfg.Text.NumLayers; i++)
+                using (var r = new BinaryReader(s))
                 {
-                    var b = m.TextBlocks[i];
-                    RA(r, b.Attention);
-                    RV(r, b.LN1Gamma);
-                    RV(r, b.LN1Beta);
-                    RV(r, b.LN2Gamma);
-                    RV(r, b.LN2Beta);
+                    int version = r.ReadInt32();
+
+                    RM(r, m.TextTokenEmbedding);
+
+                    for (int i = 0; i < cfg.Text.NumLayers; i++)
+                    {
+                        var b = m.TextBlocks[i];
+                        RA(r, b.Attention);
+                        RV(r, b.LN1Gamma);
+                        RV(r, b.LN1Beta);
+                        RV(r, b.LN2Gamma);
+                        RV(r, b.LN2Beta);
+                    }
+
+                    RM(r, m.PriceInputProjection);
+                    RV(r, m.PriceInputProjectionBias);
+
+                    for (int i = 0; i < cfg.Price.NumLayers; i++)
+                    {
+                        var b = m.PriceBlocks[i];
+
+                        RA(r, b.SelfAttention);
+                        RV(r, b.LNSelfGamma);
+                        RV(r, b.LNSelfBeta);
+
+                        RA(r, b.CrossAttention);
+                        RV(r, b.LnCrossGamma);
+                        RV(r, b.LnCrossBeta);
+
+                        RV(r, b.LNFFNGamma);
+                        RV(r, b.LNFFNBeta);
+
+                        b.DecayNetwork = ContentAwareDecayNetwork.ReadFrom(r);
+                    }
+
+                    RM(r, m.OutputProjection);
+                    RV(r, m.OutputBias);
+
+                    if (cfg.Output.UseConfidenceHead)
+                    {
+                        RM(r, m.ConfidenceProjection);
+                        RV(r, m.ConfidenceBias);
+                    }
+
+                    RM(r, m.ContextTypeEmbedding); //  ALWAYS LOAD
+
+                    if (s.Position != s.Length)
+                        throw new InvalidOperationException("Weights not fully consumed");
                 }
-
-                RM(r, m.PriceInputProjection);
-                RV(r, m.PriceInputProjectionBias);
-
-                for (int i = 0; i < cfg.Price.NumLayers; i++)
-                {
-                    var b = m.PriceBlocks[i];
-
-                    RA(r, b.SelfAttention);
-                    RV(r, b.LNSelfGamma);
-                    RV(r, b.LNSelfBeta);
-
-                    RA(r, b.CrossAttention);
-                    RV(r, b.LnCrossGamma);
-                    RV(r, b.LnCrossBeta);
-
-                    RV(r, b.LNFFNGamma);
-                    RV(r, b.LNFFNBeta);
-
-                    b.DecayNetwork = ContentAwareDecayNetwork.ReadFrom(r);
-                }
-
-                RM(r, m.OutputProjection);
-                RV(r, m.OutputBias);
-
-                if (cfg.Output.UseConfidenceHead)
-                {
-                    RM(r, m.ConfidenceProjection);
-                    RV(r, m.ConfidenceBias);
-                }
-
-                RM(r, m.ContextTypeEmbedding); // 🔥 ALWAYS LOAD
-
-                if (s.Position != s.Length)
-                    throw new InvalidOperationException("Weights not fully consumed");
             }
 
             // ===============================
@@ -1703,82 +1729,96 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             // ===============================
             var nmp = Path.Combine(dir, "news_memory.bin");
             if (File.Exists(nmp))
+            {
                 using (var s = new FileStream(nmp, FileMode.Open))
-                using (var r = new BinaryReader(s))
                 {
-                    m.LastPriceTimestamp = r.ReadDouble();
-                    int c = r.ReadInt32();
-                    int ed = cfg.Price.EmbeddingDim;
-
-                    m.NewsMemory = new List<NewsMemoryEntry>(c);
-
-                    for (int i = 0; i < c; i++)
+                    using (var r = new BinaryReader(s))
                     {
-                        var e = new NewsMemoryEntry
+                        m.LastPriceTimestamp = r.ReadDouble();
+                        int c = r.ReadInt32();
+                        int ed = cfg.Price.EmbeddingDim;
+
+                        m.NewsMemory = new List<NewsMemoryEntry>(c);
+
+                        for (int i = 0; i < c; i++)
                         {
-                            AbsoluteTimestamp = r.ReadDouble(),
-                            AttentionScore = r.ReadSingle(),
-                            QueryCount = r.ReadInt32(),
-                            HiddenState = new float[ed]
-                        };
+                            var e = new NewsMemoryEntry
+                            {
+                                AbsoluteTimestamp = r.ReadDouble(),
+                                AttentionScore = r.ReadSingle(),
+                                QueryCount = r.ReadInt32(),
+                                HiddenState = new float[ed]
+                            };
 
-                        for (int ddd = 0; ddd < ed; ddd++)
-                            e.HiddenState[ddd] = r.ReadSingle();
+                            for (int ddd = 0; ddd < ed; ddd++)
+                                e.HiddenState[ddd] = r.ReadSingle();
 
-                        m.NewsMemory.Add(e);
+                            m.NewsMemory.Add(e);
+                        }
                     }
                 }
+            }
 
             var pmp = Path.Combine(dir, "price_memory.bin");
             if (File.Exists(pmp))
+            {
                 using (var s = new FileStream(pmp, FileMode.Open))
-                using (var r = new BinaryReader(s))
                 {
-                    int c = r.ReadInt32();
-                    int ed = cfg.Price.EmbeddingDim;
-
-                    m.PriceMemory = new List<PriceMemoryEntry>(c);
-
-                    for (int i = 0; i < c; i++)
+                    using (var r = new BinaryReader(s))
                     {
-                        var e = new PriceMemoryEntry
+                        int c = r.ReadInt32();
+                        int ed = cfg.Price.EmbeddingDim;
+
+                        m.PriceMemory = new List<PriceMemoryEntry>(c);
+
+                        for (int i = 0; i < c; i++)
                         {
-                            AbsoluteTimestamp = r.ReadDouble(),
-                            AttentionScore = r.ReadSingle(),
-                            QueryCount = r.ReadInt32(),
-                            HiddenState = new float[ed]
-                        };
+                            var e = new PriceMemoryEntry
+                            {
+                                AbsoluteTimestamp = r.ReadDouble(),
+                                AttentionScore = r.ReadSingle(),
+                                QueryCount = r.ReadInt32(),
+                                HiddenState = new float[ed]
+                            };
 
-                        for (int ddd = 0; ddd < ed; ddd++)
-                            e.HiddenState[ddd] = r.ReadSingle();
+                            for (int ddd = 0; ddd < ed; ddd++)
+                                e.HiddenState[ddd] = r.ReadSingle();
 
-                        m.PriceMemory.Add(e);
+                            m.PriceMemory.Add(e);
+                        }
                     }
                 }
+            }
 
             var tokDir = Path.Combine(dir, "tokenizer");
             if (Directory.Exists(tokDir))
             {
-                try { m.Tokenizer = BPETokenizer.Load(tokDir); } catch { }
+                try
+                {
+                    m.Tokenizer = BPETokenizer.Load(tokDir);
+                }
+                catch
+                {
+                }
             }
 
             return m;
         }
-        static void WM(System.IO.BinaryWriter w, float[,] m) 
-        { 
+        static void WM(System.IO.BinaryWriter w, float[,] m)
+        {
             int r = m.GetLength(0), c = m.GetLength(1);
             w.Write(r); w.Write(c);
 
             for (int i = 0; i < r; i++)
             {
                 for (int j = 0; j < c; j++)
-                { 
+                {
                     w.Write(m[i, j]);
                 }
             }
         }
         static void WV(System.IO.BinaryWriter w, float[] v)
-        { 
+        {
             w.Write(v.Length);
 
             for (int i = 0; i < v.Length; i++)
@@ -1786,7 +1826,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 w.Write(v[i]);
             }
         }
-        static void WA(System.IO.BinaryWriter w, MultiHeadAttention a) 
+        static void WA(System.IO.BinaryWriter w, MultiHeadAttention a)
         {
             WM(w, a.WQ);
             WM(w, a.WK);
@@ -1795,12 +1835,17 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             WV(w, a.BiasQ);
             WV(w, a.BiasK);
             WV(w, a.BiasV);
-            WV(w, a.BiasO); 
+            WV(w, a.BiasO);
         }
-
         static void RM(System.IO.BinaryReader r, float[,] m)
-        { 
-            int rows = r.ReadInt32(), cols = r.ReadInt32();
+        {
+            int rows = r.ReadInt32();
+            int cols = r.ReadInt32();
+
+            if (rows != m.GetLength(0) || cols != m.GetLength(1))
+            {
+                throw new InvalidOperationException($"Matrix shape mismatch. File has [{rows},{cols}], target is [{m.GetLength(0)},{m.GetLength(1)}].");
+            }
 
             for (int i = 0; i < rows; i++)
             {
@@ -1810,24 +1855,31 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
         }
-        static void RV(System.IO.BinaryReader r, float[] v) 
-        { 
-            int l = r.ReadInt32(); 
+
+        static void RV(System.IO.BinaryReader r, float[] v)
+        {
+            int l = r.ReadInt32();
+
+            if (l != v.Length)
+            {
+                throw new InvalidOperationException($"Vector length mismatch. File has {l}, target is {v.Length}.");
+            }
+
             for (int i = 0; i < l; i++)
             {
                 v[i] = r.ReadSingle();
             }
         }
         static void RA(System.IO.BinaryReader r, MultiHeadAttention a)
-        { 
+        {
             RM(r, a.WQ);
             RM(r, a.WK);
             RM(r, a.WV);
-            RM(r, a.WO); 
+            RM(r, a.WO);
             RV(r, a.BiasQ);
-            RV(r, a.BiasK); 
-            RV(r, a.BiasV); 
-            RV(r, a.BiasO); 
+            RV(r, a.BiasK);
+            RV(r, a.BiasV);
+            RV(r, a.BiasO);
         }
         #endregion
     }

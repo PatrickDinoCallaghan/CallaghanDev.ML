@@ -37,10 +37,30 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public float MemoryAttentionDropout { get; set; } = 0.1f;
         public float MLPDropout { get; set; } = 0.1f;
         public float WeightDecay { get; set; } = 0.0f;
-
+        public float TimeNormalizationHours { get; set; } = 0.9f;
+        public float InitialHalfLifeHours { get; set; } = 1.75f;
+        public float MinHalfLifeHours { get; set; } = 0.35f;
+        public float MaxHalfLifeHours { get; set; } = 6.0f;
+        public float MinGate { get; set; } = 0.02f;
+        public float MaxGate { get; set; } = 0.98f;
         public ContentAwareDecayNetwork() { }
 
-        public ContentAwareDecayNetwork(int numHeads, int contentDim, int projectionDim, int hiddenDim, Random random, float memAttnDropout = 0.1f, float mlpDropout = 0.1f, float weightDecay = 0.0f, int numTimeBases = 8)
+        public ContentAwareDecayNetwork(
+            int numHeads,
+            int contentDim,
+            int projectionDim,
+            int hiddenDim,
+            Random random,
+            float memAttnDropout = 0.1f,
+            float mlpDropout = 0.1f,
+            float weightDecay = 0.0f,
+            int numTimeBases = 8,
+            float timeNormalizationHours = 1.0f,
+            float initialHalfLifeHours = 1.25f,
+            float minHalfLifeHours = 0.35f,
+            float maxHalfLifeHours = 6.0f,
+            float minGate = 0.02f,
+            float maxGate = 0.98f)
         {
             NumHeads = numHeads;
             ContentDim = contentDim;
@@ -52,6 +72,13 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             MemoryAttentionDropout = memAttnDropout;
             MLPDropout = mlpDropout;
             WeightDecay = weightDecay;
+
+            TimeNormalizationHours = timeNormalizationHours;
+            InitialHalfLifeHours = initialHalfLifeHours;
+            MinHalfLifeHours = minHalfLifeHours;
+            MaxHalfLifeHours = maxHalfLifeHours;
+            MinGate = minGate;
+            MaxGate = maxGate;
 
             QueryProjection = new float[numHeads, projectionDim, contentDim];
             QueryProjectionBias = new float[numHeads, projectionDim];
@@ -114,35 +141,283 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             B2 = new float[numHeads];
             LogBaseDecayRate = new float[numHeads];
 
-            // Content columns of W1 and all of W2 use standard He init so that
-            // gradients flow back through the query/key embeddings from day one.
-            //
-            // The td and logTd columns of W1 (the last two inputs, indices
-            // MLPInputDim-2 and MLPInputDim-1) are zero-initialised.  This means
-            // that at construction time the gate value is determined solely by the
-            // content projections and is therefore identical for any two context
-            // keys that share the same content embeddings.  When content is equal
-            // the decay bias is purely -(exp(LogBaseDecayRate)*gate)*timeDiff,
-            // which monotonically suppresses older keys regardless of the random
-            // seed.  The optimiser is free to learn time-sensitive gating from
-            // this baseline during training.
             float w1Std = MathF.Sqrt(2.0f / MLPInputDim);
             float w2Std = MathF.Sqrt(1.0f / hiddenDim);
-            int tdColStart = MLPInputDim - 2; // indices for raw td and log(1+td)
+            int tdColStart = MLPInputDim - 2;
+
             for (int h = 0; h < numHeads; h++)
             {
                 for (int j = 0; j < hiddenDim; j++)
                 {
                     for (int k = 0; k < MLPInputDim; k++)
                     {
-                        // Zero the td/logTd input columns; keep content columns random.
                         W1[h, j, k] = k < tdColStart ? SampleGaussian(random) * w1Std : 0f;
                     }
+
                     W2[h, j] = SampleGaussian(random) * w2Std;
                 }
-                B2[h] = -2.2f;
-                LogBaseDecayRate[h] = -2.3f;
+
+                // gate ~= 0.12 initially => strong decay unless content learns persistence
+                B2[h] = -2.0f;
+
+                // initialize using interpretable half-life instead of arbitrary exp(-2.3)
+                LogBaseDecayRate[h] = GetInitialLogBaseDecayRate();
             }
+        }
+
+        private void ApplyWeightDecayToGradients(ContentAwareDecayGradients grads)
+        {
+            float wd = WeightDecay;
+            for (int h = 0; h < NumHeads; h++)
+            {
+                for (int p = 0; p < ProjectionDim; p++)
+                {
+                    for (int d = 0; d < ContentDim; d++)
+                    {
+                        grads.QueryProjectionGrad[h, p, d] += wd * QueryProjection[h, p, d];
+                        grads.KeyProjectionGrad[h, p, d] += wd * KeyProjection[h, p, d];
+                    }
+
+                    grads.QueryProjectionBiasGrad[h, p] += wd * QueryProjectionBias[h, p];
+                    grads.KeyProjectionBiasGrad[h, p] += wd * KeyProjectionBias[h, p];
+
+                    for (int r = 0; r < TimeRawDim; r++)
+                    {
+                        grads.TimeProjGrad[h, p, r] += wd * TimeProj[h, p, r];
+                    }
+                    grads.TimeProjBiasGrad[h, p] += wd * TimeProjBias[h, p];
+                    for (int q = 0; q < ProjectionDim; q++)
+                    {
+                        grads.MemAttnOutputWGrad[h, p, q] += wd * MemAttnOutputW[h, p, q];
+                    }
+                    grads.MemAttnOutputBGrad[h, p] += wd * MemAttnOutputB[h, p];
+                }
+                for (int b = 0; b < NumTimeBases; b++)
+                {
+                    grads.TimeLogFreqGrad[h, b] += wd * TimeLogFreq[h, b];
+                }
+                for (int j = 0; j < HiddenDim; j++)
+                {
+                    for (int k = 0; k < MLPInputDim; k++)
+                    {
+                        grads.W1Grad[h, j, k] += wd * W1[h, j, k];
+                    }
+                    grads.B1Grad[h, j] += wd * B1[h, j];
+                    grads.W2Grad[h, j] += wd * W2[h, j];
+                }
+                grads.B2Grad[h] += wd * B2[h];
+                grads.LogBaseDecayRateGrad[h] += wd * LogBaseDecayRate[h];
+            }
+        }
+
+        #region Save/Load
+        public void WriteTo(System.IO.BinaryWriter w)
+        {
+            w.Write(NumHeads);
+            w.Write(ContentDim);
+            w.Write(ProjectionDim);
+            w.Write(HiddenDim);
+            w.Write(NumTimeBases);
+
+            w.Write(MemoryAttentionDropout);
+            w.Write(MLPDropout);
+            w.Write(WeightDecay);
+
+            w.Write(TimeNormalizationHours);
+            w.Write(InitialHalfLifeHours);
+            w.Write(MinHalfLifeHours);
+            w.Write(MaxHalfLifeHours);
+            w.Write(MinGate);
+            w.Write(MaxGate);
+
+            Write3D(w, QueryProjection);
+            Write2D(w, QueryProjectionBias);
+            Write3D(w, KeyProjection);
+            Write2D(w, KeyProjectionBias);
+            Write2D(w, TimeLogFreq);
+            Write3D(w, TimeProj);
+            Write2D(w, TimeProjBias);
+            Write3D(w, MemAttnOutputW);
+            Write2D(w, MemAttnOutputB);
+            Write3D(w, W1);
+            Write2D(w, B1);
+            Write2D(w, W2);
+            Write1D(w, B2);
+            Write1D(w, LogBaseDecayRate);
+        }
+        public static ContentAwareDecayNetwork ReadFrom(System.IO.BinaryReader r)
+        {
+            int nh = r.ReadInt32();
+            int cd = r.ReadInt32();
+            int pd = r.ReadInt32();
+            int hd = r.ReadInt32();
+            int ntb = r.ReadInt32();
+
+            float memDrop = r.ReadSingle();
+            float mlpDrop = r.ReadSingle();
+            float wd = r.ReadSingle();
+
+            float timeNormalizationHours = r.ReadSingle();
+            float initialHalfLifeHours = r.ReadSingle();
+            float minHalfLifeHours = r.ReadSingle();
+            float maxHalfLifeHours = r.ReadSingle();
+            float minGate = r.ReadSingle();
+            float maxGate = r.ReadSingle();
+
+            int mlpIn = pd * 3 + 2;
+            int rawDim = 2 * ntb;
+
+            return new ContentAwareDecayNetwork
+            {
+                NumHeads = nh,
+                ContentDim = cd,
+                ProjectionDim = pd,
+                HiddenDim = hd,
+                MLPInputDim = mlpIn,
+                NumTimeBases = ntb,
+                TimeRawDim = rawDim,
+
+                MemoryAttentionDropout = memDrop,
+                MLPDropout = mlpDrop,
+                WeightDecay = wd,
+
+                TimeNormalizationHours = timeNormalizationHours,
+                InitialHalfLifeHours = initialHalfLifeHours,
+                MinHalfLifeHours = minHalfLifeHours,
+                MaxHalfLifeHours = maxHalfLifeHours,
+                MinGate = minGate,
+                MaxGate = maxGate,
+
+                QueryProjection = Read3D(r, nh, pd, cd),
+                QueryProjectionBias = Read2D(r, nh, pd),
+                KeyProjection = Read3D(r, nh, pd, cd),
+                KeyProjectionBias = Read2D(r, nh, pd),
+                TimeLogFreq = Read2D(r, nh, ntb),
+                TimeProj = Read3D(r, nh, pd, rawDim),
+                TimeProjBias = Read2D(r, nh, pd),
+                MemAttnOutputW = Read3D(r, nh, pd, pd),
+                MemAttnOutputB = Read2D(r, nh, pd),
+                W1 = Read3D(r, nh, hd, mlpIn),
+                B1 = Read2D(r, nh, hd),
+                W2 = Read2D(r, nh, hd),
+                B2 = Read1D(r, nh),
+                LogBaseDecayRate = Read1D(r, nh)
+            };
+        }
+        static void Write1D(System.IO.BinaryWriter w, float[] a)
+        {
+            foreach (var v in a)
+            {
+                w.Write(v);
+            }
+        }
+        static void Write2D(System.IO.BinaryWriter w, float[,] a)
+        {
+            int d0 = a.GetLength(0), d1 = a.GetLength(1);
+
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    w.Write(a[i, j]);
+                }
+            }
+        }
+        static void Write3D(System.IO.BinaryWriter w, float[,,] a)
+        {
+            int d0 = a.GetLength(0), d1 = a.GetLength(1), d2 = a.GetLength(2);
+
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    for (int k = 0; k < d2; k++)
+                    {
+                        w.Write(a[i, j, k]);
+                    }
+                }
+            }
+        }
+        static float[] Read1D(System.IO.BinaryReader r, int n)
+        {
+            var a = new float[n];
+            for (int i = 0; i < n; i++)
+            {
+                a[i] = r.ReadSingle();
+            }
+            return a;
+        }
+        static float[,] Read2D(System.IO.BinaryReader r, int d0, int d1)
+        {
+            var a = new float[d0, d1];
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    a[i, j] = r.ReadSingle();
+                }
+            }
+            return a;
+        }
+        static float[,,] Read3D(System.IO.BinaryReader r, int d0, int d1, int d2)
+        {
+            var a = new float[d0, d1, d2];
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    for (int k = 0; k < d2; k++)
+                    {
+                        a[i, j, k] = r.ReadSingle();
+                    }
+                }
+            }
+            return a;
+        }
+        #endregion
+
+        static float SampleGaussian(Random rng)
+        {
+            float u1 = 1f - rng.NextSingle();
+            float u2 = 1f - rng.NextSingle();
+            return MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2);
+        }
+
+        public static float HalfLifeHoursToBaseRate(float halfLifeHours, float timeNormalizationHours)
+        {
+            halfLifeHours = MathF.Max(halfLifeHours, 1e-4f);
+            timeNormalizationHours = MathF.Max(timeNormalizationHours, 1e-4f);
+
+            // If normTd = tdHours / timeNormalizationHours, then:
+            // decayBias = -baseRate * normTd
+            // For a half-life H, we want decayBias = -ln(2) when tdHours = H
+            // => baseRate = ln(2) * timeNormalizationHours / H
+            return MathF.Log(2f) * timeNormalizationHours / halfLifeHours;
+        }
+
+        public float GetInitialLogBaseDecayRate()
+        {
+            float baseRate = HalfLifeHoursToBaseRate(InitialHalfLifeHours, TimeNormalizationHours);
+            return MathF.Log(MathF.Max(baseRate, 1e-8f));
+        }
+
+        public float GetMinLogBaseDecayRate()
+        {
+            float minRate = HalfLifeHoursToBaseRate(MaxHalfLifeHours, TimeNormalizationHours);
+            return MathF.Log(MathF.Max(minRate, 1e-8f));
+        }
+
+        public float GetMaxLogBaseDecayRate()
+        {
+            float maxRate = HalfLifeHoursToBaseRate(MinHalfLifeHours, TimeNormalizationHours);
+            return MathF.Log(MathF.Max(maxRate, 1e-8f));
+        }
+
+        public float ClampGate(float gate)
+        {
+            if (gate < MinGate) return MinGate;
+            if (gate > MaxGate) return MaxGate;
+            return gate;
         }
 
         public (ContentAwareDecayGradients grads, float[,] dQueryEmbeddings, float[,] dKeyEmbeddings) Backward(float[,,] dDecayBias, ContentAwareDecayCache cache)
@@ -160,23 +435,35 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var dQueryProj = new float[NumHeads, queryLen, projDim];
             var dRefinedKey = new float[NumHeads, keyLen, projDim];
 
-            // backward: MLP gating
+            // ===== Correct backward for:
+            // decayBias = -(baseRate * (1 - gate)) * normTd
             for (int h = 0; h < NumHeads; h++)
             {
                 float baseRate = MathF.Exp(LogBaseDecayRate[h]);
+
                 for (int qi = 0; qi < queryLen; qi++)
                 {
                     for (int si = 0; si < keyLen; si++)
                     {
                         float dBias = dDecayBias[qi, si, h];
                         float gate = cache.Gates[qi, si, h];
-                        float td = cache.TimeDiffs[qi, si];
+                        float normTd = cache.NormalizedTimeDiffs[qi, si];
 
-                        float dGate = dBias * -(baseRate * td);
-                        float dBaseRate = dBias * -(gate * td);
+                        // d/dgate [ -(baseRate * (1-gate)) * normTd ] = + baseRate * normTd
+                        float dGate = dBias * (baseRate * normTd);
+
+                        // d/dbaseRate [ -(baseRate * (1-gate)) * normTd ] = -(1-gate) * normTd
+                        float dBaseRate = dBias * (-(1f - gate) * normTd);
+
                         grads.LogBaseDecayRateGrad[h] += dBaseRate * baseRate;
 
-                        float dLogit = dGate * gate * (1f - gate);
+                        float unclampedGate = cache.GateLogits[qi, si, h] >= 0f
+                            ? 1f / (1f + MathF.Exp(-cache.GateLogits[qi, si, h]))
+                            : MathF.Exp(cache.GateLogits[qi, si, h]) / (1f + MathF.Exp(cache.GateLogits[qi, si, h]));
+
+                        bool gateClamped = gate <= MinGate || gate >= MaxGate;
+                        float dLogit = gateClamped ? 0f : dGate * unclampedGate * (1f - unclampedGate);
+
                         grads.B2Grad[h] += dLogit;
 
                         var dHidden = new float[HiddenDim];
@@ -187,6 +474,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         }
 
                         var dInput = new float[MLPInputDim];
+
                         for (int j = 0; j < HiddenDim; j++)
                         {
                             if (cache.MLPDropoutMask != null)
@@ -207,25 +495,29 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         }
 
                         int idx = 0;
+
                         for (int p = 0; p < projDim; p++)
-                        {
                             dQueryProj[h, qi, p] += dInput[idx++];
-                        }
+
                         for (int p = 0; p < projDim; p++)
-                        {
                             dRefinedKey[h, si, p] += dInput[idx++];
-                        }
+
                         for (int p = 0; p < projDim; p++)
                         {
                             float dI = dInput[idx++];
                             dQueryProj[h, qi, p] += dI * cache.RefinedKey[h, si, p];
                             dRefinedKey[h, si, p] += dI * cache.QueryProj[h, qi, p];
                         }
+
+                        // Last two inputs are normTd and log(1+normTd)
+                        // We intentionally do not backprop into timeDiffs here.
+                        idx += 2;
                     }
                 }
             }
 
-            // backward: Memory attention
+            // ===== your existing remainder of Backward() stays unchanged =====
+
             var dKeyProj = new float[NumHeads, keyLen, projDim];
             var dTimeEncoding = new float[NumHeads, keyLen, projDim];
 
@@ -316,19 +608,18 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
 
-            // backward: Multi-scale time encoding
             for (int h = 0; h < NumHeads; h++)
             {
                 for (int s = 0; s < keyLen; s++)
                 {
                     float t = cache.KeyTimesFromRef != null ? cache.KeyTimesFromRef[s] : 0f;
-
                     var dRawFeatures = new float[rawDim];
 
                     for (int p = 0; p < projDim; p++)
                     {
                         float dTE = dTimeEncoding[h, s, p];
                         grads.TimeProjBiasGrad[h, p] += dTE;
+
                         for (int r = 0; r < rawDim; r++)
                         {
                             grads.TimeProjGrad[h, p, r] += dTE * cache.TimeRawFeatures[h, s, r];
@@ -347,7 +638,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
 
-            // backward: Projections -> embeddings
             for (int h = 0; h < NumHeads; h++)
             {
                 for (int qi = 0; qi < queryLen; qi++)
@@ -371,6 +661,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     {
                         float dKP = dKeyProj[h, si, p];
                         grads.KeyProjectionBiasGrad[h, p] += dKP;
+
                         for (int d = 0; d < ContentDim; d++)
                         {
                             grads.KeyProjectionGrad[h, p, d] += dKP * cache.KeyEmbeddings[si, d];
@@ -380,199 +671,12 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
 
-            if (WeightDecay > 0)
+            if (WeightDecay > 0f)
             {
                 ApplyWeightDecayToGradients(grads);
             }
 
-
             return (grads, dQueryEmbeddings, dKeyEmbeddings);
-        }
-
-        private void ApplyWeightDecayToGradients(ContentAwareDecayGradients grads)
-        {
-            float wd = WeightDecay;
-            for (int h = 0; h < NumHeads; h++)
-            {
-                for (int p = 0; p < ProjectionDim; p++)
-                {
-                    for (int d = 0; d < ContentDim; d++)
-                    {
-                        grads.QueryProjectionGrad[h, p, d] += wd * QueryProjection[h, p, d];
-                        grads.KeyProjectionGrad[h, p, d] += wd * KeyProjection[h, p, d];
-                    }
-
-                    grads.QueryProjectionBiasGrad[h, p] += wd * QueryProjectionBias[h, p];
-                    grads.KeyProjectionBiasGrad[h, p] += wd * KeyProjectionBias[h, p];
-
-                    for (int r = 0; r < TimeRawDim; r++)
-                    {
-                        grads.TimeProjGrad[h, p, r] += wd * TimeProj[h, p, r];
-                    }
-                    grads.TimeProjBiasGrad[h, p] += wd * TimeProjBias[h, p];
-                    for (int q = 0; q < ProjectionDim; q++)
-                    {
-                        grads.MemAttnOutputWGrad[h, p, q] += wd * MemAttnOutputW[h, p, q];
-                    }
-                    grads.MemAttnOutputBGrad[h, p] += wd * MemAttnOutputB[h, p];
-                }
-                for (int b = 0; b < NumTimeBases; b++)
-                {
-                    grads.TimeLogFreqGrad[h, b] += wd * TimeLogFreq[h, b];
-                }
-                for (int j = 0; j < HiddenDim; j++)
-                {
-                    for (int k = 0; k < MLPInputDim; k++)
-                    {
-                        grads.W1Grad[h, j, k] += wd * W1[h, j, k];
-                    }
-                    grads.B1Grad[h, j] += wd * B1[h, j];
-                    grads.W2Grad[h, j] += wd * W2[h, j];
-                }
-                grads.B2Grad[h] += wd * B2[h];
-                grads.LogBaseDecayRateGrad[h] += wd * LogBaseDecayRate[h];
-            }
-        }
-
-        #region Save/Load
-        public void WriteTo(System.IO.BinaryWriter w)
-        {
-            w.Write(NumHeads); 
-            w.Write(ContentDim);
-            w.Write(ProjectionDim);
-            w.Write(HiddenDim);
-            w.Write(NumTimeBases);
-            w.Write(MemoryAttentionDropout); 
-            w.Write(MLPDropout);
-            w.Write(WeightDecay);
-            Write3D(w, QueryProjection); 
-            Write2D(w, QueryProjectionBias);
-            Write3D(w, KeyProjection);
-            Write2D(w, KeyProjectionBias);
-            Write2D(w, TimeLogFreq); 
-            Write3D(w, TimeProj); 
-            Write2D(w, TimeProjBias);
-            Write3D(w, MemAttnOutputW);
-            Write2D(w, MemAttnOutputB);
-            Write3D(w, W1); 
-            Write2D(w, B1); 
-            Write2D(w, W2);
-            Write1D(w, B2); 
-            Write1D(w, LogBaseDecayRate);
-        }
-
-        public static ContentAwareDecayNetwork ReadFrom(System.IO.BinaryReader r)
-        {
-            int nh = r.ReadInt32(), cd = r.ReadInt32(), pd = r.ReadInt32(), hd = r.ReadInt32();
-            int ntb = r.ReadInt32();
-            float memDrop = r.ReadSingle(), mlpDrop = r.ReadSingle(), wd = r.ReadSingle();
-            int mlpIn = pd * 3 + 2; int rawDim = 2 * ntb;
-            return new ContentAwareDecayNetwork
-            {
-                NumHeads = nh,
-                ContentDim = cd,
-                ProjectionDim = pd,
-                HiddenDim = hd,
-                MLPInputDim = mlpIn,
-                NumTimeBases = ntb,
-                TimeRawDim = rawDim,
-                MemoryAttentionDropout = memDrop,
-                MLPDropout = mlpDrop,
-                WeightDecay = wd,
-                QueryProjection = Read3D(r, nh, pd, cd),
-                QueryProjectionBias = Read2D(r, nh, pd),
-                KeyProjection = Read3D(r, nh, pd, cd),
-                KeyProjectionBias = Read2D(r, nh, pd),
-                TimeLogFreq = Read2D(r, nh, ntb),
-                TimeProj = Read3D(r, nh, pd, rawDim),
-                TimeProjBias = Read2D(r, nh, pd),
-                MemAttnOutputW = Read3D(r, nh, pd, pd),
-                MemAttnOutputB = Read2D(r, nh, pd),
-                W1 = Read3D(r, nh, hd, mlpIn),
-                B1 = Read2D(r, nh, hd),
-                W2 = Read2D(r, nh, hd),
-                B2 = Read1D(r, nh),
-                LogBaseDecayRate = Read1D(r, nh)
-            };
-        }
-
-        static void Write1D(System.IO.BinaryWriter w, float[] a)
-        {
-            foreach (var v in a)
-            {
-                w.Write(v);
-            }
-        }
-        static void Write2D(System.IO.BinaryWriter w, float[,] a)
-        {
-            int d0 = a.GetLength(0), d1 = a.GetLength(1);
-
-            for (int i = 0; i < d0; i++)
-            {
-                for (int j = 0; j < d1; j++)
-                {
-                    w.Write(a[i, j]);
-                }
-            }
-        }
-        static void Write3D(System.IO.BinaryWriter w, float[,,] a)
-        {
-            int d0 = a.GetLength(0), d1 = a.GetLength(1), d2 = a.GetLength(2);
-
-            for (int i = 0; i < d0; i++)
-            {
-                for (int j = 0; j < d1; j++)
-                {
-                    for (int k = 0; k < d2; k++)
-                    {
-                        w.Write(a[i, j, k]);
-                    }
-                }
-            }
-        }
-        static float[] Read1D(System.IO.BinaryReader r, int n)
-        {
-            var a = new float[n];
-            for (int i = 0; i < n; i++)
-            {
-                a[i] = r.ReadSingle();
-            }
-            return a;
-        }
-        static float[,] Read2D(System.IO.BinaryReader r, int d0, int d1)
-        {
-            var a = new float[d0, d1];
-            for (int i = 0; i < d0; i++)
-            {
-                for (int j = 0; j < d1; j++)
-                {
-                    a[i, j] = r.ReadSingle();
-                }
-            }
-            return a;
-        }
-        static float[,,] Read3D(System.IO.BinaryReader r, int d0, int d1, int d2)
-        {
-            var a = new float[d0, d1, d2];
-            for (int i = 0; i < d0; i++)
-            {
-                for (int j = 0; j < d1; j++)
-                {
-                    for (int k = 0; k < d2; k++)
-                    {
-                        a[i, j, k] = r.ReadSingle();
-                    }
-                }
-            }
-            return a;
-        }
-        #endregion
-
-        static float SampleGaussian(Random rng)
-        {
-            float u1 = 1f - rng.NextSingle();
-            float u2 = 1f - rng.NextSingle();
-            return MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2);
         }
     }
 
@@ -581,6 +685,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public float[,] QueryEmbeddings { get; set; }
         public float[,] KeyEmbeddings { get; set; }
         public float[,] TimeDiffs { get; set; }
+        public float[,] NormalizedTimeDiffs { get; set; }
         public float[] KeyTimesFromRef { get; set; }
         public float[,,] QueryProj { get; set; }
         public float[,,] KeyProj { get; set; }
@@ -599,7 +704,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public float[,,] MemAttnDropoutMask { get; set; }
         public float[,,,] MLPDropoutMask { get; set; }
     }
-
     public class ContentAwareDecayGradients
     {
         public float[,,] QueryProjectionGrad { get; set; }

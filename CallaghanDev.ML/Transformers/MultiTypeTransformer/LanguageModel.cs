@@ -252,7 +252,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                     _config.Runtime.AccelerationType,
                     _config.Runtime.AccelerationDeviceId);
 
-                // 🔥 CRITICAL FIX: restore full internal state
+                //  CRITICAL FIX: restore full internal state
                 Blocks[i].FeedForwardNetwork.RestoreState(
                     loaded.GetInternalData()
                 );
