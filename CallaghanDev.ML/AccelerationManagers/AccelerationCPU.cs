@@ -12,6 +12,254 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
         }
 
+        #region Shared Tensor primitives
+
+        public float[,] MatrixMultiply(float[,] A, float[,] B)
+        {
+            int rowsA = A.GetLength(0);
+            int colsA = A.GetLength(1);
+            int rowsB = B.GetLength(0);
+            int colsB = B.GetLength(1);
+
+            if (colsA != rowsB)
+                throw new ArgumentException($"Matrix dimensions don't match: [{rowsA}x{colsA}] * [{rowsB}x{colsB}]");
+
+            var C = new float[rowsA, colsB];
+
+            // Cache-friendly blocked multiplication
+            const int BLOCK = 32;
+            for (int ii = 0; ii < rowsA; ii += BLOCK)
+            {
+                for (int jj = 0; jj < colsB; jj += BLOCK)
+                {
+                    for (int kk = 0; kk < colsA; kk += BLOCK)
+                    {
+                        int iMax = Math.Min(ii + BLOCK, rowsA);
+                        int jMax = Math.Min(jj + BLOCK, colsB);
+                        int kMax = Math.Min(kk + BLOCK, colsA);
+
+                        for (int i = ii; i < iMax; i++)
+                        {
+                            for (int j = jj; j < jMax; j++)
+                            {
+                                float sum = C[i, j];
+                                for (int k = kk; k < kMax; k++)
+                                    sum += A[i, k] * B[k, j];
+                                C[i, j] = sum;
+                            }
+                        }
+                    }
+                }
+            }
+            return C;
+        }
+
+        public float[,] MatrixMultiplyTranspose(float[,] A, float[,] B)
+        {
+            int rowsA = A.GetLength(0);
+            int colsA = A.GetLength(1);
+            int rowsB = B.GetLength(0);
+            int colsB = B.GetLength(1);
+
+            if (colsA != colsB)
+            {
+                throw new ArgumentException($"Matrix dimensions don't match for A*B^T");
+            }
+
+            var C = new float[rowsA, rowsB];
+            for (int i = 0; i < rowsA; i++)
+            {
+                for (int j = 0; j < rowsB; j++)
+                {
+                    float sum = 0.0f;
+                    for (int k = 0; k < colsA; k++)
+                        sum += A[i, k] * B[j, k];
+                    C[i, j] = sum;
+                }
+            }
+            return C;
+        }
+
+        public float[,] MatrixScale(float[,] matrix, float scalar)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            var result = new float[rows, cols];
+
+            for (int i = 0; i < rows; i++)
+                for (int j = 0; j < cols; j++)
+                    result[i, j] = matrix[i, j] * scalar;
+            return result;
+        }
+
+        public float[,] MatrixAdd(float[,] A, float[,] B)
+        {
+            int rows = A.GetLength(0);
+            int cols = A.GetLength(1);
+            var result = new float[rows, cols];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    result[i, j] = A[i, j] + B[i, j];
+                }
+            }
+            return result;
+        }
+
+        public float[,] MatrixAddBias(float[,] matrix, float[] bias)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            var result = new float[rows, cols];
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    result[i, j] = matrix[i, j] + bias[j];
+                }
+            }
+            return result;
+        }
+
+        public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
+        {
+            int seqLen = inputMatrix.GetLength(0);
+
+            // Delegate to offset-aware version
+            return BatchDotProduct(weights, inputMatrix, rowStart: 0, rowCount: seqLen);
+        }
+
+        public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+
+            if (rowStart < 0 || rowCount < 0)
+                throw new ArgumentOutOfRangeException();
+
+            if (rowStart + rowCount > inputMatrix.GetLength(0))
+                throw new ArgumentException("Invalid row slice.");
+
+            int outputDim = weights.GetLength(0);
+            int inputDim = weights.GetLength(1);
+
+            if (inputMatrix.GetLength(1) != inputDim)
+                throw new ArgumentException(
+                    $"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+
+            var result = new float[rowCount, outputDim];
+
+            for (int i = 0; i < rowCount; i++)
+            {
+                int srcRow = rowStart + i;
+
+                for (int j = 0; j < outputDim; j++)
+                {
+                    float sum = 0.0f;
+
+                    for (int k = 0; k < inputDim; k++)
+                    {
+                        sum += weights[j, k] * inputMatrix[srcRow, k];
+                    }
+
+                    result[i, j] = sum;
+                }
+            }
+
+            return result;
+        }
+
+        public float[,] SliceRows(float[,] matrix, int startRow, int endRow)
+        {
+            if (startRow < 0 || endRow > matrix.GetLength(0) || startRow > endRow)
+            {
+                throw new ArgumentOutOfRangeException();
+            }
+            int cols = matrix.GetLength(1);
+            int numRows = endRow - startRow;
+            var result = new float[numRows, cols];
+            for (int i = 0; i < numRows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    result[i, j] = matrix[startRow + i, j];
+                }
+            }
+            return result;
+        }
+
+        public float[] ExtractRow(float[,] matrix, int rowIndex, int cols)
+        {
+            var result = new float[cols];
+            for (int j = 0; j < cols; j++)
+            {
+                result[j] = matrix[rowIndex, j];
+            }
+            return result;
+        }
+
+        public void SetRow(float[,] matrix, int rowIndex, float[] values, int cols)
+        {
+            for (int j = 0; j < cols; j++)
+            {
+                matrix[rowIndex, j] = values[j];
+            }
+        }
+
+        public void ZeroMatrix(float[,] matrix)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    matrix[i, j] = 0;
+                }
+            }
+        }
+
+        public void ZeroVector(float[] vector)
+        {
+            Array.Clear(vector, 0, vector.Length);
+        }
+
+        public void MatrixAccumulate(float[,] target, float[,] source)
+        {
+            int rows = target.GetLength(0);
+            int cols = target.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    target[i, j] += source[i, j];
+                }
+            }
+        }
+
+        public void MatrixAddInPlace(float[,] target, float[,] addend)
+        {
+            MatrixAccumulate(target, addend);
+        }
+
+        public void VectorAccumulate(float[] target, float[] source)
+        {
+            AccumulateVectorGradients(target, source);
+        }
+
+        public void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad)
+        {
+            for (int j = 0; j < targetGrad.Length; j++)
+            {
+                targetGrad[j] += sourceGrad[j];
+            }
+        }
+
+        #endregion
+
+        #region Neural network
         // I realize this behaves like a transpose rather than a plain dot product-but that’s exactly what we want, and it’s correct.
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
@@ -34,6 +282,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             return result;
         }
+
         public (float[] activation, float[] derivative) ActivateLayer(float[] dot, float[] bias, ActivationType activationType)
         {
             if (bias.Length != dot.Length)
@@ -125,93 +374,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             return updated;
         }
 
-        public float[,] MatrixMultiply(float[,] A, float[,] B)
-        {
-            int rowsA = A.GetLength(0);
-            int colsA = A.GetLength(1);
-            int rowsB = B.GetLength(0);
-            int colsB = B.GetLength(1);
+        #endregion
 
-            if (colsA != rowsB)
-                throw new ArgumentException($"Matrix dimensions don't match: [{rowsA}x{colsA}] * [{rowsB}x{colsB}]");
-
-            var C = new float[rowsA, colsB];
-
-            // Cache-friendly blocked multiplication
-            const int BLOCK = 32;
-            for (int ii = 0; ii < rowsA; ii += BLOCK)
-            {
-                for (int jj = 0; jj < colsB; jj += BLOCK)
-                {
-                    for (int kk = 0; kk < colsA; kk += BLOCK)
-                    {
-                        int iMax = Math.Min(ii + BLOCK, rowsA);
-                        int jMax = Math.Min(jj + BLOCK, colsB);
-                        int kMax = Math.Min(kk + BLOCK, colsA);
-
-                        for (int i = ii; i < iMax; i++)
-                        {
-                            for (int j = jj; j < jMax; j++)
-                            {
-                                float sum = C[i, j];
-                                for (int k = kk; k < kMax; k++)
-                                    sum += A[i, k] * B[k, j];
-                                C[i, j] = sum;
-                            }
-                        }
-                    }
-                }
-            }
-            return C;
-        }
-
-        public float[,] MatrixMultiplyTranspose(float[,] A, float[,] B)
-        {
-            int rowsA = A.GetLength(0);
-            int colsA = A.GetLength(1);
-            int rowsB = B.GetLength(0);
-            int colsB = B.GetLength(1);
-
-            if (colsA != colsB)
-                throw new ArgumentException($"Matrix dimensions don't match for A*B^T");
-
-            var C = new float[rowsA, rowsB];
-            for (int i = 0; i < rowsA; i++)
-            {
-                for (int j = 0; j < rowsB; j++)
-                {
-                    float sum = 0.0f;
-                    for (int k = 0; k < colsA; k++)
-                        sum += A[i, k] * B[j, k];
-                    C[i, j] = sum;
-                }
-            }
-            return C;
-        }
-
-        public float[,] MatrixScale(float[,] matrix, float scalar)
-        {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            var result = new float[rows, cols];
-
-            for (int i = 0; i < rows; i++)
-                for (int j = 0; j < cols; j++)
-                    result[i, j] = matrix[i, j] * scalar;
-            return result;
-        }
-
-        public float[,] MatrixAdd(float[,] A, float[,] B)
-        {
-            int rows = A.GetLength(0);
-            int cols = A.GetLength(1);
-            var result = new float[rows, cols];
-
-            for (int i = 0; i < rows; i++)
-                for (int j = 0; j < cols; j++)
-                    result[i, j] = A[i, j] + B[i, j];
-            return result;
-        }
+        #region Transformer core
 
         public float[,] Softmax(float[,] matrix, bool[,] mask = null)
         {
@@ -284,56 +449,109 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
+        public (float[,] output, float[] means, float[] variances, float[,] normalized) LayerNormForward(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
         {
-            int seqLen = inputMatrix.GetLength(0);
+            int batchSize = input.GetLength(0);
+            int features = input.GetLength(1);
 
-            // Delegate to offset-aware version
-            return BatchDotProduct(weights, inputMatrix, rowStart: 0, rowCount: seqLen);
-        }
-        public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount)
-        {
-            if (weights == null) throw new ArgumentNullException(nameof(weights));
-            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+            var means = new float[batchSize];
+            var variances = new float[batchSize];
+            var normalized = new float[batchSize, features];
+            var output = new float[batchSize, features];
 
-            if (rowStart < 0 || rowCount < 0)
-                throw new ArgumentOutOfRangeException();
-
-            if (rowStart + rowCount > inputMatrix.GetLength(0))
-                throw new ArgumentException("Invalid row slice.");
-
-            int outputDim = weights.GetLength(0);
-            int inputDim = weights.GetLength(1);
-
-            if (inputMatrix.GetLength(1) != inputDim)
-                throw new ArgumentException(
-                    $"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
-
-            var result = new float[rowCount, outputDim];
-
-            for (int i = 0; i < rowCount; i++)
+            for (int i = 0; i < batchSize; i++)
             {
-                int srcRow = rowStart + i;
-
-                for (int j = 0; j < outputDim; j++)
+                float mean = 0.0f;
+                for (int j = 0; j < features; j++)
                 {
-                    float sum = 0.0f;
+                    mean += input[i, j];
+                }
+                mean /= features;
+                means[i] = mean;
 
-                    for (int k = 0; k < inputDim; k++)
-                    {
-                        sum += weights[j, k] * inputMatrix[srcRow, k];
-                    }
+                float variance = 0.0f;
+                for (int j = 0; j < features; j++)
+                {
+                    float diff = input[i, j] - mean;
+                    variance += diff * diff;
+                }
+                variance = variance / features;
 
-                    result[i, j] = sum;
+                variances[i] = variance;
+
+                float stdDev = MathF.Sqrt(variance + epsilon);
+                for (int j = 0; j < features; j++)
+                {
+                    normalized[i, j] = (input[i, j] - mean) / stdDev;
+                    output[i, j] = gamma[j] * normalized[i, j] + beta[j];
                 }
             }
 
-            return result;
+            return (output, means, variances, normalized);
+        }
+       
+        public (float[,] dInput, float[] dGamma, float[] dBeta) LayerNormBackward(float[,] dOut, float[,] normalized, float[] gamma, float[,] input, float[] mean, float[] variance, float epsilon = 1e-5f)
+        {
+            int batchSize = dOut.GetLength(0);
+            int features = dOut.GetLength(1);
+
+            var dInput = new float[batchSize, features];
+            var dGamma = new float[features];
+            var dBeta = new float[features];
+
+            for (int i = 0; i < batchSize; i++)
+            {
+                float invStd = 1.0f / MathF.Sqrt(variance[i] + epsilon);
+
+                for (int j = 0; j < features; j++)
+                {
+                    dGamma[j] += dOut[i, j] * normalized[i, j];
+                    dBeta[j] += dOut[i, j];
+                }
+
+                var dNorm = new float[features];
+                for (int j = 0; j < features; j++)
+                {
+                    dNorm[j] = dOut[i, j] * gamma[j];
+                }
+
+                float dVar = 0;
+                float invStdCubed = invStd * invStd * invStd;
+                for (int j = 0; j < features; j++)
+                {
+                    float xMinusMean = input[i, j] - mean[i];
+                    dVar += dNorm[j] * xMinusMean * (-0.5f) * invStdCubed;
+                }
+
+                float dMean = 0;
+                for (int j = 0; j < features; j++)
+                {
+                    dMean += dNorm[j] * (-invStd);
+                }
+
+                float invN = 1.0f / features;
+                for (int j = 0; j < features; j++)
+                {
+                    float xMinusMean = input[i, j] - mean[i];
+                    dInput[i, j] = dNorm[j] * invStd + dVar * 2.0f * xMinusMean * invN + dMean * invN;
+                }
+            }
+
+            return (dInput, dGamma, dBeta);
         }
 
-
-
-        #region Multi-head attention
+        public bool[,] CreateCausalMask(int seqLen)
+        {
+            var mask = new bool[seqLen, seqLen];
+            for (int i = 0; i < seqLen; i++)
+            {
+                for (int j = 0; j <= i; j++)
+                {
+                    mask[i, j] = true;
+                }
+            }
+            return mask;
+        }
 
         public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
         {
@@ -583,9 +801,28 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (dQ_full, dK_full, dV_full);
         }
 
+        public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
+        {
+            var result = new float[seqLen, outputDim];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                var row = new float[input.GetLength(1)];
+                for (int j = 0; j < input.GetLength(1); j++)
+                    row[j] = input[i, j];
+
+                var out_row = forwardPassFn(row);
+
+                for (int j = 0; j < outputDim; j++)
+                    result[i, j] = out_row[j];
+            }
+
+            return result;
+        }
+
         #endregion
 
-
+        #region Transformer training
         public void BackpropLinearProjection(float[,] input, float[,] dOutput, float[,] weights, float[,] weightGrad, float[] biasGrad, float[,] dInput)
         {
             int seqLen = input.GetLength(0);
@@ -621,182 +858,63 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
-        public (float[,] output, float[] means, float[] variances, float[,] normalized) LayerNormForward(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
+
+        public float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights, float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim)
         {
-            int batchSize = input.GetLength(0);
-            int features = input.GetLength(1);
+            var dX = new float[seqLen, embeddingDim];
 
-            var means = new float[batchSize];
-            var variances = new float[batchSize];
-            var normalized = new float[batchSize, features];
-            var output = new float[batchSize, features];
-
-            for (int i = 0; i < batchSize; i++)
+            for (int i = 0; i < seqLen; i++)
             {
-                float mean = 0.0f;
-                for (int j = 0; j < features; j++)
+                for (int v = 0; v < outputDim; v++)
                 {
-                    mean += input[i, j];
+                    float dVal = dLogits[i, v];
+                    for (int e = 0; e < embeddingDim; e++)
+                    {
+                        weightGrad[v, e] += input[i, e] * dVal;
+                    }
+                    biasGrad[v] += dVal;
                 }
-                mean /= features;
-                means[i] = mean;
 
-                float variance = 0.0f;
-                for (int j = 0; j < features; j++)
+                for (int e = 0; e < embeddingDim; e++)
                 {
-                    float diff = input[i, j] - mean;
-                    variance += diff * diff;
-                }
-                variance = variance / features;
-
-                variances[i] = variance;
-
-                float stdDev = MathF.Sqrt(variance + epsilon);
-                for (int j = 0; j < features; j++)
-                {
-                    normalized[i, j] = (input[i, j] - mean) / stdDev;
-                    output[i, j] = gamma[j] * normalized[i, j] + beta[j];
+                    float grad = 0;
+                    for (int v = 0; v < outputDim; v++)
+                    {
+                        grad += dLogits[i, v] * weights[v, e];
+                    }
+                    dX[i, e] = grad;
                 }
             }
 
-            return (output, means, variances, normalized);
+            return dX;
         }
 
-        public (float[,] dInput, float[] dGamma, float[] dBeta) LayerNormBackward(float[,] dOut, float[,] normalized, float[] gamma, float[,] input, float[] mean, float[] variance, float epsilon = 1e-5f)
+        public void BackpropInputProjection(float[,] dX, float[,] continuousInput, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim)
         {
-            int batchSize = dOut.GetLength(0);
-            int features = dOut.GetLength(1);
-
-            var dInput = new float[batchSize, features];
-            var dGamma = new float[features];
-            var dBeta = new float[features];
-
-            for (int i = 0; i < batchSize; i++)
+            for (int i = 0; i < seqLen; i++)
             {
-                float invStd = 1.0f / MathF.Sqrt(variance[i] + epsilon);
-
-                for (int j = 0; j < features; j++)
+                for (int e = 0; e < embeddingDim; e++)
                 {
-                    dGamma[j] += dOut[i, j] * normalized[i, j];
-                    dBeta[j] += dOut[i, j];
-                }
-
-                var dNorm = new float[features];
-                for (int j = 0; j < features; j++)
-                {
-                    dNorm[j] = dOut[i, j] * gamma[j];
-                }
-
-                float dVar = 0;
-                float invStdCubed = invStd * invStd * invStd;
-                for (int j = 0; j < features; j++)
-                {
-                    float xMinusMean = input[i, j] - mean[i];
-                    dVar += dNorm[j] * xMinusMean * (-0.5f) * invStdCubed;
-                }
-
-                float dMean = 0;
-                for (int j = 0; j < features; j++)
-                {
-                    dMean += dNorm[j] * (-invStd);
-                }
-
-                float invN = 1.0f / features;
-                for (int j = 0; j < features; j++)
-                {
-                    float xMinusMean = input[i, j] - mean[i];
-                    dInput[i, j] = dNorm[j] * invStd + dVar * 2.0f * xMinusMean * invN + dMean * invN;
-                }
-            }
-
-            return (dInput, dGamma, dBeta);
-        }
-
-        public float MatrixSquaredNorm(float[,] matrix)
-        {
-            float sum = 0;
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    sum += matrix[i, j] * matrix[i, j];
-                }
-            }
-            return sum;
-        }
-
-        public void MatrixScaleInPlace(float[,] matrix, float scale)
-        {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    matrix[i, j] *= scale;
+                    float dVal = dX[i, e];
+                    for (int f = 0; f < inputFeatureDim; f++)
+                    {
+                        weightGrad[e, f] += dVal * continuousInput[i, f];
+                    }
+                    biasGrad[e] += dVal;
                 }
             }
         }
 
-        public void VectorScaleInPlace(float[] vector, float scale)
+        public void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int seqLen, int embeddingDim)
         {
-            for (int i = 0; i < vector.Length; i++)
+            for (int i = 0; i < seqLen; i++)
             {
-                vector[i] *= scale;
-            }
-        }
-
-        public void MatrixUpdate(float[,] weights, float[,] gradients, float learningRate)
-        {
-            int rows = weights.GetLength(0);
-            int cols = weights.GetLength(1);
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
+                int tokenId = tokenIds[i];
+                for (int j = 0; j < embeddingDim; j++)
                 {
-                    weights[i, j] -= learningRate * gradients[i, j];
+                    embeddingGrad[tokenId, j] += dX[i, j];
                 }
             }
-        }
-
-        public void VectorUpdate(float[] weights, float[] gradients, float learningRate)
-        {
-            for (int i = 0; i < weights.Length; i++)
-            {
-                weights[i] -= learningRate * gradients[i];
-            }
-        }
-
-        public void ZeroMatrix(float[,] matrix)
-        {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    matrix[i, j] = 0;
-                }
-            }
-        }
-
-
-        //new
-        public float[,] MatrixAddBias(float[,] matrix, float[] bias)
-        {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            var result = new float[rows, cols];
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = matrix[i, j] + bias[j];
-                }
-            }
-            return result;
         }
 
         public (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen)
@@ -864,70 +982,19 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (loss, dOutput);
         }
 
-        public float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights, float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim)
+        public float MatrixSquaredNorm(float[,] matrix)
         {
-            var dX = new float[seqLen, embeddingDim];
-
-            for (int i = 0; i < seqLen; i++)
+            float sum = 0;
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
             {
-                for (int v = 0; v < outputDim; v++)
+                for (int j = 0; j < cols; j++)
                 {
-                    float dVal = dLogits[i, v];
-                    for (int e = 0; e < embeddingDim; e++)
-                    {
-                        weightGrad[v, e] += input[i, e] * dVal;
-                    }
-                    biasGrad[v] += dVal;
-                }
-
-                for (int e = 0; e < embeddingDim; e++)
-                {
-                    float grad = 0;
-                    for (int v = 0; v < outputDim; v++)
-                    {
-                        grad += dLogits[i, v] * weights[v, e];
-                    }
-                    dX[i, e] = grad;
+                    sum += matrix[i, j] * matrix[i, j];
                 }
             }
-
-            return dX;
-        }
-
-        public void BackpropInputProjection(float[,] dX, float[,] continuousInput, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim)
-        {
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int e = 0; e < embeddingDim; e++)
-                {
-                    float dVal = dX[i, e];
-                    for (int f = 0; f < inputFeatureDim; f++)
-                    {
-                        weightGrad[e, f] += dVal * continuousInput[i, f];
-                    }
-                    biasGrad[e] += dVal;
-                }
-            }
-        }
-
-        public void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int seqLen, int embeddingDim)
-        {
-            for (int i = 0; i < seqLen; i++)
-            {
-                int tokenId = tokenIds[i];
-                for (int j = 0; j < embeddingDim; j++)
-                {
-                    embeddingGrad[tokenId, j] += dX[i, j];
-                }
-            }
-        }
-
-        public void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad)
-        {
-            for (int j = 0; j < targetGrad.Length; j++)
-            {
-                targetGrad[j] += sourceGrad[j];
-            }
+            return sum;
         }
 
         public float VectorSquaredNorm(float[] vector)
@@ -940,75 +1007,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return sum;
         }
 
-        public float[,] SliceRows(float[,] matrix, int startRow, int endRow)
-        {
-            if (startRow < 0 || endRow > matrix.GetLength(0) || startRow > endRow)
-            {
-                throw new ArgumentOutOfRangeException();
-            }
-            int cols = matrix.GetLength(1);
-            int numRows = endRow - startRow;
-            var result = new float[numRows, cols];
-            for (int i = 0; i < numRows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = matrix[startRow + i, j];
-                }
-            }
-            return result;
-        }
-
-        public float[] ExtractRow(float[,] matrix, int rowIndex, int cols)
-        {
-            var result = new float[cols];
-            for (int j = 0; j < cols; j++)
-            {
-                result[j] = matrix[rowIndex, j];
-            }
-            return result;
-        }
-
-        public void SetRow(float[,] matrix, int rowIndex, float[] values, int cols)
-        {
-            for (int j = 0; j < cols; j++)
-            {
-                matrix[rowIndex, j] = values[j];
-            }
-        }
-
-        public bool[,] CreateCausalMask(int seqLen)
-        {
-            var mask = new bool[seqLen, seqLen];
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j <= i; j++)
-                {
-                    mask[i, j] = true;
-                }
-            }
-            return mask;
-        }
-
-        public void MatrixAccumulate(float[,] target, float[,] source)
-        {
-            int rows = target.GetLength(0);
-            int cols = target.GetLength(1);
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    target[i, j] += source[i, j];
-                }
-            }
-        }
-
-        public void ZeroVector(float[] vector)
-        {
-            Array.Clear(vector, 0, vector.Length);
-        }
-
-        public void SigmoidInPlace(float[,] matrix)
+        public void MatrixScaleInPlace(float[,] matrix, float scale)
         {
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
@@ -1016,119 +1015,80 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 for (int j = 0; j < cols; j++)
                 {
-                    float x = matrix[i, j];
-                    if (x >= 0)
-                    {
-                        float ex = MathF.Exp(-x);
-                        matrix[i, j] = 1.0f / (1.0f + ex);
-                    }
-                    else
-                    {
-                        float ex = MathF.Exp(x);
-                        matrix[i, j] = ex / (1.0f + ex);
-                    }
+                    matrix[i, j] *= scale;
                 }
             }
         }
 
-        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        public void VectorScaleInPlace(float[] vector, float scale)
         {
-            int psl = Q.GetLength(0);
-            int tsl = K.GetLength(0);
-            int embDim = Q.GetLength(1);
-            int headDim = embDim / numHeads;
-
-            var output = new float[psl, embDim];
-            attentionWeights = new float[numHeads][,];
-            scoresPreSoftmax = new float[numHeads][,];
-
-            for (int h = 0; h < numHeads; h++)
+            for (int i = 0; i < vector.Length; i++)
             {
-                int si = h * headDim;
-                var scores = new float[psl, tsl];
-                var weights = new float[psl, tsl];
-
-                for (int p = 0; p < psl; p++)
+                vector[i] *= scale;
+            }
+        }
+        public void MatrixUpdate(float[,] weights, float[,] gradients, float learningRate)
+        {
+            int rows = weights.GetLength(0);
+            int cols = weights.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
                 {
-                    //float mx = float.MinValue;
-                    float mx = float.NegativeInfinity;
-
-
-                    for (int s = 0; s < tsl; s++)
-                    {
-                        float dot = 0f;
-                        for (int d = 0; d < headDim; d++)
-                            dot += Q[p, si + d] * K[s, si + d];
-
-                        float sc = dot * scale;
-                        if (decayBias != null) sc += decayBias[p, s, h];
-                        scores[p, s] = sc;
-                        if (sc > mx) mx = sc;
-                    }
-
-                    float se = 0f;
-                    for (int s = 0; s < tsl; s++)
-                    {
-                        weights[p, s] = MathF.Exp(scores[p, s] - mx);
-                        se += weights[p, s];
-                    }
-
-                    if (se > 0f)
-                        for (int s = 0; s < tsl; s++)
-                            weights[p, s] /= se;
-
-                    for (int d = 0; d < headDim; d++)
-                    {
-                        float v = 0f;
-                        for (int s = 0; s < tsl; s++)
-                            v += weights[p, s] * V[s, si + d];
-                        output[p, si + d] = v;
-                    }
+                    weights[i, j] -= learningRate * gradients[i, j];
                 }
-
-                attentionWeights[h] = weights;
-                scoresPreSoftmax[h] = scores;
             }
-
-            return output;
         }
 
-        public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
+        public void VectorUpdate(float[] weights, float[] gradients, float learningRate)
         {
-            var result = new float[seqLen, outputDim];
-
-            for (int i = 0; i < seqLen; i++)
+            for (int i = 0; i < weights.Length; i++)
             {
-                var row = new float[input.GetLength(1)];
-                for (int j = 0; j < input.GetLength(1); j++)
-                    row[j] = input[i, j];
-
-                var out_row = forwardPassFn(row);
-
-                for (int j = 0; j < outputDim; j++)
-                    result[i, j] = out_row[j];
+                weights[i] -= learningRate * gradients[i];
             }
-
-            return result;
         }
+
+        #endregion
+
+        #region Multimodal/TACAMT/MMTAC
 
         public void ApplyContextTypeEmbedding(float[,] contextHidden, float[,] typeEmbedding, int[] typeIndices)
         {
-            int n = contextHidden.GetLength(0);
+            if (contextHidden == null)
+                throw new ArgumentNullException(nameof(contextHidden));
+            if (typeEmbedding == null)
+                throw new ArgumentNullException(nameof(typeEmbedding));
+            if (typeIndices == null)
+                throw new ArgumentNullException(nameof(typeIndices));
+
+            int rows = contextHidden.GetLength(0);
             int embDim = contextHidden.GetLength(1);
 
-            for (int i = 0; i < n; i++)
+            if (typeIndices.Length != rows)
+                throw new ArgumentException("typeIndices length must match contextHidden row count.", nameof(typeIndices));
+            if (typeEmbedding.GetLength(1) != embDim)
+                throw new ArgumentException("typeEmbedding dimension must match contextHidden embedding dimension.", nameof(typeEmbedding));
+
+            int typeCount = typeEmbedding.GetLength(0);
+
+            for (int i = 0; i < rows; i++)
             {
-                int t = typeIndices[i];
+                int type = typeIndices[i];
+                if ((uint)type >= (uint)typeCount)
+                    throw new ArgumentOutOfRangeException(nameof(typeIndices), $"Invalid context type index {type} at row {i}.");
 
                 for (int d = 0; d < embDim; d++)
-                {
-                    contextHidden[i, d] += typeEmbedding[t, d];
-                }
+                    contextHidden[i, d] += typeEmbedding[type, d];
             }
         }
+
         public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
         {
+            if (priceSeqLen <= 0)
+                throw new ArgumentOutOfRangeException(nameof(priceSeqLen), "priceSeqLen must be positive.");
+            if (keyArrivalTimes == null)
+                throw new ArgumentNullException(nameof(keyArrivalTimes));
+
             int numKeys = keyArrivalTimes.Length;
             var td = new float[priceSeqLen, numKeys];
 
@@ -1136,6 +1096,8 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 for (int s = 0; s < numKeys; s++)
                 {
+                    // Positive means the key is in the past relative to query position p.
+                    // Future keys are clamped to zero inside ContentAwareDecayForward.
                     td[p, s] = p - keyArrivalTimes[s];
                 }
             }
@@ -1175,8 +1137,21 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return pred;
         }
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
+
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
+            float[,] queryEmbeddings,
+            float[,] keyEmbeddings,
+            float[,] timeDiffs,
+            float[] keyTimesFromRef,
+            ContentAwareDecayNetwork network,
+            bool isTraining = false,
+            Random dropoutRng = null)
         {
+            if (queryEmbeddings == null) throw new ArgumentNullException(nameof(queryEmbeddings));
+            if (keyEmbeddings == null) throw new ArgumentNullException(nameof(keyEmbeddings));
+            if (timeDiffs == null) throw new ArgumentNullException(nameof(timeDiffs));
+            if (network == null) throw new ArgumentNullException(nameof(network));
+
             int queryLen = timeDiffs.GetLength(0);
             int keyLen = timeDiffs.GetLength(1);
             int numHeads = network.NumHeads;
@@ -1187,6 +1162,13 @@ namespace CallaghanDev.ML.AccelerationManagers
             int numBases = network.NumTimeBases;
             int rawDim = network.TimeRawDim;
 
+            if (queryEmbeddings.GetLength(0) != queryLen || queryEmbeddings.GetLength(1) != contentDim)
+                throw new ArgumentException("queryEmbeddings shape does not match the decay network.", nameof(queryEmbeddings));
+            if (keyEmbeddings.GetLength(0) != keyLen || keyEmbeddings.GetLength(1) != contentDim)
+                throw new ArgumentException("keyEmbeddings shape does not match the decay network.", nameof(keyEmbeddings));
+            if (keyTimesFromRef != null && keyTimesFromRef.Length != keyLen)
+                throw new ArgumentException("keyTimesFromRef length must match key length.", nameof(keyTimesFromRef));
+
             var normalizedTimeDiffs = new float[queryLen, keyLen];
             float timeNorm = MathF.Max(network.TimeNormalizationHours, 1e-4f);
 
@@ -1195,8 +1177,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 for (int si = 0; si < keyLen; si++)
                 {
                     float td = timeDiffs[qi, si];
-                    if (td < 0f) td = 0f;
-                    normalizedTimeDiffs[qi, si] = td / timeNorm;
+                    normalizedTimeDiffs[qi, si] = td > 0f ? td / timeNorm : 0f;
                 }
             }
 
@@ -1229,16 +1210,23 @@ namespace CallaghanDev.ML.AccelerationManagers
             bool useMLPDrop = isTraining && network.MLPDropout > 0f && dropoutRng != null;
 
             if (useMemAttnDrop)
+            {
+                if (network.MemoryAttentionDropout >= 1f)
+                    throw new ArgumentOutOfRangeException(nameof(network.MemoryAttentionDropout), "MemoryAttentionDropout must be < 1.");
                 cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
+            }
 
             if (useMLPDrop)
+            {
+                if (network.MLPDropout >= 1f)
+                    throw new ArgumentOutOfRangeException(nameof(network.MLPDropout), "MLPDropout must be < 1.");
                 cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
+            }
 
             var decayBias = new float[queryLen, keyLen, numHeads];
 
             for (int h = 0; h < numHeads; h++)
             {
-                // 1. Query projection
                 for (int q = 0; q < queryLen; q++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -1246,12 +1234,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.QueryProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
                             val += network.QueryProjection[h, p, d] * queryEmbeddings[q, d];
-
                         cache.QueryProj[h, q, p] = val;
                     }
                 }
 
-                // 2. Key projection
                 for (int s = 0; s < keyLen; s++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -1259,12 +1245,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.KeyProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
                             val += network.KeyProjection[h, p, d] * keyEmbeddings[s, d];
-
                         cache.KeyProj[h, s, p] = val;
                     }
                 }
 
-                // 3. Multi-scale time encoding
                 for (int s = 0; s < keyLen; s++)
                 {
                     float t = keyTimesFromRef != null ? keyTimesFromRef[s] : 0f;
@@ -1282,12 +1266,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.TimeProjBias[h, p];
                         for (int r = 0; r < rawDim; r++)
                             val += network.TimeProj[h, p, r] * cache.TimeRawFeatures[h, s, r];
-
                         cache.TimeEncoding[h, s, p] = val;
                     }
                 }
 
-                // 4. Memory interaction attention
                 float memScale = 1.0f / MathF.Sqrt(projDim);
 
                 for (int s = 0; s < keyLen; s++)
@@ -1302,7 +1284,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                 for (int i = 0; i < keyLen; i++)
                 {
-                    float maxScore = float.MinValue;
+                    float maxScore = float.NegativeInfinity;
                     var scores = new float[keyLen];
 
                     for (int j = 0; j < keyLen; j++)
@@ -1325,8 +1307,9 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                     if (sumExp > 0f)
                     {
+                        float inv = 1f / sumExp;
                         for (int j = 0; j < keyLen; j++)
-                            cache.MemAttnWeights[h, i, j] /= sumExp;
+                            cache.MemAttnWeights[h, i, j] *= inv;
                     }
 
                     if (useMemAttnDrop)
@@ -1347,12 +1330,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = 0f;
                         for (int j = 0; j < keyLen; j++)
                             val += cache.MemAttnWeights[h, i, j] * cache.KeyProj[h, j, p];
-
                         cache.MemAttnOutput[h, i, p] = val;
                     }
                 }
 
-                // 5. Refined key
                 for (int s = 0; s < keyLen; s++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -1360,19 +1341,24 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = network.MemAttnOutputB[h, p];
                         for (int q = 0; q < projDim; q++)
                             val += network.MemAttnOutputW[h, p, q] * cache.MemAttnOutput[h, s, q];
-
                         cache.RefinedKey[h, s, p] = val + cache.KeyProj[h, s, p];
                     }
                 }
 
-                // 6. Gating MLP + decay bias
                 float baseRate = MathF.Exp(network.LogBaseDecayRate[h]);
 
                 for (int qi = 0; qi < queryLen; qi++)
                 {
                     for (int si = 0; si < keyLen; si++)
                     {
-                        float td = MathF.Max(0f, timeDiffs[qi, si]);
+                        if (timeDiffs[qi, si] < 0f)
+                        {
+                            cache.Gates[qi, si, h] = 0f;
+                            cache.GateLogits[qi, si, h] = 0f;
+                            decayBias[qi, si, h] = float.NegativeInfinity;
+                            continue;
+                        }
+
                         float normTd = normalizedTimeDiffs[qi, si];
                         float logTd = MathF.Log(1f + normTd);
 
@@ -1390,7 +1376,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                                 val += network.W1[h, j, k] * cache.MLPInput[qi, si, h, k];
 
                             cache.MLPHiddenPreAct[qi, si, h, j] = val;
-
                             float activated = val > 0f ? val : 0.01f * val;
 
                             if (useMLPDrop)
@@ -1409,12 +1394,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                             logit += network.W2[h, j] * cache.MLPHidden[qi, si, h, j];
 
                         cache.GateLogits[qi, si, h] = logit;
-
                         float gate = StableSigmoid(logit);
                         gate = network.ClampGate(gate);
                         cache.Gates[qi, si, h] = gate;
 
-                        // Strong default recency prior; gate can relax it for persistent/high-impact news
                         decayBias[qi, si, h] = -(baseRate * (1f - gate)) * normTd;
                     }
                 }
@@ -1422,32 +1405,111 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return (decayBias, cache);
         }
-        private float StableSigmoid(float x)
+        public float[,] ContentAwareCrossAttentionForward(
+        float[,] Q,
+        float[,] K,
+        float[,] V,
+        int numHeads,
+        float scale,
+        float[,,] decayBias,
+        out float[][,] attentionWeights,
+        out float[][,] scoresPreSoftmax)
         {
-            if (x >= 0)
+            int queryLen = Q.GetLength(0);
+            int keyLen = K.GetLength(0);
+            int embDim = Q.GetLength(1);
+            int headDim = embDim / numHeads;
+
+            var output = new float[queryLen, embDim];
+            attentionWeights = new float[numHeads][,];
+            scoresPreSoftmax = new float[numHeads][,];
+
+            for (int h = 0; h < numHeads; h++)
             {
-                float ex = MathF.Exp(-x);
-                return 1f / (1f + ex);
+                int offset = h * headDim;
+                var scores = new float[queryLen, keyLen];
+                var weights = new float[queryLen, keyLen];
+
+                for (int q = 0; q < queryLen; q++)
+                {
+                    float max = float.NegativeInfinity;
+
+                    for (int s = 0; s < keyLen; s++)
+                    {
+                        float dot = 0f;
+                        for (int d = 0; d < headDim; d++)
+                            dot += Q[q, offset + d] * K[s, offset + d];
+
+                        float score = dot * scale;
+                        if (decayBias != null)
+                            score += decayBias[q, s, h];
+
+                        scores[q, s] = score;
+                        if (!float.IsNegativeInfinity(score) && score > max)
+                            max = score;
+                    }
+
+                    if (float.IsNegativeInfinity(max))
+                        continue;
+
+                    float sum = 0f;
+                    for (int s = 0; s < keyLen; s++)
+                    {
+                        if (float.IsNegativeInfinity(scores[q, s]))
+                        {
+                            weights[q, s] = 0f;
+                            continue;
+                        }
+
+                        float w = MathF.Exp(scores[q, s] - max);
+                        weights[q, s] = w;
+                        sum += w;
+                    }
+
+                    if (sum > 0f)
+                    {
+                        float inv = 1f / sum;
+                        for (int s = 0; s < keyLen; s++)
+                            weights[q, s] *= inv;
+                    }
+
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        float val = 0f;
+                        for (int s = 0; s < keyLen; s++)
+                            val += weights[q, s] * V[s, offset + d];
+                        output[q, offset + d] = val;
+                    }
+                }
+
+                attentionWeights[h] = weights;
+                scoresPreSoftmax[h] = scores;
             }
-            else
-            {
-                float ex = MathF.Exp(x);
-                return ex / (1f + ex);
-            }
+
+            return output;
         }
-        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null)
+        public float[,] ContentAwareCrossAttentionWithCache(
+    float[,] Q,
+    float[,] K,
+    float[,] V,
+    float[,] timeDiffs,
+    float[] keyTimesFromRef,
+    float[,] queryEmbeddings,
+    float[,] keyEmbeddings,
+    TacamtBlock block,
+    BlockCache bc,
+    int PriceEmbeddingDim,
+    int PriceNumHeads,
+    bool isTraining = false,
+    Random dropoutRng = null)
         {
-            int psl = Q.GetLength(0);
-            int tsl = K.GetLength(0);
+            int queryLen = Q.GetLength(0);
+            int keyLen = K.GetLength(0);
             int ed = PriceEmbeddingDim;
             int nh = PriceNumHeads;
             int hd = ed / nh;
-
             float scale = 1.0f / MathF.Sqrt(hd);
 
-            // =============================
-            // 1. Compute decay (optional)
-            // =============================
             float[,,] decayBias = null;
 
             if (timeDiffs != null)
@@ -1469,78 +1531,73 @@ namespace CallaghanDev.ML.AccelerationManagers
                 bc.DecayCache = null;
             }
 
-            // =============================
-            // 2. Standard multi-head attention (IDENTICAL math)
-            // =============================
-
-            var output = new float[psl, ed];
+            var output = new float[queryLen, ed];
             var attentionWeights = new float[nh][,];
             var scoresPreSoftmax = new float[nh][,];
 
             for (int h = 0; h < nh; h++)
             {
                 int offset = h * hd;
+                var scores = new float[queryLen, keyLen];
+                var weights = new float[queryLen, keyLen];
 
-                var scores = new float[psl, tsl];
-                var weights = new float[psl, tsl];
-
-                for (int p = 0; p < psl; p++)
+                for (int q = 0; q < queryLen; q++)
                 {
                     float max = float.NegativeInfinity;
 
-                    // --- compute scores ---
-                    for (int s = 0; s < tsl; s++)
+                    for (int s = 0; s < keyLen; s++)
                     {
+                        bool valid = timeDiffs == null || timeDiffs[q, s] >= 0f;
+
+                        if (!valid)
+                        {
+                            scores[q, s] = float.NegativeInfinity;
+                            continue;
+                        }
+
                         float dot = 0f;
-
                         for (int d = 0; d < hd; d++)
-                        {
-                            dot += Q[p, offset + d] * K[s, offset + d];
-                        }
+                            dot += Q[q, offset + d] * K[s, offset + d];
 
-                        float sc = dot * scale;
-
-                        //  IMPORTANT: decay added BEFORE softmax
+                        float score = dot * scale;
                         if (decayBias != null)
-                        {
-                            sc += decayBias[p, s, h];
-                        }
+                            score += decayBias[q, s, h];
 
-                        scores[p, s] = sc;
-
-                        if (sc > max) max = sc;
+                        scores[q, s] = score;
+                        if (!float.IsNegativeInfinity(score) && score > max)
+                            max = score;
                     }
 
-                    // --- softmax (stable) ---
-                    float sum = 0f;
+                    if (float.IsNegativeInfinity(max))
+                        continue;
 
-                    for (int s = 0; s < tsl; s++)
+                    float sum = 0f;
+                    for (int s = 0; s < keyLen; s++)
                     {
-                        float w = MathF.Exp(scores[p, s] - max);
-                        weights[p, s] = w;
+                        if (float.IsNegativeInfinity(scores[q, s]))
+                        {
+                            weights[q, s] = 0f;
+                            continue;
+                        }
+
+                        float w = MathF.Exp(scores[q, s] - max);
+                        weights[q, s] = w;
                         sum += w;
                     }
 
                     if (sum > 0f)
                     {
                         float inv = 1f / sum;
-                        for (int s = 0; s < tsl; s++)
-                        {
-                            weights[p, s] *= inv;
-                        }
+                        for (int s = 0; s < keyLen; s++)
+                            weights[q, s] *= inv;
                     }
 
-                    // --- weighted sum ---
                     for (int d = 0; d < hd; d++)
                     {
                         float val = 0f;
-
-                        for (int s = 0; s < tsl; s++)
-                        {
-                            val += weights[p, s] * V[s, offset + d];
-                        }
-
-                        output[p, offset + d] = val;
+                        for (int s = 0; s < keyLen; s++)
+                            val += weights[q, s] * V[s, offset + d];
+                        output[q, offset + d] = val;
                     }
                 }
 
@@ -1548,19 +1605,10 @@ namespace CallaghanDev.ML.AccelerationManagers
                 scoresPreSoftmax[h] = scores;
             }
 
-            // =============================
-            // 3. Store cache (CRITICAL for backprop)
-            // =============================
             bc.CrossAttentionWeights = attentionWeights;
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
-
             return output;
         }
-
-        public void VectorAccumulate(float[] target, float[] source) => AccumulateVectorGradients(target, source);
-
-        public void MatrixAddInPlace(float[,] target, float[,] addend) => MatrixAccumulate(target, addend);
-
         public void Matrix3DScaleInPlace(float[,,] matrix, float scale)
         {
             int d0 = matrix.GetLength(0);
@@ -1599,7 +1647,44 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             return sum;
         }
+        #endregion
 
+        public void SigmoidInPlace(float[,] matrix)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    float x = matrix[i, j];
+                    if (x >= 0)
+                    {
+                        float ex = MathF.Exp(-x);
+                        matrix[i, j] = 1.0f / (1.0f + ex);
+                    }
+                    else
+                    {
+                        float ex = MathF.Exp(x);
+                        matrix[i, j] = ex / (1.0f + ex);
+                    }
+                }
+            }
+        }
+
+        private float StableSigmoid(float x)
+        {
+            if (x >= 0)
+            {
+                float ex = MathF.Exp(-x);
+                return 1f / (1f + ex);
+            }
+            else
+            {
+                float ex = MathF.Exp(x);
+                return ex / (1f + ex);
+            }
+        }
 
         public void Dispose() { }
     }

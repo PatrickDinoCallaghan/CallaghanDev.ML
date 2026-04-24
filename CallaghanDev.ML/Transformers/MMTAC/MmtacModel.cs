@@ -86,10 +86,24 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // 
         public MmtacModel(MmtacConfig config, Random random = null)
         {
+            if (config == null)
+                throw new ArgumentNullException(nameof(config));
+
             config.Validate();
+
             _config = config;
             _random = random ?? new Random();
             _accel = CreateAccel(config.Runtime);
+
+            // Copy runtime pruning settings from config. Do not keep the default
+            // field initializer, otherwise config.Pruning is silently ignored.
+            PruningConfig = new MemoryPruningConfig
+            {
+                AttentionScoreAlpha = config.Pruning.AttentionScoreAlpha,
+                MinQueryCountForPruning = config.Pruning.MinQueryCountForPruning,
+                NewEntryReserveFraction = config.Pruning.NewEntryReserveFraction,
+                UseAttentionBasedPruning = config.Pruning.UseAttentionBasedPruning
+            };
 
             InitTextEncoder();
             InitPriceDecoder();
@@ -103,8 +117,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         public void SetTokenizer(BPETokenizer tokenizer)
         {
+            if (tokenizer == null)
+                throw new ArgumentNullException(nameof(tokenizer));
+
             if (tokenizer.VocabSize > _config.Text.VocabSize)
-                throw new ArgumentException($"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize ({_config.Text.VocabSize}).");
+            {
+                throw new ArgumentException(
+                    $"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize ({_config.Text.VocabSize}).",
+                    nameof(tokenizer));
+            }
+
             Tokenizer = tokenizer;
         }
 
@@ -145,14 +167,26 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         /// </summary>
         public (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence) Forward(MultimodalInput input)
         {
-            float[,] sh = null; float[] st = null;
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+            if (input.PriceSequence.GetLength(0) <= 0)
+                throw new ArgumentException("PriceSequence must contain at least one row.", nameof(input));
+
+            float[,] storyHidden = null;
+            float[] storyTimes = null;
+
             if (input.NewsStories != null && input.NewsStories.Length > 0)
-                (sh, st) = EncodeStories(input.NewsStories);
+                (storyHidden, storyTimes) = EncodeStories(input.NewsStories);
 
-            float[,] contextHidden; float[] contextTimes;
-            BuildContext(sh, st, input.GlobalFeatures, null, null, out contextHidden, out contextTimes);
+            float[,] contextHidden;
+            float[] contextTimes;
+            int numGlobalContext = (_config.Global.GlobalFeatureDim > 0 && input.GlobalFeatures != null) ? 1 : 0;
 
-            var priceHidden = ForwardPriceDecoder(input.PriceSequence, contextHidden, contextTimes);
+            BuildContext(storyHidden, storyTimes, input.GlobalFeatures, null, null, out contextHidden, out contextTimes);
+
+            var priceHidden = ForwardPriceDecoder(input.PriceSequence, contextHidden, contextTimes, numGlobalContext);
             return ProjectToOutputs(priceHidden);
         }
 
@@ -180,40 +214,48 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         internal (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence) ForwardWithCache(MultimodalInput input, MmtacForwardCache cache, bool isTraining = false, Random dropoutRng = null)
         {
-            int sl = input.PriceSequence.GetLength(0);
-            return ForwardWithCache(input, rowStart: 0, rowCount: sl, cache, isTraining, dropoutRng);
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+
+            int seqLen = input.PriceSequence.GetLength(0);
+            if (seqLen <= 0)
+                throw new ArgumentException("PriceSequence must contain at least one row.", nameof(input));
+
+            return ForwardWithCache(input, 0, seqLen, cache, isTraining, dropoutRng);
         }
 
         internal (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence) ForwardWithCache(MultimodalInput input, int rowStart, int rowCount, MmtacForwardCache cache, bool isTraining = false, Random dropoutRng = null)
         {
             if (input == null)
-            {
                 throw new ArgumentNullException(nameof(input));
-            }
             if (input.PriceSequence == null)
-            {
-                throw new ArgumentNullException("input.PriceSequence");
-            }
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+            if (rowStart < 0 || rowCount <= 0)
+                throw new ArgumentOutOfRangeException($"{nameof(rowStart)} and {nameof(rowCount)} must describe a non-empty slice.");
             if (rowStart + rowCount > input.PriceSequence.GetLength(0))
-            {
                 throw new ArgumentException("rowStart + rowCount exceeds PriceSequence row count.");
-            }
 
+            cache.Reset();
 
-            float[,] sh = null; float[] st = null;
+            float[,] storyHidden = null;
+            float[] storyTimes = null;
 
             if (input.NewsStories != null && input.NewsStories.Length > 0)
             {
-                (sh, st) = EncodeStoriesWithCache(input.NewsStories, cache);
+                (storyHidden, storyTimes) = EncodeStoriesWithCache(input.NewsStories, cache);
             }
             else
             {
                 cache.TextFinalHidden = null;
                 cache.TextTokenIds = null;
+                cache.StoryCaches = null;
+                cache.StoryTokenCounts = null;
             }
-            cache.StoryArrivalTimes = st;
 
-            //  Embed global features 
             float[] globalToken = null;
             if (_config.Global.GlobalFeatureDim > 0 && input.GlobalFeatures != null)
             {
@@ -221,167 +263,221 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 cache.GlobalTokenEmbedded = globalToken;
                 cache.GlobalRawInput = input.GlobalFeatures;
             }
-            //  Build combined context matrix 
-            float[,] contextHidden; float[] contextTimes;
-            BuildContext(sh, st, null, globalToken, cache, out contextHidden, out contextTimes);
 
-            // In this path, any news comes directly from the current input, so it is all live news.
-            // BackpropPriceDecoder uses these fields to slice dLiveNewsHidden correctly.
+            float[,] contextHidden;
+            float[] contextTimes;
+            BuildContext(storyHidden, storyTimes, null, globalToken, cache, out contextHidden, out contextTimes);
+
+            int numGlobal = globalToken != null ? 1 : 0;
+            int numLiveNews = storyHidden != null ? storyHidden.GetLength(0) : 0;
+
+            cache.NumGlobalContext = numGlobal;
             cache.NumStoredNewsContext = 0;
-            cache.NumLiveNewsContext = sh != null ? sh.GetLength(0) : 0;
-            cache.NumNewsContext = cache.NumLiveNewsContext;
+            cache.NumLiveNewsContext = numLiveNews;
+            cache.NumNewsContext = numLiveNews;
             cache.NumPriceContext = 0;
 
+            // In price-decoder backprop this field represents the combined context matrix.
             cache.TextFinalHidden = contextHidden;
             cache.StoryArrivalTimes = contextTimes;
 
-            //  Price decoder 
-            var ph = ForwardPriceDecoderWithCache(
-                input.PriceSequence, rowStart, rowCount,
-                contextHidden, contextTimes, cache, isTraining, dropoutRng);
+            var priceHidden = ForwardPriceDecoderWithCache(
+                input.PriceSequence,
+                rowStart,
+                rowCount,
+                contextHidden,
+                contextTimes,
+                cache,
+                isTraining,
+                dropoutRng);
 
-            cache.PriceFinalHidden = ph;
-            return ProjectToOutputs(ph);
+            cache.PriceFinalHidden = priceHidden;
+            return ProjectToOutputs(priceHidden, cache);
         }
-
         // 
         // Persistent memory inference
         // 
-
         public ModelPrediction PredictWithMemory(MultimodalInput input, double currentAbsoluteTimestamp, double timeUnitsPerPosition = 1.0, int maxNewsMemorySize = 100, int maxPriceMemorySize = 200)
         {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+
+            if (input.PriceSequence.GetLength(0) <= 0)
+                throw new ArgumentException("PriceSequence must contain at least one row.", nameof(input));
+
+            if (input.PriceSequence.GetLength(1) != _config.Price.InputFeatureDim)
+            {
+                throw new ArgumentException(
+                    $"PriceSequence feature dimension ({input.PriceSequence.GetLength(1)}) must equal Price.InputFeatureDim ({_config.Price.InputFeatureDim}).",
+                    nameof(input));
+            }
+
+            if (timeUnitsPerPosition == 0.0)
+                throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition), "Must be non-zero.");
+
             int embDim = _config.Price.EmbeddingDim;
+
             var ctxH = new List<float[]>();
             var ctxT = new List<float>();
             var ctxTypes = new List<int>();
 
-            // Global token goes first (index 0), matching BuildContext ordering and the
-            // globalOffset expected by UpdateMemoryAttentionScores.
             float[] globalToken = null;
+
             if (_config.Global.GlobalFeatureDim > 0 && input.GlobalFeatures != null)
             {
                 globalToken = EmbedGlobalFeatures(input.GlobalFeatures);
+
                 ctxH.Add(globalToken);
                 ctxT.Add(0f);
                 ctxTypes.Add(2);
             }
 
-            // News memory - pass the raw hidden state without any pre-scaling.
-            // Temporal decay is handled entirely by the ContentAwareDecayNetwork inside
-            // TacamtBlock.CrossAttentionForward, which receives the time-diff matrix
-            // built from ctxT by ForwardPriceDecoder. Pre-multiplying the vector here
-            // was redundant and prevented the trained decay network from expressing its
-            // learned per-content decay behaviour.
+            int globalOffset = globalToken != null ? 1 : 0;
+
+            int storedNewsMemoryCount = NewsMemory?.Count ?? 0;
+            int storedPriceMemoryCount = PriceMemory?.Count ?? 0;
+
             foreach (var e in NewsMemory)
             {
+                if (e?.HiddenState == null)
+                    continue;
+
                 float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
+
                 var v = new float[embDim];
-                for (int d = 0; d < embDim; d++)
-                {
+                int copyDim = Math.Min(embDim, e.HiddenState.Length);
+
+                for (int d = 0; d < copyDim; d++)
                     v[d] = e.HiddenState[d];
-                }
+
                 ctxH.Add(v);
                 ctxT.Add(relTime);
                 ctxTypes.Add(0);
             }
 
-            // Live news stories arriving with this call.
-            float[,] newSH = null;
+            float[,] newStoryHidden = null;
+            float[] newStoryTimes = null;
+            int liveNewsContextCount = 0;
+
             if (input.NewsStories != null && input.NewsStories.Length > 0)
             {
-                float[] nst;
-                (newSH, nst) = EncodeStories(input.NewsStories);
-                for (int i = 0; i < nst.Length; i++)
+                (newStoryHidden, newStoryTimes) = EncodeStories(input.NewsStories);
+
+                int storyRows = newStoryHidden.GetLength(0);
+
+                for (int i = 0; i < storyRows; i++)
                 {
+                    var story = input.NewsStories[i];
+
+                    // Null or empty stories are ignored for memory inference. This keeps
+                    // null placeholders from becoming real context tokens or memory entries.
+                    if (story == null || story.TokenIds == null || story.TokenIds.Length == 0)
+                        continue;
+
                     var v = new float[embDim];
+
                     for (int d = 0; d < embDim; d++)
-                    {
-                        v[d] = newSH[i, d];
-                    }
+                        v[d] = newStoryHidden[i, d];
+
                     ctxH.Add(v);
-                    ctxT.Add(nst[i]);
+                    ctxT.Add(newStoryTimes != null ? newStoryTimes[i] : story.ArrivalTime);
                     ctxTypes.Add(0);
+                    liveNewsContextCount++;
                 }
             }
 
-            // Price memory - raw hidden states, same reasoning as news memory above.
             foreach (var e in PriceMemory)
             {
+                if (e?.HiddenState == null)
+                    continue;
+
                 float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
+
                 var v = new float[embDim];
-                for (int d = 0; d < embDim; d++)
-                {
+                int copyDim = Math.Min(embDim, e.HiddenState.Length);
+
+                for (int d = 0; d < copyDim; d++)
                     v[d] = e.HiddenState[d];
-                }
+
                 ctxH.Add(v);
                 ctxT.Add(relTime);
                 ctxTypes.Add(1);
             }
 
-            float[,] cH = null;
-            float[] cT = null;
+            float[,] contextHidden = null;
+            float[] contextTimes = null;
             int totalCtx = ctxH.Count;
 
             if (totalCtx > 0)
             {
-                cH = new float[totalCtx, embDim];
-                cT = new float[totalCtx];
+                contextHidden = new float[totalCtx, embDim];
+                contextTimes = new float[totalCtx];
 
                 for (int i = 0; i < totalCtx; i++)
                 {
-                    int cd = Math.Min(embDim, ctxH[i].Length);
-                    for (int d = 0; d < cd; d++)
-                    {
-                        cH[i, d] = ctxH[i][d];
-                    }
-                    cT[i] = ctxT[i];
-                }
-                // Bake context-type offsets into the rows (news=0, price=1, global=2).
-                ApplyContextTypeEmbeddings(cH, ctxTypes.ToArray());
+                    int copyDim = Math.Min(embDim, ctxH[i].Length);
 
-                // Mirror the BypassDecay logic in ForwardPriceDecoderWithCache: zero the
-                // time-diff columns for the global token so the decay network ignores it.
-                // ForwardPriceDecoder recomputes td internally, so we set it on the block
-                // indirectly - the bypass is already handled inside ForwardPriceDecoder.
+                    for (int d = 0; d < copyDim; d++)
+                        contextHidden[i, d] = ctxH[i][d];
+
+                    contextTimes[i] = ctxT[i];
+                }
+
+                ApplyContextTypeEmbeddings(contextHidden, ctxTypes.ToArray());
             }
 
-            var priceHidden = ForwardPriceDecoder(input.PriceSequence, cH, cT);
+            var priceHidden = ForwardPriceDecoder(input.PriceSequence, contextHidden, contextTimes, globalOffset);
             var (reg, range, quality, dir, midDir, conf) = ProjectToOutputs(priceHidden);
+
             int last = reg.GetLength(0) - 1;
 
-            int storedNewsMemoryCount = NewsMemory?.Count ?? 0;
-            int liveNewsCount = input.NewsStories?.Length ?? 0;
-            int storedPriceMemoryCount = PriceMemory?.Count ?? 0;
-            int globalOffset = globalToken != null ? 1 : 0;
+            UpdateMemoryAttentionScores(
+                priceHidden,
+                contextHidden,
+                totalCtx,
+                globalOffset,
+                storedNewsMemoryCount,
+                liveNewsContextCount,
+                storedPriceMemoryCount);
 
-            UpdateMemoryAttentionScores(priceHidden, cH, totalCtx, globalOffset, storedNewsMemoryCount, liveNewsCount, storedPriceMemoryCount);
-
-            // Commit live news stories to memory using their raw (unscaled) hidden states.
-            if (newSH != null)
+            if (newStoryHidden != null && input.NewsStories != null)
             {
-                for (int i = 0; i < input.NewsStories.Length; i++)
+                int storyRows = newStoryHidden.GetLength(0);
+
+                for (int i = 0; i < storyRows; i++)
                 {
+                    var story = input.NewsStories[i];
+
+                    if (story == null || story.TokenIds == null || story.TokenIds.Length == 0)
+                        continue;
+
                     var hv = new float[embDim];
+
                     for (int d = 0; d < embDim; d++)
-                    {
-                        hv[d] = newSH[i, d];
-                    }
+                        hv[d] = newStoryHidden[i, d];
+
+                    float arrivalTime = newStoryTimes != null ? newStoryTimes[i] : story.ArrivalTime;
+
                     NewsMemory.Add(new NewsMemoryEntry
                     {
                         HiddenState = hv,
-                        AbsoluteTimestamp = currentAbsoluteTimestamp + input.NewsStories[i].ArrivalTime * timeUnitsPerPosition
+                        AbsoluteTimestamp = currentAbsoluteTimestamp + arrivalTime * timeUnitsPerPosition
                     });
                 }
             }
 
-            int psl = input.PriceSequence.GetLength(0);
-            for (int t = 0; t < psl; t++)
+            int priceSeqLen = input.PriceSequence.GetLength(0);
+
+            for (int t = 0; t < priceSeqLen; t++)
             {
                 var pv = new float[embDim];
+
                 for (int d = 0; d < embDim; d++)
-                {
                     pv[d] = priceHidden[t, d];
-                }
+
                 PriceMemory.Add(new PriceMemoryEntry
                 {
                     HiddenState = pv,
@@ -389,7 +485,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 });
             }
 
-            LastPriceTimestamp = currentAbsoluteTimestamp + Math.Max(0, psl - 1) * timeUnitsPerPosition;
+            LastPriceTimestamp =
+                currentAbsoluteTimestamp + Math.Max(0, priceSeqLen - 1) * timeUnitsPerPosition;
 
             PruneNewsMemory(maxNewsMemorySize);
             PricePruneMemory(maxPriceMemorySize);
@@ -414,9 +511,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         {
             PriceMemory.Clear();
         }
-        public void ClearAllMemory() 
+        public void ClearAllMemory()
         {
-            ClearNewsMemory(); 
+            ClearNewsMemory();
             ClearPriceMemory();
         }
 
@@ -426,23 +523,36 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         internal float[] EmbedGlobalFeatures(float[] globalFeatures)
         {
-            if (globalFeatures == null) throw new ArgumentNullException(nameof(globalFeatures));
+            if (globalFeatures == null)
+                throw new ArgumentNullException(nameof(globalFeatures));
+
             int gd = _config.Global.GlobalFeatureDim;
             int ed = _config.Price.EmbeddingDim;
-            if (globalFeatures.Length < gd)
-                throw new ArgumentException($"globalFeatures.Length ({globalFeatures.Length}) < GlobalFeatureDim ({gd}).");
+
+            if (gd <= 0)
+                throw new InvalidOperationException("GlobalFeatureDim is zero, but EmbedGlobalFeatures was called.");
+
+            if (globalFeatures.Length != gd)
+            {
+                throw new ArgumentException(
+                    $"globalFeatures.Length ({globalFeatures.Length}) must equal GlobalFeatureDim ({gd}).",
+                    nameof(globalFeatures));
+            }
 
             var output = new float[ed];
+
             for (int d = 0; d < ed; d++)
             {
                 float sum = GlobalFeatureBias[d];
+
                 for (int g = 0; g < gd; g++)
                     sum += GlobalFeatureProjection[d, g] * globalFeatures[g];
+
                 output[d] = sum;
             }
+
             return output;
         }
-
         // 
         // Context assembly
         // 
@@ -492,53 +602,93 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Price decoder forward (no cache)
         // 
 
-        private float[,] ForwardPriceDecoder(float[,] priceSequence, float[,] contextHidden, float[] contextTimes)
+        private float[,] ForwardPriceDecoder(float[,] priceSequence, float[,] contextHidden, float[] contextTimes, int globalBypassCount = 0)
         {
-            int sl = priceSequence.GetLength(0);
-            var emb = EmbedPriceSequence(priceSequence, 0, sl);
-            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
 
-            float[,] td = null; float[] ktr = null;
-            if (contextHidden != null && contextTimes != null)
+            int seqLen = priceSequence.GetLength(0);
+            if (seqLen <= 0)
+                throw new ArgumentException("priceSequence must contain at least one row.", nameof(priceSequence));
+
+            if (contextHidden != null)
             {
-                td = _accel.ComputeTimeDiffMatrix(sl, contextTimes);
-                ktr = contextTimes;
-                // Decay bypass: zero the global token column(s) so decay has no time signal for it.
-                if (_config.Global.BypassDecay && _config.Global.GlobalFeatureDim > 0)
-                    for (int qi = 0; qi < sl; qi++)
-                        td[qi, 0] = 0f;
+                if (contextHidden.GetLength(1) != _config.Price.EmbeddingDim)
+                    throw new ArgumentException("contextHidden embedding dimension does not match Price.EmbeddingDim.", nameof(contextHidden));
+
+                if (contextTimes != null && contextTimes.Length != contextHidden.GetLength(0))
+                    throw new ArgumentException("contextTimes length must match contextHidden row count.", nameof(contextTimes));
             }
 
-            var x = emb;
+            var x = EmbedPriceSequence(priceSequence, 0, seqLen);
+            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
+
+            float[,] timeDiffs = null;
+            float[] keyTimes = null;
+
+            if (_config.Decay.Enabled && contextHidden != null && contextTimes != null)
+            {
+                timeDiffs = _accel.ComputeTimeDiffMatrix(seqLen, contextTimes);
+                keyTimes = contextTimes;
+
+                if (_config.Global.BypassDecay && globalBypassCount > 0)
+                {
+                    int bypass = Math.Min(globalBypassCount, contextTimes.Length);
+                    for (int qi = 0; qi < seqLen; qi++)
+                        for (int gi = 0; gi < bypass; gi++)
+                            timeDiffs[qi, gi] = 0f;
+                }
+            }
+
             foreach (var block in PriceBlocks)
             {
                 block.SetContext(contextHidden);
-                block.SetTimeData(td, ktr);
+                block.SetTimeData(timeDiffs, keyTimes);
                 block.SetTraining(false);
                 x = block.Forward(x, mask);
             }
+
             return x;
         }
-
         // 
         // Price decoder forward (with cache)
         // 
 
         public float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] contextHidden, float[] contextTimes, MmtacForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
-            if (priceSequence == null) throw new ArgumentNullException(nameof(priceSequence));
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+            if (rowStart < 0 || rowCount <= 0 || rowStart + rowCount > priceSequence.GetLength(0))
+                throw new ArgumentOutOfRangeException($"Invalid price row slice: start={rowStart}, count={rowCount}.");
 
-            int sl = rowCount;
+            int seqLen = rowCount;
+            int featureDim = priceSequence.GetLength(1);
             int ed = _config.Price.EmbeddingDim;
             int nh = _config.Price.NumHeads;
             int hd = ed / nh;
             float scale = 1.0f / MathF.Sqrt(hd);
 
-            var emb = EmbedPriceSequence(priceSequence, rowStart, sl);
-            cache.PriceEmbedded = emb;
-            cache.PriceContinuousInput = priceSequence;
+            if (contextHidden != null)
+            {
+                if (contextHidden.GetLength(1) != ed)
+                    throw new ArgumentException("contextHidden embedding dimension does not match Price.EmbeddingDim.", nameof(contextHidden));
+                if (contextTimes != null && contextTimes.Length != contextHidden.GetLength(0))
+                    throw new ArgumentException("contextTimes length must match contextHidden row count.", nameof(contextTimes));
+            }
 
-            bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
+            // Store the exact slice used for the projection. BackpropInputProjection indexes from zero.
+            var priceInputSlice = new float[seqLen, featureDim];
+            for (int i = 0; i < seqLen; i++)
+                for (int f = 0; f < featureDim; f++)
+                    priceInputSlice[i, f] = priceSequence[rowStart + i, f];
+
+            var emb = EmbedPriceSequence(priceInputSlice, 0, seqLen);
+            cache.PriceEmbedded = emb;
+            cache.PriceContinuousInput = priceInputSlice;
+
+            bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
             var x = emb;
 
             for (int layer = 0; layer < _config.Price.NumLayers; layer++)
@@ -547,88 +697,139 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 var bc = cache.PriceBlockCaches[layer];
                 bc.BlockInput = x;
 
-                //  Self attention 
-                var sQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
-                var sK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
-                var sV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
-                RotaryPositionEmbedding.ApplyInPlace(sQ, sK, nh);
-                bc.SelfQ = sQ; bc.SelfK = sK; bc.SelfV = sV;
+                var selfQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
+                var selfK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
+                var selfV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
+                RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, nh);
+                bc.SelfQ = selfQ;
+                bc.SelfK = selfK;
+                bc.SelfV = selfV;
 
-                var sao = _accel.MultiHeadAttentionForward(sQ, sK, sV, nh, scale, selfMask);
-                bc.SelfAttnOutput = sao;
+                var selfAttnOutput = _accel.MultiHeadAttentionForward(selfQ, selfK, selfV, nh, scale, selfMask);
+                bc.SelfAttnOutput = selfAttnOutput;
 
-                var sp = ComputeProjection(sao, block.SelfAttention.WO, block.SelfAttention.BiasO);
-                var sr = _accel.MatrixAdd(x, sp);
-                bc.SelfResidualInput = sr;
+                var selfProjected = ComputeProjection(selfAttnOutput, block.SelfAttention.WO, block.SelfAttention.BiasO);
+                var selfResidual = _accel.MatrixAdd(x, selfProjected);
+                bc.SelfResidualInput = selfResidual;
 
-                var (ns, sm, sv, sn) = _accel.LayerNormForward(sr, block.LNSelfGamma, block.LNSelfBeta);
-                bc.LNSelfCache.Input = sr; bc.LNSelfCache.Mean = sm; bc.LNSelfCache.Variance = sv; bc.LNSelfCache.Normalized = sn;
-                bc.NormedSelf = ns;
+                var (normedSelf, selfMean, selfVar, selfNorm) = _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
+                bc.LNSelfCache.Input = selfResidual;
+                bc.LNSelfCache.Mean = selfMean;
+                bc.LNSelfCache.Variance = selfVar;
+                bc.LNSelfCache.Normalized = selfNorm;
+                bc.NormedSelf = normedSelf;
 
-                //  Cross attention 
-                float[,] nc;
-                if (contextHidden != null)
+                float[,] normedCross;
+                bool hasContext = contextHidden != null && contextHidden.GetLength(0) > 0;
+
+                if (hasContext)
                 {
-                    float[,] td = null; float[] ktr = null;
-                    if (contextTimes != null)
+                    float[,] timeDiffs = null;
+                    float[] keyTimes = null;
+                    bc.TimeDiffs = null;
+                    bc.KeyTimesFromRef = null;
+                    bc.DecayCache = null;
+
+                    if (_config.Decay.Enabled && contextTimes != null)
                     {
-                        td = _accel.ComputeTimeDiffMatrix(sl, contextTimes);
-                        ktr = contextTimes;
+                        timeDiffs = _accel.ComputeTimeDiffMatrix(seqLen, contextTimes);
+                        keyTimes = contextTimes;
+
                         if (_config.Global.BypassDecay && cache.NumGlobalContext > 0)
-                            for (int qi = 0; qi < sl; qi++)
-                                for (int gi = 0; gi < cache.NumGlobalContext; gi++)
-                                    td[qi, gi] = 0f;
-                        bc.TimeDiffs = td;
-                        bc.KeyTimesFromRef = ktr;
+                        {
+                            int bypass = Math.Min(cache.NumGlobalContext, contextTimes.Length);
+
+                            for (int qi = 0; qi < seqLen; qi++)
+                            {
+                                for (int gi = 0; gi < bypass; gi++)
+                                    timeDiffs[qi, gi] = 0f;
+                            }
+                        }
+
+                        bc.TimeDiffs = timeDiffs;
+                        bc.KeyTimesFromRef = keyTimes;
                     }
 
-                    var cQ = ComputeProjection(ns, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
-                    var cK = ComputeProjection(contextHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
-                    var cV = ComputeProjection(contextHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
-                    RotaryPositionEmbedding.ApplyInPlace(cQ, cK, nh);
-                    bc.CrossQ = cQ; bc.CrossK = cK; bc.CrossV = cV;
+                    var crossQ = ComputeProjection(normedSelf, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
+                    var crossK = ComputeProjection(contextHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
+                    var crossV = ComputeProjection(contextHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+                    RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, nh);
+                    bc.CrossQ = crossQ;
+                    bc.CrossK = crossK;
+                    bc.CrossV = crossV;
 
-                    var cao = ContentAwareCrossAttentionWithCache(
-                        cQ, cK, cV, td, ktr, ns, contextHidden, block, bc,
-                        isTraining, dropoutRng, cache.NumGlobalContext);
+                    var crossAttnOutput = ContentAwareCrossAttentionWithCache(
+                        crossQ,
+                        crossK,
+                        crossV,
+                        timeDiffs,
+                        keyTimes,
+                        normedSelf,
+                        contextHidden,
+                        block,
+                        bc,
+                        isTraining,
+                        dropoutRng,
+                        cache.NumGlobalContext);
 
-                    bc.CrossAttnOutput = cao;
-                    var cp = ComputeProjection(cao, block.CrossAttention.WO, block.CrossAttention.BiasO);
-                    var cr = _accel.MatrixAdd(ns, cp);
-                    bc.CrossResidualInput = cr;
+                    bc.CrossAttnOutput = crossAttnOutput;
 
-                    var (ncr, cm, cvr, cn) = _accel.LayerNormForward(cr, block.LnCrossGamma, block.LnCrossBeta);
-                    bc.LNCrossCache.Input = cr; bc.LNCrossCache.Mean = cm; bc.LNCrossCache.Variance = cvr; bc.LNCrossCache.Normalized = cn;
+                    var crossProjected = ComputeProjection(crossAttnOutput, block.CrossAttention.WO, block.CrossAttention.BiasO);
+                    var crossResidual = _accel.MatrixAdd(normedSelf, crossProjected);
+                    bc.CrossResidualInput = crossResidual;
+
+                    var (ncr, crossMean, crossVar, crossNorm) = _accel.LayerNormForward(crossResidual, block.LnCrossGamma, block.LnCrossBeta);
+                    bc.LNCrossCache.Input = crossResidual;
+                    bc.LNCrossCache.Mean = crossMean;
+                    bc.LNCrossCache.Variance = crossVar;
+                    bc.LNCrossCache.Normalized = crossNorm;
                     bc.NormedCross = ncr;
-                    nc = ncr;
+                    normedCross = ncr;
                 }
                 else
                 {
-                    bc.CrossQ = bc.CrossK = bc.CrossV = bc.CrossAttnOutput = null;
-                    bc.TimeDiffs = null; bc.DecayCache = null;
-                    var (ncr, cm, cvr, cn) = _accel.LayerNormForward(ns, block.LnCrossGamma, block.LnCrossBeta);
-                    bc.LNCrossCache.Input = ns; bc.LNCrossCache.Mean = cm; bc.LNCrossCache.Variance = cvr; bc.LNCrossCache.Normalized = cn;
+                    bc.CrossQ = null;
+                    bc.CrossK = null;
+                    bc.CrossV = null;
+                    bc.CrossAttnOutput = null;
+                    bc.CrossAttentionWeights = null;
+                    bc.CrossScoresPreSoftmax = null;
+                    bc.TimeDiffs = null;
+                    bc.KeyTimesFromRef = null;
+                    bc.DecayCache = null;
+                    bc.CrossResidualInput = normedSelf;
+
+                    var (ncr, crossMean, crossVar, crossNorm) = _accel.LayerNormForward(normedSelf, block.LnCrossGamma, block.LnCrossBeta);
+                    bc.LNCrossCache.Input = normedSelf;
+                    bc.LNCrossCache.Mean = crossMean;
+                    bc.LNCrossCache.Variance = crossVar;
+                    bc.LNCrossCache.Normalized = crossNorm;
                     bc.NormedCross = ncr;
-                    nc = ncr;
+                    normedCross = ncr;
                 }
 
-                //  FFN 
-                var ffnIn = new float[sl][];
-                for (int i = 0; i < sl; i++)
+                var ffnInputRows = new float[seqLen][];
+                for (int i = 0; i < seqLen; i++)
                 {
-                    var ir = new float[ed];
-                    for (int j = 0; j < ed; j++) ir[j] = nc[i, j];
-                    ffnIn[i] = ir;
+                    var row = new float[ed];
+                    for (int j = 0; j < ed; j++)
+                        row[j] = normedCross[i, j];
+                    ffnInputRows[i] = row;
                 }
-                var ffOut = _accel.FFNForwardBatch(nc, sl, ed, block.FeedForwardNetwork.ForwardPassOnly);
-                bc.FFNInputRows = ffnIn; bc.FFNOutput = ffOut;
 
-                var fr = _accel.MatrixAdd(nc, ffOut);
-                bc.FFNResidualInput = fr;
+                var ffnOutput = _accel.FFNForwardBatch(normedCross, seqLen, ed, block.FeedForwardNetwork.ForwardPassOnly);
+                bc.FFNInputRows = ffnInputRows;
+                bc.FFNOutput = ffnOutput;
 
-                var (nf, fm, fv, fn) = _accel.LayerNormForward(fr, block.LNFFNGamma, block.LNFFNBeta);
-                bc.LNFFNCache.Input = fr; bc.LNFFNCache.Mean = fm; bc.LNFFNCache.Variance = fv; bc.LNFFNCache.Normalized = fn;
-                x = nf;
+                var ffnResidual = _accel.MatrixAdd(normedCross, ffnOutput);
+                bc.FFNResidualInput = ffnResidual;
+
+                var (normedFfn, ffnMean, ffnVar, ffnNorm) = _accel.LayerNormForward(ffnResidual, block.LNFFNGamma, block.LNFFNBeta);
+                bc.LNFFNCache.Input = ffnResidual;
+                bc.LNFFNCache.Mean = ffnMean;
+                bc.LNFFNCache.Variance = ffnVar;
+                bc.LNFFNCache.Normalized = ffnNorm;
+                x = normedFfn;
             }
 
             return x;
@@ -638,17 +839,35 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Price-context training forward
         // 
 
-        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf) ForwardWithPriceContextAndCache( MultimodalInput input, float[,] priceCtxHidden, float[] priceCtxTimes, MmtacForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf) ForwardWithPriceContextAndCache(MultimodalInput input, float[,] priceCtxHidden, float[] priceCtxTimes, MmtacForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            cache.Reset();
+
             int ed = _config.Price.EmbeddingDim;
 
-            float[,] newsHidden = null; float[] newsTimes = null; int numNews = 0;
+            float[,] newsHidden = null;
+            float[] newsTimes = null;
+            int numNews = 0;
+
             if (input.NewsStories != null && input.NewsStories.Length > 0)
             {
                 (newsHidden, newsTimes) = EncodeStoriesWithCache(input.NewsStories, cache);
                 numNews = newsHidden.GetLength(0);
             }
-            else { cache.TextFinalHidden = null; cache.TextTokenIds = null; }
+            else
+            {
+                cache.TextFinalHidden = null;
+                cache.TextTokenIds = null;
+                cache.StoryCaches = null;
+                cache.StoryTokenCounts = null;
+            }
 
             float[] globalToken = null;
             if (_config.Global.GlobalFeatureDim > 0 && input.GlobalFeatures != null)
@@ -660,9 +879,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             int numGlobal = globalToken != null ? 1 : 0;
             int numPriceCtx = priceCtxHidden != null ? priceCtxHidden.GetLength(0) : 0;
-            int totalCtx = numGlobal + numNews + numPriceCtx;
 
-            float[,] combinedHidden = null; float[] combinedTimes = null;
+            if (priceCtxHidden != null && priceCtxHidden.GetLength(1) != ed)
+                throw new ArgumentException("priceCtxHidden embedding dimension does not match Price.EmbeddingDim.", nameof(priceCtxHidden));
+            if (priceCtxTimes != null && priceCtxTimes.Length != numPriceCtx)
+                throw new ArgumentException("priceCtxTimes length must match priceCtxHidden row count.", nameof(priceCtxTimes));
+
+            int totalCtx = numGlobal + numNews + numPriceCtx;
+            float[,] combinedHidden = null;
+            float[] combinedTimes = null;
+
             if (totalCtx > 0)
             {
                 combinedHidden = new float[totalCtx, ed];
@@ -672,48 +898,50 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 if (globalToken != null)
                 {
                     for (int d = 0; d < ed; d++)
-                    {
                         combinedHidden[row, d] = globalToken[d] + ContextTypeEmbedding[2, d];
-                    }
-                    combinedTimes[row] = 0f; row++;
+                    combinedTimes[row] = 0f;
+                    row++;
                 }
+
                 for (int i = 0; i < numNews; i++)
                 {
                     for (int d = 0; d < ed; d++)
-                    {
                         combinedHidden[row, d] = newsHidden[i, d] + ContextTypeEmbedding[0, d];
-                    }
-                    combinedTimes[row] = newsTimes != null ? newsTimes[i] : 0f; row++;
+                    combinedTimes[row] = newsTimes != null ? newsTimes[i] : 0f;
+                    row++;
                 }
+
                 for (int i = 0; i < numPriceCtx; i++)
                 {
                     for (int d = 0; d < ed; d++)
-                    {
                         combinedHidden[row, d] = priceCtxHidden[i, d] + ContextTypeEmbedding[1, d];
-                    }
-                    combinedTimes[row] = priceCtxTimes != null ? priceCtxTimes[i] : 0f; row++;
+                    combinedTimes[row] = priceCtxTimes != null ? priceCtxTimes[i] : 0f;
+                    row++;
                 }
             }
 
             cache.NumGlobalContext = numGlobal;
-
-            // In this path, the sample's news is live news.
-            // Price-context rows are separate and must not be counted as live news.
             cache.NumStoredNewsContext = 0;
             cache.NumLiveNewsContext = numNews;
             cache.NumNewsContext = numNews;
             cache.NumPriceContext = numPriceCtx;
-
             cache.PriceContextHidden = priceCtxHidden;
             cache.TextFinalHidden = combinedHidden;
             cache.StoryArrivalTimes = combinedTimes;
 
-            var priceHidden = ForwardPriceDecoderWithCache(input.PriceSequence, 0, input.PriceSequence.GetLength(0), combinedHidden, combinedTimes, cache, isTraining, dropoutRng);
+            var priceHidden = ForwardPriceDecoderWithCache(
+                input.PriceSequence,
+                0,
+                input.PriceSequence.GetLength(0),
+                combinedHidden,
+                combinedTimes,
+                cache,
+                isTraining,
+                dropoutRng);
 
             cache.PriceFinalHidden = priceHidden;
-            return ProjectToOutputs(priceHidden);
+            return ProjectToOutputs(priceHidden, cache);
         }
-
         public float[,] EncodePriceHistory(float[,] histPrices)
         {
             int sl = histPrices.GetLength(0);
@@ -821,44 +1049,84 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         public void PruneNewsMemory(int maxSize)
         {
-            if (NewsMemory.Count <= maxSize) return;
-            if (!PruningConfig.UseAttentionBasedPruning)
+            if (maxSize <= 0)
             {
-                NewsMemory = NewsMemory.OrderByDescending(e => e.AbsoluteTimestamp).Take(maxSize).ToList();
+                NewsMemory.Clear();
                 return;
             }
-           // int reserve = Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
-            int reserve = PruningConfig.NewEntryReserveFraction <= 0f ? 0 : Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
+
+            if (NewsMemory.Count <= maxSize)
+                return;
+
+            if (!PruningConfig.UseAttentionBasedPruning)
+            {
+                NewsMemory = NewsMemory
+                    .OrderByDescending(e => e.AbsoluteTimestamp)
+                    .Take(maxSize)
+                    .ToList();
+                return;
+            }
+
+            int reserve = 0;
+            if (PruningConfig.NewEntryReserveFraction > 0f)
+            {
+                reserve = Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
+                reserve = Math.Min(reserve, maxSize);
+            }
+
             var byTime = NewsMemory.OrderByDescending(e => e.AbsoluteTimestamp).ToList();
-            var kept = byTime.Take(reserve)
-                             .Concat(byTime.Skip(reserve)
-                                 .OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning
-                                     ? e.AttentionScore : float.MinValue)
-                                 .Take(maxSize - reserve))
-                             .ToList();
+            var kept = byTime
+                .Take(reserve)
+                .Concat(
+                    byTime.Skip(reserve)
+                        .OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning
+                            ? e.AttentionScore
+                            : float.MinValue)
+                        .Take(maxSize - reserve))
+                .ToList();
+
             NewsMemory = kept;
         }
-
         internal void PricePruneMemory(int maxSize)
         {
-            if (PriceMemory.Count <= maxSize)
+            if (maxSize <= 0)
             {
+                PriceMemory.Clear();
                 return;
             }
+
+            if (PriceMemory.Count <= maxSize)
+                return;
+
             if (!PruningConfig.UseAttentionBasedPruning)
             {
-                PriceMemory = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).Take(maxSize).ToList();
+                PriceMemory = PriceMemory
+                    .OrderByDescending(e => e.AbsoluteTimestamp)
+                    .Take(maxSize)
+                    .ToList();
                 return;
             }
 
-            int reserve = PruningConfig.NewEntryReserveFraction <= 0f ? 0 : Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
+            int reserve = 0;
+            if (PruningConfig.NewEntryReserveFraction > 0f)
+            {
+                reserve = Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
+                reserve = Math.Min(reserve, maxSize);
+            }
+
             var byTime = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).ToList();
-            var kept = byTime.Take(reserve)
-                             .Concat(byTime.Skip(reserve).OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning  ? e.AttentionScore : float.MinValue).Take(maxSize - reserve))
-                             .ToList();
+            var kept = byTime
+                .Take(reserve)
+                .Concat(
+                    byTime.Skip(reserve)
+                        .OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning
+                            ? e.AttentionScore
+                            : float.MinValue)
+                        .Take(maxSize - reserve))
+                .ToList();
+
             PriceMemory = kept;
         }
-
         private void UpdateMemoryAttentionScores(float[,] priceHidden, float[,] ctxH, int total, int globalOffset, int storedNewsMemoryCount, int liveNewsCount, int storedPriceMemoryCount)
         {
             if (ctxH == null || total == 0)
@@ -935,17 +1203,43 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         private (float[,] hidden, float[] times) EncodeStories(NewsStory[] stories)
         {
-            int ns = stories.Length;
+            if (stories == null)
+                throw new ArgumentNullException(nameof(stories));
+
+            int storyCount = stories.Length;
             int ed = _config.Text.EmbeddingDim;
-            var hidden = new float[ns, ed];
-            var times = new float[ns];
-            for (int i = 0; i < ns; i++)
+            var hidden = new float[storyCount, ed];
+            var times = new float[storyCount];
+
+            for (int i = 0; i < storyCount; i++)
             {
-                var h = ForwardTextEncoder(stories[i].TokenIds);
-                int tok = h.GetLength(0);
-                for (int d = 0; d < ed; d++) { float s = 0f; for (int t = 0; t < tok; t++) s += h[t, d]; hidden[i, d] = s / tok; }
-                times[i] = stories[i].ArrivalTime;
+                var story = stories[i];
+                if (object.ReferenceEquals(story, null))
+                {
+                    times[i] = 0f;
+                    continue;
+                }
+
+                times[i] = story.ArrivalTime;
+
+                if (story.TokenIds == null || story.TokenIds.Length == 0)
+                    continue;
+
+                var tokenHidden = ForwardTextEncoder(story.TokenIds);
+                int tokenCount = tokenHidden.GetLength(0);
+                if (tokenCount == 0)
+                    continue;
+
+                float inv = 1.0f / tokenCount;
+                for (int d = 0; d < ed; d++)
+                {
+                    float sum = 0f;
+                    for (int t = 0; t < tokenCount; t++)
+                        sum += tokenHidden[t, d];
+                    hidden[i, d] = sum * inv;
+                }
             }
+
             return (hidden, times);
         }
 
@@ -956,92 +1250,160 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         internal (float[,] hidden, float[] times) EncodeStoriesWithCache(NewsStory[] stories, MmtacForwardCache cache)
         {
-            int ns = stories.Length;
+            if (stories == null)
+                throw new ArgumentNullException(nameof(stories));
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            int storyCount = stories.Length;
             int ed = _config.Text.EmbeddingDim;
-            var hidden = new float[ns, ed];
-            var times = new float[ns];
+            var hidden = new float[storyCount, ed];
+            var times = new float[storyCount];
 
-            cache.StoryCaches = new List<MmtacForwardCache>();
-            cache.StoryTokenCounts = new int[ns];
+            cache.StoryCaches = new List<MmtacForwardCache>(storyCount);
+            cache.StoryTokenCounts = new int[storyCount];
 
-            for (int i = 0; i < ns; i++)
+            for (int i = 0; i < storyCount; i++)
             {
-                var sc = new MmtacForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
-                var h = ForwardTextEncoderWithCache(stories[i].TokenIds, sc);
-                int tok = h.GetLength(0);
-                cache.StoryTokenCounts[i] = tok;
-                for (int d = 0; d < ed; d++) { float s = 0f; for (int t = 0; t < tok; t++) s += h[t, d]; hidden[i, d] = s / tok; }
-                times[i] = stories[i].ArrivalTime;
-                cache.StoryCaches.Add(sc);
+                var story = stories[i];
+
+                var storyCache = new MmtacForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
+                cache.StoryCaches.Add(storyCache);
+
+                if (object.ReferenceEquals(story, null))
+                {
+                    times[i] = 0f;
+                    storyCache.TextTokenIds = Array.Empty<int>();
+                    storyCache.TextEmbedded = new float[0, ed];
+                    storyCache.TextFinalHidden = new float[0, ed];
+                    cache.StoryTokenCounts[i] = 0;
+                    continue;
+                }
+
+                times[i] = story.ArrivalTime;
+
+                if (story.TokenIds == null || story.TokenIds.Length == 0)
+                {
+                    storyCache.TextTokenIds = Array.Empty<int>();
+                    storyCache.TextEmbedded = new float[0, ed];
+                    storyCache.TextFinalHidden = new float[0, ed];
+                    cache.StoryTokenCounts[i] = 0;
+                    continue;
+                }
+
+                var tokenHidden = ForwardTextEncoderWithCache(story.TokenIds, storyCache);
+                int tokenCount = tokenHidden.GetLength(0);
+                cache.StoryTokenCounts[i] = tokenCount;
+
+                if (tokenCount == 0)
+                    continue;
+
+                float inv = 1.0f / tokenCount;
+                for (int d = 0; d < ed; d++)
+                {
+                    float sum = 0f;
+                    for (int t = 0; t < tokenCount; t++)
+                        sum += tokenHidden[t, d];
+                    hidden[i, d] = sum * inv;
+                }
             }
+
             cache.TextFinalHidden = hidden;
             return (hidden, times);
         }
 
         private float[,] ForwardTextEncoder(int[] tokenIds)
         {
-            int sl = tokenIds.Length;
-            var emb = EmbedTextTokens(tokenIds, sl);
-            bool[,] mask = _config.Text.UseDecoderOnly ? CreateCausalMask(sl) : null;
-            var x = emb;
-            foreach (var b in TextBlocks) x = b.Forward(x, mask);
+            int ed = _config.Text.EmbeddingDim;
+            if (tokenIds == null || tokenIds.Length == 0)
+                return new float[0, ed];
+
+            int seqLen = tokenIds.Length;
+            var x = EmbedTextTokens(tokenIds, seqLen);
+            bool[,] mask = _config.Text.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
+
+            foreach (var block in TextBlocks)
+                x = block.Forward(x, mask);
+
             return x;
         }
 
         private float[,] ForwardTextEncoderWithCache(int[] tokenIds, MmtacForwardCache cache)
         {
-            int sl = tokenIds.Length;
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
             int ed = _config.Text.EmbeddingDim;
-            var emb = EmbedTextTokens(tokenIds, sl);
+            if (tokenIds == null || tokenIds.Length == 0)
+            {
+                cache.TextTokenIds = Array.Empty<int>();
+                cache.TextEmbedded = new float[0, ed];
+                cache.TextFinalHidden = new float[0, ed];
+                return cache.TextFinalHidden;
+            }
+
+            int seqLen = tokenIds.Length;
+            var emb = EmbedTextTokens(tokenIds, seqLen);
             cache.TextEmbedded = emb;
             cache.TextTokenIds = tokenIds;
 
-            bool[,] mask = _config.Text.UseDecoderOnly ? CreateCausalMask(sl) : null;
+            bool[,] mask = _config.Text.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
             var x = emb;
 
             for (int layer = 0; layer < _config.Text.NumLayers; layer++)
             {
-                var b = TextBlocks[layer];
+                var block = TextBlocks[layer];
                 cache.TextLayerInputs.Add(x);
 
                 var ac = cache.TextAttentionCaches[layer];
                 ac.Input = x;
 
-                var Q = ComputeProjection(x, b.Attention.WQ, b.Attention.BiasQ);
-                var K = ComputeProjection(x, b.Attention.WK, b.Attention.BiasK);
-                var V = ComputeProjection(x, b.Attention.WV, b.Attention.BiasV);
-                RotaryPositionEmbedding.ApplyInPlace(Q, K, _config.Text.NumHeads);
-                ac.Q = Q; ac.K = K; ac.V = V;
+                var q = ComputeProjection(x, block.Attention.WQ, block.Attention.BiasQ);
+                var k = ComputeProjection(x, block.Attention.WK, block.Attention.BiasK);
+                var v = ComputeProjection(x, block.Attention.WV, block.Attention.BiasV);
+                RotaryPositionEmbedding.ApplyInPlace(q, k, _config.Text.NumHeads);
+                ac.Q = q;
+                ac.K = k;
+                ac.V = v;
 
-                float s = 1.0f / MathF.Sqrt(ed / _config.Text.NumHeads);
-                var attnOut = _accel.MultiHeadAttentionForward(Q, K, V, _config.Text.NumHeads, s, mask);
+                float scale = 1.0f / MathF.Sqrt(ed / _config.Text.NumHeads);
+                var attnOut = _accel.MultiHeadAttentionForward(q, k, v, _config.Text.NumHeads, scale, mask);
                 ac.AttentionOutput = attnOut;
 
-                var projected = ComputeProjection(attnOut, b.Attention.WO, b.Attention.BiasO);
+                var projected = ComputeProjection(attnOut, block.Attention.WO, block.Attention.BiasO);
                 var residual1 = _accel.MatrixAdd(x, projected);
                 var ln1c = cache.TextLN1Caches[layer];
-                var (normed1, m1, v1, n1) = _accel.LayerNormForward(residual1, b.LN1Gamma, b.LN1Beta);
-                ln1c.Input = residual1; ln1c.Mean = m1; ln1c.Variance = v1; ln1c.Normalized = n1;
+                var (normed1, mean1, var1, normalized1) = _accel.LayerNormForward(residual1, block.LN1Gamma, block.LN1Beta);
+                ln1c.Input = residual1;
+                ln1c.Mean = mean1;
+                ln1c.Variance = var1;
+                ln1c.Normalized = normalized1;
 
                 cache.TextFFNInputs.Add(normed1);
-                var ffnOut = _accel.FFNForwardBatch(normed1, sl, ed, b.FeedForwardNetwork.ForwardPassOnly);
+                var ffnOut = _accel.FFNForwardBatch(normed1, seqLen, ed, block.FeedForwardNetwork.ForwardPassOnly);
                 cache.TextFFNOutputs.Add(ffnOut);
 
                 var residual2 = _accel.MatrixAdd(normed1, ffnOut);
                 var ln2c = cache.TextLN2Caches[layer];
-                var (normed2, m2, v2, n2) = _accel.LayerNormForward(residual2, b.LN2Gamma, b.LN2Beta);
-                ln2c.Input = residual2; ln2c.Mean = m2; ln2c.Variance = v2; ln2c.Normalized = n2;
+                var (normed2, mean2, var2, normalized2) = _accel.LayerNormForward(residual2, block.LN2Gamma, block.LN2Beta);
+                ln2c.Input = residual2;
+                ln2c.Mean = mean2;
+                ln2c.Variance = var2;
+                ln2c.Normalized = normalized2;
 
                 x = normed2;
             }
+
             cache.TextFinalHidden = x;
             return x;
         }
-
         // 
         // Content-aware cross-attention wrapper
         // 
-
+        internal float[,] ForwardPriceDecoderForMemoryBuild(float[,] priceSequence, float[,] contextHidden, float[] contextTimes, int globalBypassCount = 0)
+        {
+            return ForwardPriceDecoder(priceSequence, contextHidden, contextTimes, globalBypassCount);
+        }
         private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, bool isTraining, Random dropoutRng, int globalBypassCount)
         {
             return _accel.ContentAwareCrossAttentionWithCache(Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings, block, bc, _config.Price.EmbeddingDim, _config.Price.NumHeads, isTraining, dropoutRng);
@@ -1076,6 +1438,26 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         private float[,] EmbedPriceSequence(float[,] ps, int rowStart, int rowCount)
         {
+            if (ps == null)
+                throw new ArgumentNullException(nameof(ps));
+
+            int rows = ps.GetLength(0);
+            int cols = ps.GetLength(1);
+
+            if (cols != _config.Price.InputFeatureDim)
+            {
+                throw new ArgumentException(
+                    $"PriceSequence feature dimension ({cols}) must equal Price.InputFeatureDim ({_config.Price.InputFeatureDim}).",
+                    nameof(ps));
+            }
+
+            if (rowStart < 0 || rowCount <= 0 || rowStart + rowCount > rows)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(rowStart),
+                    $"Invalid price row slice: start={rowStart}, count={rowCount}, rows={rows}.");
+            }
+
             var projected = _accel.BatchDotProduct(PriceInputProjection, ps, rowStart, rowCount);
             return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
         }
@@ -1267,6 +1649,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ["L2RegulationLamda"] = _config.Reg.L2RegulationLamda,
                 ["GradientClipThreshold"] = _config.Reg.GradientClippingThreshold,
 
+                ["DecayEnabled"] = _config.Decay.Enabled,
                 ["DecayProjectionDim"] = _config.Decay.ProjectionDim,
                 ["DecayHiddenDim"] = _config.Decay.HiddenDim,
                 ["DecayTimeEncodingBases"] = _config.Decay.TimeEncodingBases,
@@ -1284,55 +1667,95 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ["PruningUseAttentionBased"] = PruningConfig.UseAttentionBasedPruning
             };
 
-            File.WriteAllText(Path.Combine(dir, "config.json"),
+            File.WriteAllText(
+                Path.Combine(dir, "config.json"),
                 JsonSerializer.Serialize(cd, new JsonSerializerOptions { WriteIndented = true }));
 
-            using var s = new FileStream(Path.Combine(dir, "weights.bin"), FileMode.Create);
-            using var w = new BinaryWriter(s);
-
-            WM(w, TextTokenEmbedding);
-            for (int i = 0; i < _config.Text.NumLayers; i++)
+            using (var s = new FileStream(Path.Combine(dir, "weights.bin"), FileMode.Create))
+            using (var w = new BinaryWriter(s))
             {
-                var b = TextBlocks[i];
-                WA(w, b.Attention);
-                WV(w, b.LN1Gamma); WV(w, b.LN1Beta);
-                WV(w, b.LN2Gamma); WV(w, b.LN2Beta);
+                WM(w, TextTokenEmbedding);
+
+                for (int i = 0; i < _config.Text.NumLayers; i++)
+                {
+                    var b = TextBlocks[i];
+
+                    WA(w, b.Attention);
+                    WV(w, b.LN1Gamma);
+                    WV(w, b.LN1Beta);
+                    WV(w, b.LN2Gamma);
+                    WV(w, b.LN2Beta);
+                }
+
+                WM(w, PriceInputProjection);
+                WV(w, PriceInputProjectionBias);
+
+                if (GlobalFeatureProjection != null)
+                {
+                    WM(w, GlobalFeatureProjection);
+                    WV(w, GlobalFeatureBias);
+                }
+
+                for (int i = 0; i < _config.Price.NumLayers; i++)
+                {
+                    var b = PriceBlocks[i];
+
+                    WA(w, b.SelfAttention);
+                    WV(w, b.LNSelfGamma);
+                    WV(w, b.LNSelfBeta);
+
+                    WA(w, b.CrossAttention);
+                    WV(w, b.LnCrossGamma);
+                    WV(w, b.LnCrossBeta);
+
+                    WV(w, b.LNFFNGamma);
+                    WV(w, b.LNFFNBeta);
+
+                    b.DecayNetwork.WriteTo(w);
+                }
+
+                WM(w, RegressionProjection);
+                WV(w, RegressionBias);
+
+                WM(w, RangeProjection);
+                WV(w, RangeBias);
+
+                WM(w, QualityProjection);
+                WV(w, QualityBias);
+
+                WM(w, DirectionProjection);
+                WV(w, DirectionBias);
+
+                WM(w, MidDirectionProjection);
+                WV(w, MidDirectionBias);
+
+                if (_config.Output.UseConfidenceHead)
+                {
+                    WM(w, ConfidenceProjection);
+                    WV(w, ConfidenceBias);
+                }
+
+                WM(w, ContextTypeEmbedding);
+
+                w.Flush();
             }
 
-            WM(w, PriceInputProjection); WV(w, PriceInputProjectionBias);
-            if (GlobalFeatureProjection != null) { WM(w, GlobalFeatureProjection); WV(w, GlobalFeatureBias); }
+            for (int i = 0; i < _config.Text.NumLayers; i++)
+                TextBlocks[i].FeedForwardNetwork.Save(Path.Combine(dir, $"text_ffn_{i}"));
 
             for (int i = 0; i < _config.Price.NumLayers; i++)
-            {
-                var b = PriceBlocks[i];
-                WA(w, b.SelfAttention);
-                WV(w, b.LNSelfGamma); WV(w, b.LNSelfBeta);
-                WA(w, b.CrossAttention);
-                WV(w, b.LnCrossGamma); WV(w, b.LnCrossBeta);
-                WV(w, b.LNFFNGamma); WV(w, b.LNFFNBeta);
-                b.DecayNetwork.WriteTo(w);
-            }
-
-            // Output heads
-            WM(w, RegressionProjection); WV(w, RegressionBias);
-            WM(w, RangeProjection); WV(w, RangeBias);
-            WM(w, QualityProjection); WV(w, QualityBias);
-            WM(w, DirectionProjection); WV(w, DirectionBias);
-            WM(w, MidDirectionProjection); WV(w, MidDirectionBias);
-            if (_config.Output.UseConfidenceHead) { WM(w, ConfidenceProjection); WV(w, ConfidenceBias); }
-
-            WM(w, ContextTypeEmbedding);
-
-            for (int i = 0; i < _config.Text.NumLayers; i++) TextBlocks[i].FeedForwardNetwork.Save(Path.Combine(dir, $"text_ffn_{i}"));
-            for (int i = 0; i < _config.Price.NumLayers; i++) PriceBlocks[i].FeedForwardNetwork.Save(Path.Combine(dir, $"price_ffn_{i}"));
+                PriceBlocks[i].FeedForwardNetwork.Save(Path.Combine(dir, $"price_ffn_{i}"));
 
             SaveMemory(dir);
             Tokenizer?.Save(Path.Combine(dir, "tokenizer"));
         }
-
         public static MmtacModel Load(string dir)
         {
-            var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(Path.Combine(dir, "config.json")));
+            var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                File.ReadAllText(Path.Combine(dir, "config.json")));
+
+            if (d == null)
+                throw new InvalidOperationException("config.json could not be deserialized.");
 
             var cfg = new MmtacConfig
             {
@@ -1347,6 +1770,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     UseDecoderOnly = d["TextUseDecoderOnly"].GetBoolean(),
                     Freeze = d["TextFreeze"].GetBoolean()
                 },
+
                 Price = new PriceDecoderConfig
                 {
                     InputFeatureDim = d["PriceInputFeatureDim"].GetInt32(),
@@ -1357,86 +1781,194 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     FeedForwardDim = d["PriceFeedForwardDim"].GetInt32(),
                     UseDecoderOnly = d["PriceUseDecoderOnly"].GetBoolean()
                 },
+
                 Global = new MmtacGlobalConfig
                 {
-                    GlobalFeatureDim = d.ContainsKey("GlobalFeatureDim") ? d["GlobalFeatureDim"].GetInt32() : 0,
-                    BypassDecay = d.ContainsKey("GlobalBypassDecay") && d["GlobalBypassDecay"].GetBoolean()
+                    GlobalFeatureDim = d.ContainsKey("GlobalFeatureDim")
+                        ? d["GlobalFeatureDim"].GetInt32()
+                        : 0,
+
+                    BypassDecay = d.ContainsKey("GlobalBypassDecay")
+                        && d["GlobalBypassDecay"].GetBoolean()
                 },
+
                 Output = new MmtacOutputConfig
                 {
                     UseConfidenceHead = d["UseConfidenceHead"].GetBoolean(),
-                    DirectionLossWeight = d.ContainsKey("DirectionLossWeight") ? d["DirectionLossWeight"].GetSingle() : 1f,
-                    MidDirectionLossWeight = d.ContainsKey("MidDirectionLossWeight") ? d["MidDirectionLossWeight"].GetSingle() : 0.5f,
-                    RangeLossWeight = d.ContainsKey("RangeLossWeight") ? d["RangeLossWeight"].GetSingle() : 1f,
-                    QualityLossWeight = d.ContainsKey("QualityLossWeight") ? d["QualityLossWeight"].GetSingle() : 1f,
-                    CloseDirectionConsistencyWeight = d.ContainsKey("CloseDirectionConsistencyWeight") ? d["CloseDirectionConsistencyWeight"].GetSingle()  : 1.0f,
-                    CloseDirectionConsistencyMargin = d.ContainsKey("CloseDirectionConsistencyMargin") ? d["CloseDirectionConsistencyMargin"].GetSingle() : 0.02f,
+
+                    DirectionLossWeight = d.ContainsKey("DirectionLossWeight")
+                        ? d["DirectionLossWeight"].GetSingle()
+                        : 1f,
+
+                    MidDirectionLossWeight = d.ContainsKey("MidDirectionLossWeight")
+                        ? d["MidDirectionLossWeight"].GetSingle()
+                        : 0.5f,
+
+                    RangeLossWeight = d.ContainsKey("RangeLossWeight")
+                        ? d["RangeLossWeight"].GetSingle()
+                        : 1f,
+
+                    QualityLossWeight = d.ContainsKey("QualityLossWeight")
+                        ? d["QualityLossWeight"].GetSingle()
+                        : 1f,
+
+                    CloseDirectionConsistencyWeight = d.ContainsKey("CloseDirectionConsistencyWeight")
+                        ? d["CloseDirectionConsistencyWeight"].GetSingle()
+                        : 1.0f,
+
+                    CloseDirectionConsistencyMargin = d.ContainsKey("CloseDirectionConsistencyMargin")
+                        ? d["CloseDirectionConsistencyMargin"].GetSingle()
+                        : 0.02f
                 },
+
                 Runtime = new RuntimeConfig
                 {
                     FFNActivationType = (ActivationType)d["FFNActivationType"].GetInt32(),
                     AccelerationType = (AccelerationType)d["AccelerationType"].GetInt32(),
                     AccelerationDeviceId = d["AccelerationDeviceId"].GetInt32()
                 },
+
                 Reg = new RegularizationConfig
                 {
                     L2RegulationLamda = d["L2RegulationLamda"].GetSingle(),
                     GradientClippingThreshold = d["GradientClipThreshold"].GetSingle()
                 },
+
                 Decay = new DecayNetworkConfig
                 {
-                    ProjectionDim = d.ContainsKey("DecayProjectionDim") ? d["DecayProjectionDim"].GetInt32() : 16,
-                    HiddenDim = d.ContainsKey("DecayHiddenDim") ? d["DecayHiddenDim"].GetInt32() : 32,
-                    TimeEncodingBases = d.ContainsKey("DecayTimeEncodingBases") ? d["DecayTimeEncodingBases"].GetInt32() : 16,
-                    MemAttentionDropout = d.ContainsKey("DecayMemAttnDropout") ? d["DecayMemAttnDropout"].GetSingle() : 0.2f,
-                    MlpDropout = d.ContainsKey("DecayMlpDropout") ? d["DecayMlpDropout"].GetSingle() : 0.2f,
-                    WeightDecay = d.ContainsKey("DecayWeightDecay") ? d["DecayWeightDecay"].GetSingle() : 0f
+                    Enabled = d.ContainsKey("DecayEnabled")
+                        ? d["DecayEnabled"].GetBoolean()
+                        : true,
+
+                    ProjectionDim = d.ContainsKey("DecayProjectionDim")
+                        ? d["DecayProjectionDim"].GetInt32()
+                        : 16,
+
+                    HiddenDim = d.ContainsKey("DecayHiddenDim")
+                        ? d["DecayHiddenDim"].GetInt32()
+                        : 32,
+
+                    TimeEncodingBases = d.ContainsKey("DecayTimeEncodingBases")
+                        ? d["DecayTimeEncodingBases"].GetInt32()
+                        : 16,
+
+                    MemAttentionDropout = d.ContainsKey("DecayMemAttnDropout")
+                        ? d["DecayMemAttnDropout"].GetSingle()
+                        : 0.2f,
+
+                    MlpDropout = d.ContainsKey("DecayMlpDropout")
+                        ? d["DecayMlpDropout"].GetSingle()
+                        : 0.2f,
+
+                    WeightDecay = d.ContainsKey("DecayWeightDecay")
+                        ? d["DecayWeightDecay"].GetSingle()
+                        : 0f
                 },
+
                 PriceContext = new PriceContextConfig
                 {
-                    Enabled = !d.ContainsKey("PriceContextEnabled") || d["PriceContextEnabled"].GetBoolean(),
-                    MinHistoryLength = d.ContainsKey("PriceContextMinHistory") ? d["PriceContextMinHistory"].GetInt32() : 5,
-                    MinCurrentLength = d.ContainsKey("PriceContextMinCurrent") ? d["PriceContextMinCurrent"].GetInt32() : 5
+                    Enabled = !d.ContainsKey("PriceContextEnabled")
+                        || d["PriceContextEnabled"].GetBoolean(),
+
+                    MinHistoryLength = d.ContainsKey("PriceContextMinHistory")
+                        ? d["PriceContextMinHistory"].GetInt32()
+                        : 5,
+
+                    MinCurrentLength = d.ContainsKey("PriceContextMinCurrent")
+                        ? d["PriceContextMinCurrent"].GetInt32()
+                        : 5
+                },
+
+                Pruning = new MemoryPruningConfig
+                {
+                    AttentionScoreAlpha = d.ContainsKey("PruningAlpha")
+                        ? d["PruningAlpha"].GetSingle()
+                        : new MemoryPruningConfig().AttentionScoreAlpha,
+
+                    MinQueryCountForPruning = d.ContainsKey("PruningMinQueryCount")
+                        ? d["PruningMinQueryCount"].GetInt32()
+                        : new MemoryPruningConfig().MinQueryCountForPruning,
+
+                    NewEntryReserveFraction = d.ContainsKey("PruningReserveFraction")
+                        ? d["PruningReserveFraction"].GetSingle()
+                        : new MemoryPruningConfig().NewEntryReserveFraction,
+
+                    UseAttentionBasedPruning = d.ContainsKey("PruningUseAttentionBased")
+                        ? d["PruningUseAttentionBased"].GetBoolean()
+                        : new MemoryPruningConfig().UseAttentionBasedPruning
                 }
             };
+
             cfg.Validate();
 
             var m = new MmtacModel(cfg);
-            if (d.ContainsKey("PruningAlpha")) m.PruningConfig.AttentionScoreAlpha = d["PruningAlpha"].GetSingle();
-            if (d.ContainsKey("PruningMinQueryCount")) m.PruningConfig.MinQueryCountForPruning = d["PruningMinQueryCount"].GetInt32();
-            if (d.ContainsKey("PruningReserveFraction")) m.PruningConfig.NewEntryReserveFraction = d["PruningReserveFraction"].GetSingle();
-            if (d.ContainsKey("PruningUseAttentionBased")) m.PruningConfig.UseAttentionBasedPruning = d["PruningUseAttentionBased"].GetBoolean();
 
             using (var s = new FileStream(Path.Combine(dir, "weights.bin"), FileMode.Open))
             using (var r = new BinaryReader(s))
             {
                 RM(r, m.TextTokenEmbedding);
+
                 for (int i = 0; i < cfg.Text.NumLayers; i++)
                 {
                     var b = m.TextBlocks[i];
+
                     RA(r, b.Attention);
-                    RV(r, b.LN1Gamma); RV(r, b.LN1Beta);
-                    RV(r, b.LN2Gamma); RV(r, b.LN2Beta);
+                    RV(r, b.LN1Gamma);
+                    RV(r, b.LN1Beta);
+                    RV(r, b.LN2Gamma);
+                    RV(r, b.LN2Beta);
                 }
-                RM(r, m.PriceInputProjection); RV(r, m.PriceInputProjectionBias);
-                if (cfg.Global.GlobalFeatureDim > 0) { RM(r, m.GlobalFeatureProjection); RV(r, m.GlobalFeatureBias); }
+
+                RM(r, m.PriceInputProjection);
+                RV(r, m.PriceInputProjectionBias);
+
+                if (cfg.Global.GlobalFeatureDim > 0)
+                {
+                    RM(r, m.GlobalFeatureProjection);
+                    RV(r, m.GlobalFeatureBias);
+                }
+
                 for (int i = 0; i < cfg.Price.NumLayers; i++)
                 {
                     var b = m.PriceBlocks[i];
+
                     RA(r, b.SelfAttention);
-                    RV(r, b.LNSelfGamma); RV(r, b.LNSelfBeta);
+                    RV(r, b.LNSelfGamma);
+                    RV(r, b.LNSelfBeta);
+
                     RA(r, b.CrossAttention);
-                    RV(r, b.LnCrossGamma); RV(r, b.LnCrossBeta);
-                    RV(r, b.LNFFNGamma); RV(r, b.LNFFNBeta);
+                    RV(r, b.LnCrossGamma);
+                    RV(r, b.LnCrossBeta);
+
+                    RV(r, b.LNFFNGamma);
+                    RV(r, b.LNFFNBeta);
+
                     b.DecayNetwork = ContentAwareDecayNetwork.ReadFrom(r);
                 }
-                RM(r, m.RegressionProjection); RV(r, m.RegressionBias);
-                RM(r, m.RangeProjection); RV(r, m.RangeBias);
-                RM(r, m.QualityProjection); RV(r, m.QualityBias);
-                RM(r, m.DirectionProjection); RV(r, m.DirectionBias);
-                RM(r, m.MidDirectionProjection); RV(r, m.MidDirectionBias);
-                if (cfg.Output.UseConfidenceHead) { RM(r, m.ConfidenceProjection); RV(r, m.ConfidenceBias); }
-                if (s.Position < s.Length) RM(r, m.ContextTypeEmbedding);
+
+                RM(r, m.RegressionProjection);
+                RV(r, m.RegressionBias);
+
+                RM(r, m.RangeProjection);
+                RV(r, m.RangeBias);
+
+                RM(r, m.QualityProjection);
+                RV(r, m.QualityBias);
+
+                RM(r, m.DirectionProjection);
+                RV(r, m.DirectionBias);
+
+                RM(r, m.MidDirectionProjection);
+                RV(r, m.MidDirectionBias);
+
+                if (cfg.Output.UseConfidenceHead)
+                {
+                    RM(r, m.ConfidenceProjection);
+                    RV(r, m.ConfidenceBias);
+                }
+
+                if (s.Position < s.Length)
+                    RM(r, m.ContextTypeEmbedding);
             }
 
             for (int i = 0; i < cfg.Text.NumLayers; i++)
@@ -1454,13 +1986,25 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     Path.Combine(dir, $"price_ffn_{i}"),
                     cfg.Runtime.AccelerationType);
             }
+
             m.LoadMemory(dir);
+
             var tokDir = Path.Combine(dir, "tokenizer");
-            if (Directory.Exists(tokDir)) try { m.Tokenizer = BPETokenizer.Load(tokDir); } catch { }
+
+            if (Directory.Exists(tokDir))
+            {
+                try
+                {
+                    m.Tokenizer = BPETokenizer.Load(tokDir);
+                }
+                catch
+                {
+                    // Keep model loading tolerant of tokenizer corruption/missing optional tokenizer files.
+                }
+            }
 
             return m;
         }
-
         private void SaveMemory(string dir)
         {
             int ed = _config.Price.EmbeddingDim;
@@ -1512,9 +2056,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         }
 
         //  Binary I/O helpers 
-        static void WM(BinaryWriter w, float[,] m) 
+        static void WM(BinaryWriter w, float[,] m)
         {
-            int r = m.GetLength(0), c = m.GetLength(1); 
+            int r = m.GetLength(0), c = m.GetLength(1);
             w.Write(r); w.Write(c);
 
             for (int i = 0; i < r; i++)
@@ -1526,8 +2070,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             }
         }
         static void WV(BinaryWriter w, float[] v)
-        { 
-            w.Write(v.Length); 
+        {
+            w.Write(v.Length);
             for (int i = 0; i < v.Length; i++)
             {
                 w.Write(v[i]);
@@ -1537,16 +2081,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         {
             WM(w, a.WQ);
             WM(w, a.WK);
-            WM(w, a.WV); 
-            WM(w, a.WO); 
-            WV(w, a.BiasQ); 
-            WV(w, a.BiasK); 
+            WM(w, a.WV);
+            WM(w, a.WO);
+            WV(w, a.BiasQ);
+            WV(w, a.BiasK);
             WV(w, a.BiasV);
             WV(w, a.BiasO);
         }
-        static void RM(BinaryReader r, float[,] m) 
+        static void RM(BinaryReader r, float[,] m)
         {
-            int rows = r.ReadInt32(), cols = r.ReadInt32(); 
+            int rows = r.ReadInt32(), cols = r.ReadInt32();
             for (int i = 0; i < rows; i++)
             {
                 for (int j = 0; j < cols; j++)
@@ -1555,23 +2099,23 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
             }
         }
-        static void RV(BinaryReader r, float[] v) 
+        static void RV(BinaryReader r, float[] v)
         {
-            int l = r.ReadInt32(); 
+            int l = r.ReadInt32();
             for (int i = 0; i < l; i++)
             {
                 v[i] = r.ReadSingle();
             }
         }
-        static void RA(BinaryReader r, MultiHeadAttention a) 
+        static void RA(BinaryReader r, MultiHeadAttention a)
         {
             RM(r, a.WQ);
             RM(r, a.WK);
-            RM(r, a.WV); 
-            RM(r, a.WO); 
-            RV(r, a.BiasQ); 
-            RV(r, a.BiasK); 
-            RV(r, a.BiasV); 
+            RM(r, a.WV);
+            RM(r, a.WO);
+            RV(r, a.BiasQ);
+            RV(r, a.BiasK);
+            RV(r, a.BiasV);
             RV(r, a.BiasO);
         }
     }

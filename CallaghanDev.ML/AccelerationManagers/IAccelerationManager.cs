@@ -228,6 +228,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         void Matrix3DScaleInPlace(float[,,] matrix, float scale);
 
         public float MatrixSquaredNorm3D(float[,,] matrix);
+
         #endregion
 
 

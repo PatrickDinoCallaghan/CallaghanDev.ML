@@ -422,6 +422,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         public (ContentAwareDecayGradients grads, float[,] dQueryEmbeddings, float[,] dKeyEmbeddings) Backward(float[,,] dDecayBias, ContentAwareDecayCache cache)
         {
+            if (dDecayBias == null)
+                throw new ArgumentNullException(nameof(dDecayBias));
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
             int queryLen = cache.TimeDiffs.GetLength(0);
             int keyLen = cache.TimeDiffs.GetLength(1);
             int projDim = ProjectionDim;
@@ -435,8 +440,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var dQueryProj = new float[NumHeads, queryLen, projDim];
             var dRefinedKey = new float[NumHeads, keyLen, projDim];
 
-            // ===== Correct backward for:
-            // decayBias = -(baseRate * (1 - gate)) * normTd
             for (int h = 0; h < NumHeads; h++)
             {
                 float baseRate = MathF.Exp(LogBaseDecayRate[h]);
@@ -449,17 +452,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         float gate = cache.Gates[qi, si, h];
                         float normTd = cache.NormalizedTimeDiffs[qi, si];
 
-                        // d/dgate [ -(baseRate * (1-gate)) * normTd ] = + baseRate * normTd
                         float dGate = dBias * (baseRate * normTd);
-
-                        // d/dbaseRate [ -(baseRate * (1-gate)) * normTd ] = -(1-gate) * normTd
                         float dBaseRate = dBias * (-(1f - gate) * normTd);
-
                         grads.LogBaseDecayRateGrad[h] += dBaseRate * baseRate;
 
-                        float unclampedGate = cache.GateLogits[qi, si, h] >= 0f
-                            ? 1f / (1f + MathF.Exp(-cache.GateLogits[qi, si, h]))
-                            : MathF.Exp(cache.GateLogits[qi, si, h]) / (1f + MathF.Exp(cache.GateLogits[qi, si, h]));
+                        float gateLogit = cache.GateLogits[qi, si, h];
+                        float unclampedGate = gateLogit >= 0f
+                            ? 1f / (1f + MathF.Exp(-gateLogit))
+                            : MathF.Exp(gateLogit) / (1f + MathF.Exp(gateLogit));
 
                         bool gateClamped = gate <= MinGate || gate >= MaxGate;
                         float dLogit = gateClamped ? 0f : dGate * unclampedGate * (1f - unclampedGate);
@@ -474,17 +474,13 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         }
 
                         var dInput = new float[MLPInputDim];
-
                         for (int j = 0; j < HiddenDim; j++)
                         {
                             if (cache.MLPDropoutMask != null)
-                            {
                                 dHidden[j] *= cache.MLPDropoutMask[qi, si, h, j];
-                            }
 
                             float preAct = cache.MLPHiddenPreAct[qi, si, h, j];
                             float dPreAct = preAct > 0f ? dHidden[j] : 0.01f * dHidden[j];
-
                             grads.B1Grad[h, j] += dPreAct;
 
                             for (int k = 0; k < MLPInputDim; k++)
@@ -495,7 +491,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         }
 
                         int idx = 0;
-
                         for (int p = 0; p < projDim; p++)
                             dQueryProj[h, qi, p] += dInput[idx++];
 
@@ -504,19 +499,13 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                         for (int p = 0; p < projDim; p++)
                         {
-                            float dI = dInput[idx++];
-                            dQueryProj[h, qi, p] += dI * cache.RefinedKey[h, si, p];
-                            dRefinedKey[h, si, p] += dI * cache.QueryProj[h, qi, p];
+                            float dInteraction = dInput[idx++];
+                            dQueryProj[h, qi, p] += dInteraction * cache.RefinedKey[h, si, p];
+                            dRefinedKey[h, si, p] += dInteraction * cache.QueryProj[h, qi, p];
                         }
-
-                        // Last two inputs are normTd and log(1+normTd)
-                        // We intentionally do not backprop into timeDiffs here.
-                        idx += 2;
                     }
                 }
             }
-
-            // ===== your existing remainder of Backward() stays unchanged =====
 
             var dKeyProj = new float[NumHeads, keyLen, projDim];
             var dTimeEncoding = new float[NumHeads, keyLen, projDim];
@@ -524,6 +513,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             for (int h = 0; h < NumHeads; h++)
             {
                 var dMemAttnOutput = new float[keyLen, projDim];
+
                 for (int s = 0; s < keyLen; s++)
                 {
                     for (int p = 0; p < projDim; p++)
@@ -548,6 +538,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         float dOut = dMemAttnOutput[i, p];
                         for (int j = 0; j < keyLen; j++)
                         {
+                            // cache.MemAttnWeights is the weight actually used in the forward output
+                            // after dropout, so it is correct for the value path.
                             dKeyProj[h, j, p] += cache.MemAttnWeights[h, i, j] * dOut;
                             dMemWeights[i, j] += dOut * cache.KeyProj[h, j, p];
                         }
@@ -557,28 +549,57 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 if (cache.MemAttnDropoutMask != null)
                 {
                     for (int i = 0; i < keyLen; i++)
-                    {
                         for (int j = 0; j < keyLen; j++)
-                        {
                             dMemWeights[i, j] *= cache.MemAttnDropoutMask[h, i, j];
-                        }
-                    }
                 }
 
+                // Recompute the pre-dropout softmax weights. The forward cache stores post-dropout
+                // weights, which are not valid for the softmax Jacobian.
+                var rawWeights = new float[keyLen, keyLen];
                 float memScale = 1.0f / MathF.Sqrt(projDim);
-                var dMemScores = new float[keyLen, keyLen];
 
                 for (int i = 0; i < keyLen; i++)
                 {
-                    float dotWD = 0;
+                    var scores = new float[keyLen];
+                    float maxScore = float.NegativeInfinity;
+
                     for (int j = 0; j < keyLen; j++)
                     {
-                        dotWD += cache.MemAttnWeights[h, i, j] * dMemWeights[i, j];
+                        float dot = 0f;
+                        for (int p = 0; p < projDim; p++)
+                            dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+
+                        float score = dot * memScale;
+                        scores[j] = score;
+                        if (score > maxScore)
+                            maxScore = score;
                     }
+
+                    float sumExp = 0f;
                     for (int j = 0; j < keyLen; j++)
                     {
-                        dMemScores[i, j] = cache.MemAttnWeights[h, i, j] * (dMemWeights[i, j] - dotWD);
+                        float w = MathF.Exp(scores[j] - maxScore);
+                        rawWeights[i, j] = w;
+                        sumExp += w;
                     }
+
+                    if (sumExp > 0f)
+                    {
+                        float inv = 1f / sumExp;
+                        for (int j = 0; j < keyLen; j++)
+                            rawWeights[i, j] *= inv;
+                    }
+                }
+
+                var dMemScores = new float[keyLen, keyLen];
+                for (int i = 0; i < keyLen; i++)
+                {
+                    float dotWD = 0f;
+                    for (int j = 0; j < keyLen; j++)
+                        dotWD += rawWeights[i, j] * dMemWeights[i, j];
+
+                    for (int j = 0; j < keyLen; j++)
+                        dMemScores[i, j] = rawWeights[i, j] * (dMemWeights[i, j] - dotWD);
                 }
 
                 var dMemQ = new float[keyLen, projDim];
@@ -672,9 +693,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
 
             if (WeightDecay > 0f)
-            {
                 ApplyWeightDecayToGradients(grads);
-            }
 
             return (grads, dQueryEmbeddings, dKeyEmbeddings);
         }

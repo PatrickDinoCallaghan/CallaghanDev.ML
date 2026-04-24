@@ -64,7 +64,9 @@ namespace CallaghanDev.ML.Transformers.Configuration
         /// Weight on the BCE confidence loss term. Only meaningful when the
         /// model has UseConfidenceHead = true. Leave at 0f otherwise.
         /// </summary>
-        public float ConfidenceLossWeight { get; set; } = 0f;
+        public float ConfidenceLossWeight { get; set; } = 1.0f;
+
+
 
         //  Validation 
 

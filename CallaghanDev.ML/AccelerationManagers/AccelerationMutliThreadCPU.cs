@@ -48,7 +48,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             return workUnits >= PARALLEL_THRESHOLD || AlwaysParallel;
         }
 
-
         #region Shared Tensor primitives
 
         public float[,] MatrixMultiply(float[,] A, float[,] B)
@@ -364,7 +363,6 @@ namespace CallaghanDev.ML.AccelerationManagers
 
 
         #endregion
-
 
         #region Neural network
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
@@ -1184,8 +1182,6 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #endregion
 
-
-
         #region BackpropLinearProjection
 
         public void BackpropLinearProjection(float[,] input, float[,] dOutput, float[,] weights, float[,] weightGrad, float[] biasGrad, float[,] dInput)
@@ -1276,8 +1272,6 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
         #endregion
-
-
 
         public float MatrixSquaredNorm(float[,] matrix)
         {
@@ -1694,7 +1688,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
         }
 
-
         #region ContentAwareCrossAttentionForward
 
         public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
@@ -1867,7 +1860,6 @@ namespace CallaghanDev.ML.AccelerationManagers
             return td;
         }
     
-
         public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos,  float[,] contextHidden,  int totalCtx, float scale)
         {
             int embDim = priceHidden.GetLength(1);
@@ -1923,15 +1915,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return pred;
         }
 
-
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
-           float[,] queryEmbeddings,
-           float[,] keyEmbeddings,
-           float[,] timeDiffs,
-           float[] keyTimesFromRef,
-           ContentAwareDecayNetwork network,
-           bool isTraining = false,
-           Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
         {
             int queryLen = timeDiffs.GetLength(0);
             int keyLen = timeDiffs.GetLength(1);
@@ -1994,7 +1978,9 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 perHeadRngs = new Random[numHeads];
                 for (int h = 0; h < numHeads; h++)
+                {
                     perHeadRngs[h] = new Random(dropoutRng.Next());
+                }
             }
 
             Parallel.For(0, numHeads, _parallelOptions, h =>
@@ -2173,6 +2159,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
+       
         #endregion
         public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false,  Random dropoutRng = null)
         {
@@ -2253,10 +2240,6 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
 
-        public void Dispose()
-        { 
-
-        }
-
+        public void Dispose() { }
     }
 }
