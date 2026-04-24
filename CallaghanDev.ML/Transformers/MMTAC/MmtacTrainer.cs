@@ -657,9 +657,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             midDirLoss /= sl;
 
             float confLoss = 0f;
-            float confWeight = _config.Output.UseConfidenceHead
-               ? MathF.Max(0f, _trainConfig.ConfidenceLossWeight)
-               : 0f;
+            float confWeight = _config.Output.UseConfidenceHead ? MathF.Max(0f, _trainConfig.ConfidenceLossWeight) : 0f;
 
             if (_config.Output.UseConfidenceHead && conf != null && confWeight > 0f)
             {
@@ -1137,11 +1135,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         }
 
         private void CommitObservedSampleToMemory(
-            MultimodalInput inp,
-            double currentTs,
-            double timeUnitsPerPosition,
-            int maxNewsMemory,
-            int maxPriceMemory)
+       MultimodalInput inp,
+       double currentTs,
+       double timeUnitsPerPosition,
+       int maxNewsMemory,
+       int maxPriceMemory)
         {
             if (inp == null || inp.PriceSequence == null)
                 return;
@@ -1282,7 +1280,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
             }
 
-            for (int t = 0; t < phUpdated.GetLength(0); t++)
+            int appendedPriceEntries = phUpdated.GetLength(0);
+
+            for (int t = 0; t < appendedPriceEntries; t++)
             {
                 var pv = new float[embDim];
 
@@ -1300,7 +1300,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 currentTs + Math.Max(0, inp.PriceSequence.GetLength(0) - 1) * timeUnitsPerPosition;
 
             _model.PruneNewsMemory(maxNewsMemory);
-            _model.PricePruneMemory(maxPriceMemory);
+
+            // Critical fix:
+            // Keep the just-observed price sequence. Otherwise maxPriceMemory == seqLen
+            // can still leave the next training sample without the full previous sample.
+            _model.PricePruneMemoryAfterAppend(maxPriceMemory, appendedPriceEntries);
         }
         private ModelPrediction PredictWithCurrentMemoryNoCommit(MultimodalInput input, double currentAbsoluteTimestamp, double timeUnitsPerPosition = 1.0)
         {

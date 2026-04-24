@@ -1,4 +1,5 @@
 using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
@@ -297,7 +298,12 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // 
         // Persistent memory inference
         // 
-        public ModelPrediction PredictWithMemory(MultimodalInput input, double currentAbsoluteTimestamp, double timeUnitsPerPosition = 1.0, int maxNewsMemorySize = 100, int maxPriceMemorySize = 200)
+        public ModelPrediction PredictWithMemory(
+     MultimodalInput input,
+     double currentAbsoluteTimestamp,
+     double timeUnitsPerPosition = 1.0,
+     int maxNewsMemorySize = 100,
+     int maxPriceMemorySize = 200)
         {
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
@@ -340,22 +346,25 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             int storedNewsMemoryCount = NewsMemory?.Count ?? 0;
             int storedPriceMemoryCount = PriceMemory?.Count ?? 0;
 
-            foreach (var e in NewsMemory)
+            if (NewsMemory != null)
             {
-                if (e?.HiddenState == null)
-                    continue;
+                foreach (var e in NewsMemory)
+                {
+                    if (e?.HiddenState == null)
+                        continue;
 
-                float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
+                    float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
 
-                var v = new float[embDim];
-                int copyDim = Math.Min(embDim, e.HiddenState.Length);
+                    var v = new float[embDim];
+                    int copyDim = Math.Min(embDim, e.HiddenState.Length);
 
-                for (int d = 0; d < copyDim; d++)
-                    v[d] = e.HiddenState[d];
+                    for (int d = 0; d < copyDim; d++)
+                        v[d] = e.HiddenState[d];
 
-                ctxH.Add(v);
-                ctxT.Add(relTime);
-                ctxTypes.Add(0);
+                    ctxH.Add(v);
+                    ctxT.Add(relTime);
+                    ctxTypes.Add(0);
+                }
             }
 
             float[,] newStoryHidden = null;
@@ -372,8 +381,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 {
                     var story = input.NewsStories[i];
 
-                    // Null or empty stories are ignored for memory inference. This keeps
-                    // null placeholders from becoming real context tokens or memory entries.
                     if (story == null || story.TokenIds == null || story.TokenIds.Length == 0)
                         continue;
 
@@ -389,22 +396,25 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
             }
 
-            foreach (var e in PriceMemory)
+            if (PriceMemory != null)
             {
-                if (e?.HiddenState == null)
-                    continue;
+                foreach (var e in PriceMemory)
+                {
+                    if (e?.HiddenState == null)
+                        continue;
 
-                float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
+                    float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
 
-                var v = new float[embDim];
-                int copyDim = Math.Min(embDim, e.HiddenState.Length);
+                    var v = new float[embDim];
+                    int copyDim = Math.Min(embDim, e.HiddenState.Length);
 
-                for (int d = 0; d < copyDim; d++)
-                    v[d] = e.HiddenState[d];
+                    for (int d = 0; d < copyDim; d++)
+                        v[d] = e.HiddenState[d];
 
-                ctxH.Add(v);
-                ctxT.Add(relTime);
-                ctxTypes.Add(1);
+                    ctxH.Add(v);
+                    ctxT.Add(relTime);
+                    ctxTypes.Add(1);
+                }
             }
 
             float[,] contextHidden = null;
@@ -429,7 +439,12 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ApplyContextTypeEmbeddings(contextHidden, ctxTypes.ToArray());
             }
 
-            var priceHidden = ForwardPriceDecoder(input.PriceSequence, contextHidden, contextTimes, globalOffset);
+            var priceHidden = ForwardPriceDecoder(
+                input.PriceSequence,
+                contextHidden,
+                contextTimes,
+                globalOffset);
+
             var (reg, range, quality, dir, midDir, conf) = ProjectToOutputs(priceHidden);
 
             int last = reg.GetLength(0) - 1;
@@ -489,8 +504,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 currentAbsoluteTimestamp + Math.Max(0, priceSeqLen - 1) * timeUnitsPerPosition;
 
             PruneNewsMemory(maxNewsMemorySize);
-            PricePruneMemory(maxPriceMemorySize);
 
+            // Critical fix:
+            // The just-written price sequence must survive pruning. In the carry task,
+            // maxPriceMemory == seqLen, so the next sample must see this whole sequence.
+            PricePruneMemoryAfterAppend(maxPriceMemorySize, priceSeqLen);
             return new ModelPrediction
             {
                 High = reg[last, 0],
@@ -1104,28 +1122,174 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     .OrderByDescending(e => e.AbsoluteTimestamp)
                     .Take(maxSize)
                     .ToList();
+
                 return;
             }
 
             int reserve = 0;
+
             if (PruningConfig.NewEntryReserveFraction > 0f)
             {
                 reserve = Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
                 reserve = Math.Min(reserve, maxSize);
             }
 
-            var byTime = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).ToList();
+            var byTime = PriceMemory
+                .OrderByDescending(e => e.AbsoluteTimestamp)
+                .ToList();
+
             var kept = byTime
                 .Take(reserve)
                 .Concat(
                     byTime.Skip(reserve)
-                        .OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning
-                            ? e.AttentionScore
-                            : float.MinValue)
+                        .OrderByDescending(e =>
+                            e.QueryCount >= PruningConfig.MinQueryCountForPruning
+                                ? e.AttentionScore
+                                : float.MinValue)
                         .Take(maxSize - reserve))
                 .ToList();
 
             PriceMemory = kept;
+        }
+
+        internal void PricePruneMemoryAfterAppend(int maxSize, int appendedEntryCount)
+        {
+            if (maxSize <= 0)
+            {
+                PriceMemory.Clear();
+                return;
+            }
+
+            if (PriceMemory.Count <= maxSize)
+                return;
+
+            if (appendedEntryCount <= 0)
+            {
+                PricePruneMemory(maxSize);
+                return;
+            }
+
+            var indexed = PriceMemory
+                .Select((entry, index) => new IndexedPriceMemoryEntry
+                {
+                    Entry = entry,
+                    Index = index
+                })
+                .Where(x => x.Entry != null && x.Entry.HiddenState != null)
+                .ToList();
+
+            if (indexed.Count == 0)
+            {
+                PriceMemory.Clear();
+                return;
+            }
+
+            if (indexed.Count <= maxSize)
+            {
+                PriceMemory = indexed
+                    .OrderBy(x => x.Entry.AbsoluteTimestamp)
+                    .ThenBy(x => x.Index)
+                    .Select(x => x.Entry)
+                    .ToList();
+
+                return;
+            }
+
+            int protectedCount = Math.Clamp(appendedEntryCount, 0, Math.Min(maxSize, indexed.Count));
+
+            var kept = new List<IndexedPriceMemoryEntry>(maxSize);
+            var keptIndexes = new HashSet<int>();
+
+            void Keep(IndexedPriceMemoryEntry item)
+            {
+                if (kept.Count >= maxSize)
+                    return;
+
+                if (keptIndexes.Add(item.Index))
+                    kept.Add(item);
+            }
+
+            // Protect the entries that were just appended by the current sample.
+            // Use append order, not timestamp, because rolling/sliding datasets can
+            // contain overlapping absolute timestamps.
+            foreach (var item in indexed
+                .OrderByDescending(x => x.Index)
+                .Take(protectedCount)
+                .OrderBy(x => x.Index))
+            {
+                Keep(item);
+            }
+
+            int reserveTarget = protectedCount;
+
+            if (PruningConfig.NewEntryReserveFraction > 0f)
+            {
+                int fractionalReserve = Math.Max(
+                    1,
+                    (int)MathF.Ceiling(maxSize * PruningConfig.NewEntryReserveFraction));
+
+                fractionalReserve = Math.Clamp(fractionalReserve, 0, maxSize);
+                reserveTarget = Math.Max(reserveTarget, fractionalReserve);
+            }
+
+            reserveTarget = Math.Clamp(reserveTarget, 0, maxSize);
+
+            var newestFirst = indexed
+                .OrderByDescending(x => x.Entry.AbsoluteTimestamp)
+                .ThenByDescending(x => x.Index)
+                .ToList();
+
+            // Satisfy configured newest-entry reserve without evicting the protected
+            // just-appended sequence.
+            foreach (var item in newestFirst)
+            {
+                if (kept.Count >= reserveTarget)
+                    break;
+
+                Keep(item);
+            }
+
+            if (!PruningConfig.UseAttentionBasedPruning)
+            {
+                foreach (var item in newestFirst)
+                {
+                    if (kept.Count >= maxSize)
+                        break;
+
+                    Keep(item);
+                }
+            }
+            else
+            {
+                foreach (var item in indexed
+                    .Where(x => !keptIndexes.Contains(x.Index))
+                    .OrderByDescending(x =>
+                        x.Entry.QueryCount >= PruningConfig.MinQueryCountForPruning
+                            ? x.Entry.AttentionScore
+                            : float.MinValue)
+                    .ThenByDescending(x => x.Entry.AbsoluteTimestamp)
+                    .ThenByDescending(x => x.Index))
+                {
+                    if (kept.Count >= maxSize)
+                        break;
+
+                    Keep(item);
+                }
+            }
+
+            // Keep chronological order for price context. Cross-attention applies RoPE
+            // to context keys, so stable temporal ordering matters.
+            PriceMemory = kept
+                .OrderBy(x => x.Entry.AbsoluteTimestamp)
+                .ThenBy(x => x.Index)
+                .Select(x => x.Entry)
+                .ToList();
+        }
+
+        private sealed class IndexedPriceMemoryEntry
+        {
+            public PriceMemoryEntry Entry { get; set; }
+            public int Index { get; set; }
         }
         private void UpdateMemoryAttentionScores(float[,] priceHidden, float[,] ctxH, int total, int globalOffset, int storedNewsMemoryCount, int liveNewsCount, int storedPriceMemoryCount)
         {

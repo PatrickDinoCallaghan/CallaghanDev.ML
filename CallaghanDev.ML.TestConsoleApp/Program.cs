@@ -19,9 +19,9 @@ namespace CallaghanDev.ML.TestConsoleApp
             PrintBanner("TRANSFORMER TEST SUITE", '=');
 
             new MmtacTests().RunAllTests();
+            new TacmatTests().RunAllTests();
             new MultiTypeTransformerTests().RunAllTests();
             new CrossAttentionMultimodalTests().RunAllTests();
-            new TACMATests().RunAllTests();
 
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;

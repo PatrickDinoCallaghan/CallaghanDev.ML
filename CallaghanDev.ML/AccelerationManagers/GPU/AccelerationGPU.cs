@@ -7,7 +7,7 @@ using ILGPU.Runtime.Cuda;
 using ILGPU.Runtime.OpenCL;
 using static Microsoft.FSharp.Core.ByRefKinds;
 
-namespace CallaghanDev.ML.AccelerationManagers
+namespace CallaghanDev.ML.AccelerationManagers.GPU
 {
     public class AccelerationGPU : IAccelerationManager, IDisposable
     {

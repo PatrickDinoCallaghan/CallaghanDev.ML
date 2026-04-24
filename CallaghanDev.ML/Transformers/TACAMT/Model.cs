@@ -1,4 +1,5 @@
 using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Extensions;
 using CallaghanDev.ML.Transformers.Cache;
@@ -184,12 +185,95 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return ProjectToOutput(ForwardPriceDecoder(priceSequence, sh, st));
         }
 
+        public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, int rowStart, int rowCount, MultimodalForwardCache cache,  bool isTraining = false,  Random dropoutRng = null)
+        {
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            if (rowStart < 0)
+                throw new ArgumentOutOfRangeException(nameof(rowStart));
+
+            if (rowCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(rowCount));
+
+            if (rowStart + rowCount > priceSequence.GetLength(0))
+                throw new ArgumentException("Invalid slice bounds.");
+
+            cache.NumNewsContext = 0;
+            cache.NumPriceContext = 0;
+            cache.PriceContextHidden = null;
+
+            float[,] storyHidden = null;
+            float[] storyTimes = null;
+
+            if (stories != null && stories.Length > 0)
+            {
+                (storyHidden, storyTimes) = EncodeStoriesWithCache(stories, cache);
+
+                // story ArrivalTime is relative to the full priceSequence row 0.
+                // If we decode a sliced window starting at rowStart, shift key times
+                // into the sliced decoder coordinate system.
+                if (rowStart != 0 && storyTimes != null)
+                {
+                    var shiftedTimes = new float[storyTimes.Length];
+                    for (int i = 0; i < storyTimes.Length; i++)
+                        shiftedTimes[i] = storyTimes[i] - rowStart;
+
+                    storyTimes = shiftedTimes;
+                }
+            }
+            else
+            {
+                cache.TextFinalHidden = null;
+                cache.TextTokenIds = null;
+                cache.StoryCaches = new List<MultimodalForwardCache>();
+                cache.StoryTokenCounts = Array.Empty<int>();
+            }
+
+            cache.StoryArrivalTimes = storyTimes;
+
+            if (storyHidden != null && storyHidden.GetLength(0) > 0)
+            {
+                int numNews = storyHidden.GetLength(0);
+                var typeIndices = new int[numNews]; // all 0 = news
+
+                _accel.ApplyContextTypeEmbedding(storyHidden, ContextTypeEmbedding, typeIndices);
+
+                cache.TextFinalHidden = storyHidden;
+                cache.NumNewsContext = numNews;
+                cache.NumPriceContext = 0;
+            }
+            else
+            {
+                storyHidden = null;
+                storyTimes = null;
+            }
+
+            var priceHidden = ForwardPriceDecoderWithCache(
+                priceSequence,
+                rowStart,
+                rowCount,
+                storyHidden,
+                storyTimes,
+                cache,
+                isTraining,
+                dropoutRng);
+
+            cache.PriceFinalHidden = priceHidden;
+
+            return ProjectToOutput(priceHidden);
+        }
         public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, MultimodalForwardCache cache, bool isTraining = false, Random dropoutRng = null)
         {
             int sl = priceSequence.GetLength(0);
 
             return ForwardWithCache(stories, priceSequence, rowStart: 0, rowCount: sl, cache, isTraining, dropoutRng);
         }
+        /*
+      
 
 
         public (float[,] predictions, float[,] confidence) ForwardWithCache(NewsStory[] stories, float[,] priceSequence, int rowStart, int rowCount, MultimodalForwardCache cache, bool isTraining = false, Random dropoutRng = null)
@@ -250,7 +334,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return ProjectToOutput(ph);
         }
-
+        */
 
         public (float[] prediction, float confidence) PredictNext(NewsStory[] stories, float[,] priceSequence)
         {
@@ -280,143 +364,132 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return PredictNext(stories, priceSequence);
         }
 
-        public (float[] prediction, float confidence) PredictWithMemory(NewsStory[] newStories, float[,] priceSequence, double currentAbsoluteTimestamp, double timeUnitsPerPosition = 1.0, int maxNewsMemorySize = 100, int maxPriceMemorySize = 200)
+        public (float[] prediction, float confidence) PredictWithMemory(
+            NewsStory[] newStories,
+            float[,] priceSequence,
+            double currentAbsoluteTimestamp,
+            double timeUnitsPerPosition = 1.0,
+            int maxNewsMemorySize = 100,
+            int maxPriceMemorySize = 200)
         {
-            int embDim = _config.Price.EmbeddingDim;
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
 
-            var ctxH = new List<float[]>();
-            var ctxT = new List<float>();
-            var ctxTypes = new List<int>(); // 0 = news, 1 = price
+            if (priceSequence.GetLength(0) <= 0)
+                throw new ArgumentException("priceSequence must contain at least one row.", nameof(priceSequence));
 
-            // Existing news memory: positive age from query time
-            if (NewsMemory != null)
-            {
-                foreach (var e in NewsMemory)
-                {
-                    ctxH.Add(e.HiddenState);
-                    ctxT.Add((float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition));
-                    ctxTypes.Add(0);
-                }
-            }
+            if (timeUnitsPerPosition == 0.0)
+                throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition));
 
-            float[,] newSH = null;
-
-            // New stories: convert arrival offsets into positive age
-            // Convention:
-            //   ArrivalTime = 0   => current story, age 0
-            //   ArrivalTime = -3  => story happened 3 units before query, age 3
-            if (newStories != null && newStories.Length > 0)
-            {
-                float[] nst;
-                (newSH, nst) = EncodeStories(newStories);
-
-                for (int i = 0; i < nst.Length; i++)
-                {
-                    var v = new float[embDim];
-                    for (int d = 0; d < embDim; d++)
-                    {
-                        v[d] = newSH[i, d];
-                    }
-
-                    ctxH.Add(v);
-                    ctxT.Add(-nst[i]);
-                    ctxTypes.Add(0);
-                }
-            }
-
-            // Existing price memory: positive age from query time
-            if (PriceMemory != null)
-            {
-                foreach (var e in PriceMemory)
-                {
-                    ctxH.Add(e.HiddenState);
-                    ctxT.Add((float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition));
-                    ctxTypes.Add(1);
-                }
-            }
-
-            float[,] cH = null;
-            float[] cT = null;
-
-            if (ctxH.Count > 0)
-            {
-                cH = new float[ctxH.Count, embDim];
-                cT = new float[ctxH.Count];
-
-                for (int i = 0; i < ctxH.Count; i++)
-                {
-                    int cd = Math.Min(embDim, ctxH[i].Length);
-                    for (int d = 0; d < cd; d++)
-                    {
-                        cH[i, d] = ctxH[i][d];
-                    }
-
-                    cT[i] = ctxT[i];
-                }
-
-                _accel.ApplyContextTypeEmbedding(cH, ContextTypeEmbedding, ctxTypes.ToArray());
-            }
-
-            var priceHidden = ForwardPriceDecoder(priceSequence, cH, cT);
-            var (predictions, confidenceMatrix) = ProjectToOutput(priceHidden);
-
-            int lastPos = predictions.GetLength(0) - 1;
-            var prediction = new float[_config.Output.OutputDim];
-
-            for (int j = 0; j < _config.Output.OutputDim; j++)
-            {
-                prediction[j] = predictions[lastPos, j];
-            }
-
-            float conf = _config.Output.UseConfidenceHead
-                ? confidenceMatrix[lastPos, 0]
-                : 1.0f;
-
-            UpdateMemoryAttentionScores(priceHidden, cH, ctxH.Count);
-
-            // Persist newly seen stories using absolute timestamps
-            if (newSH != null)
-            {
-                for (int i = 0; i < newStories.Length; i++)
-                {
-                    var hv = new float[embDim];
-                    for (int d = 0; d < embDim; d++)
-                    {
-                        hv[d] = newSH[i, d];
-                    }
-
-                    NewsMemory.Add(new NewsMemoryEntry
-                    {
-                        HiddenState = hv,
-                        AbsoluteTimestamp = currentAbsoluteTimestamp + newStories[i].ArrivalTime * timeUnitsPerPosition
-                    });
-                }
-            }
-
-            int priceSeqLen = priceSequence.GetLength(0);
-
-            for (int t = 0; t < priceSeqLen; t++)
-            {
-                var pv = new float[embDim];
-                for (int d = 0; d < embDim; d++)
-                {
-                    pv[d] = priceHidden[t, d];
-                }
-
-                PriceMemory.Add(new PriceMemoryEntry
-                {
-                    HiddenState = pv,
-                    AbsoluteTimestamp = currentAbsoluteTimestamp + t * timeUnitsPerPosition
-                });
-            }
-
-            LastPriceTimestamp = currentAbsoluteTimestamp;
             PruneNewsMemory(maxNewsMemorySize);
             PricePruneMemory(maxPriceMemorySize);
 
-            return (prediction, conf);
-        }
+            var effectiveStories = new List<NewsStory>();
 
+            if (NewsMemory != null)
+            {
+                foreach (var entry in NewsMemory.OrderBy(e => e.AbsoluteTimestamp))
+                {
+                    if (entry.TokenIds == null || entry.TokenIds.Length == 0)
+                        continue;
+
+                    float relativeArrival = (float)((entry.AbsoluteTimestamp - currentAbsoluteTimestamp) / timeUnitsPerPosition);
+
+                    effectiveStories.Add(new NewsStory(
+                        (int[])entry.TokenIds.Clone(),
+                        relativeArrival));
+                }
+            }
+
+            if (newStories != null)
+            {
+                foreach (var story in newStories)
+                {
+                    if (story?.TokenIds == null || story.TokenIds.Length == 0)
+                        continue;
+
+                    effectiveStories.Add(new NewsStory(
+                        (int[])story.TokenIds.Clone(),
+                        story.ArrivalTime));
+                }
+            }
+
+            NewsStory[] forwardStories = effectiveStories.Count == 0 ? null : effectiveStories.ToArray();
+
+            var (prediction, confidence) = PredictNext(forwardStories, priceSequence);
+
+            if (newStories != null && newStories.Length > 0)
+                UpdateNewsMemory(newStories, currentAbsoluteTimestamp, timeUnitsPerPosition, maxNewsMemorySize);
+
+            if (maxPriceMemorySize > 0)
+            {
+                int embDim = _config.Price.EmbeddingDim;
+                float[,] priceHidden = ForwardPriceDecoder(priceSequence, null, null);
+                int priceRows = priceSequence.GetLength(0);
+
+                for (int t = 0; t < priceRows; t++)
+                {
+                    var hidden = new float[embDim];
+
+                    for (int d = 0; d < embDim; d++)
+                        hidden[d] = priceHidden[t, d];
+
+                    PriceMemory.Add(new PriceMemoryEntry
+                    {
+                        HiddenState = hidden,
+                        AbsoluteTimestamp = currentAbsoluteTimestamp + t * timeUnitsPerPosition
+                    });
+                }
+
+                PricePruneMemory(maxPriceMemorySize);
+            }
+
+            LastPriceTimestamp =
+                currentAbsoluteTimestamp +
+                Math.Max(0, priceSequence.GetLength(0) - 1) * timeUnitsPerPosition;
+
+            PruneNewsMemory(maxNewsMemorySize);
+
+            return (prediction, confidence);
+        }
+        public void UpdateNewsMemory(NewsStory[] stories, double ts, double tpp = 1.0, int max = 100)
+        {
+            if (stories == null || stories.Length == 0)
+                return;
+
+            if (tpp == 0.0)
+                throw new ArgumentOutOfRangeException(nameof(tpp));
+
+            int embDim = _config.Price.EmbeddingDim;
+
+            var (encodedStories, _) = EncodeStories(stories);
+
+            if (encodedStories.GetLength(1) != embDim)
+            {
+                throw new InvalidOperationException(
+                    $"Encoded story dim ({encodedStories.GetLength(1)}) does not match price embedding dim ({embDim}).");
+            }
+
+            for (int i = 0; i < stories.Length; i++)
+            {
+                if (stories[i]?.TokenIds == null || stories[i].TokenIds.Length == 0)
+                    throw new ArgumentException($"Story {i} has no token IDs.", nameof(stories));
+
+                var hidden = new float[embDim];
+
+                for (int d = 0; d < embDim; d++)
+                    hidden[d] = encodedStories[i, d];
+
+                NewsMemory.Add(new NewsMemoryEntry
+                {
+                    TokenIds = (int[])stories[i].TokenIds.Clone(),
+                    HiddenState = hidden,
+                    AbsoluteTimestamp = ts + stories[i].ArrivalTime * tpp
+                });
+            }
+
+            PruneNewsMemory(max);
+        }
         /// <summary>
         /// Updates the running attention scores for all memory entries by computing
         /// approximate attention weights from the last price position to each context entry.
@@ -424,61 +497,84 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// to avoid the cost of a full forward pass, but captures the essential signal:
         /// entries that the model's queries are similar to get high scores.
         /// </summary>
-        private void UpdateMemoryAttentionScores(float[,] priceHidden, float[,] contextHidden, int totalCtx)
+        internal void UpdateMemoryAttentionScores(float[,] priceHidden, float[,] contextHidden, int totalCtx)
         {
-            if (contextHidden == null || totalCtx == 0) return;
+            if (priceHidden == null || contextHidden == null)
+                return;
+
+            if (priceHidden.GetLength(0) <= 0 || totalCtx <= 0)
+                return;
+
+            totalCtx = Math.Min(totalCtx, contextHidden.GetLength(0));
+
+            if (totalCtx <= 0)
+                return;
 
             int embDim = _config.Price.EmbeddingDim;
             int lastPos = priceHidden.GetLength(0) - 1;
             float alpha = PruningConfig.AttentionScoreAlpha;
-
-
             float scale = 1.0f / MathF.Sqrt(embDim);
+
             var scores = _accel.ComputeMemoryAttentionScores(priceHidden, lastPos, contextHidden, totalCtx, scale);
-            float maxScore = scores.Length > 0 ? scores.Max() : float.MinValue;
 
-            // Softmax
-            float sumExp = 0;
-            for (int s = 0; s < totalCtx; s++)
+            float maxScore = float.NegativeInfinity;
+
+            for (int i = 0; i < totalCtx; i++)
+                if (scores[i] > maxScore)
+                    maxScore = scores[i];
+
+            if (!float.IsFinite(maxScore))
+                return;
+
+            float sumExp = 0f;
+
+            for (int i = 0; i < totalCtx; i++)
             {
-                scores[s] = MathF.Exp(scores[s] - maxScore);
-                sumExp += scores[s];
-            }
-            if (sumExp > 0)
-            {
-                for (int s = 0; s < totalCtx; s++)
-                {
-                    scores[s] /= sumExp;
-                }
+                scores[i] = MathF.Exp(scores[i] - maxScore);
+                sumExp += scores[i];
             }
 
-            // Update EMA scores for news memory entries
-            int newsCount = NewsMemory?.Count ?? 0;
-            for (int i = 0; i < newsCount && i < totalCtx; i++)
+            if (sumExp > 0f && float.IsFinite(sumExp))
+            {
+                float inv = 1.0f / sumExp;
+
+                for (int i = 0; i < totalCtx; i++)
+                    scores[i] *= inv;
+            }
+            else
+            {
+                float uniform = 1.0f / totalCtx;
+
+                for (int i = 0; i < totalCtx; i++)
+                    scores[i] = uniform;
+            }
+
+            int existingNewsCount = NewsMemory?.Count ?? 0;
+            int newsRows = Math.Min(existingNewsCount, totalCtx);
+
+            for (int i = 0; i < newsRows; i++)
             {
                 var entry = NewsMemory[i];
-                entry.AttentionScore = alpha * scores[i] + (1 - alpha) * entry.AttentionScore;
+                entry.AttentionScore = alpha * scores[i] + (1f - alpha) * entry.AttentionScore;
                 entry.QueryCount++;
             }
 
-            // Update EMA scores for price memory entries
-            int priceCount = PriceMemory?.Count ?? 0;
-            int priceOffset = totalCtx - priceCount;
+            int existingPriceCount = PriceMemory?.Count ?? 0;
+            int priceRows = Math.Min(existingPriceCount, totalCtx);
+            int priceOffset = totalCtx - priceRows;
 
-            for (int i = 0; i < priceCount && (priceOffset + i) < totalCtx; i++)
+            for (int i = 0; i < priceRows; i++)
             {
-                var entry = PriceMemory[i];
-
                 int ctxIdx = priceOffset + i;
 
-                if (ctxIdx < totalCtx)
-                {
-                    entry.AttentionScore = alpha * scores[ctxIdx] + (1 - alpha) * entry.AttentionScore;
-                    entry.QueryCount++;
-                }
+                if (ctxIdx < 0 || ctxIdx >= totalCtx)
+                    continue;
+
+                var entry = PriceMemory[i];
+                entry.AttentionScore = alpha * scores[ctxIdx] + (1f - alpha) * entry.AttentionScore;
+                entry.QueryCount++;
             }
         }
-
         /// <summary>
         /// Prune news memory using attention-based strategy.
         /// Entries with consistently low attention scores are pruned first,
@@ -488,88 +584,131 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// </summary>
         internal void PruneNewsMemory(int maxSize)
         {
+            if (NewsMemory == null)
+                return;
+
+            if (maxSize <= 0)
+            {
+                NewsMemory.Clear();
+                return;
+            }
+
             if (NewsMemory.Count <= maxSize)
+                return;
+
+            if (PruningConfig == null || !PruningConfig.UseAttentionBasedPruning)
             {
+                NewsMemory = NewsMemory
+                    .OrderByDescending(e => e.AbsoluteTimestamp)
+                    .Take(maxSize)
+                    .OrderBy(e => e.AbsoluteTimestamp)
+                    .ToList();
+
                 return;
             }
-            if (!PruningConfig.UseAttentionBasedPruning)
-            {
-                // Fallback: oldest-first
-                NewsMemory = NewsMemory.OrderByDescending(e => e.AbsoluteTimestamp).Take(maxSize).ToList();
-                return;
-            }
 
-            int reserveCount = Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
-            int scorePruneCount = maxSize - reserveCount;
+            float reserveFraction = Math.Clamp(PruningConfig.NewEntryReserveFraction, 0f, 1f);
 
-            // Sort by timestamp to identify newest entries
-            var byTime = NewsMemory.OrderByDescending(e => e.AbsoluteTimestamp).ToList();
+            int reserveCount = (int)(maxSize * reserveFraction);
 
-            // Newest entries get reserved slots regardless of score
-            var reserved = byTime.Take(reserveCount).ToHashSet();
-            var candidates = byTime.Skip(reserveCount).ToList();
+            if (reserveFraction > 0f && reserveCount == 0)
+                reserveCount = 1;
 
-            // Among candidates, keep the ones with highest attention scores
-            // Entries not yet queried enough get maximum score (cold-start protection)
-            var kept = candidates.OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning ? e.AttentionScore : float.MaxValue).Take(scorePruneCount).ToList();
+            reserveCount = Math.Clamp(reserveCount, 0, maxSize);
 
-            NewsMemory = reserved.Concat(kept).ToList();
+            int scoreKeepCount = maxSize - reserveCount;
+
+            var byNewest = NewsMemory
+                .OrderByDescending(e => e.AbsoluteTimestamp)
+                .ToList();
+
+            var reserved = byNewest.Take(reserveCount).ToList();
+            var reservedSet = reserved.ToHashSet();
+
+            var candidates = byNewest
+                .Where(e => !reservedSet.Contains(e))
+                .ToList();
+
+            var keptByScore = candidates
+                .OrderByDescending(e =>
+                    e.QueryCount >= PruningConfig.MinQueryCountForPruning
+                        ? e.AttentionScore
+                        : float.MaxValue)
+                .ThenByDescending(e => e.AbsoluteTimestamp)
+                .Take(scoreKeepCount)
+                .ToList();
+
+            NewsMemory = reserved
+                .Concat(keptByScore)
+                .OrderBy(e => e.AbsoluteTimestamp)
+                .ToList();
         }
-
         /// <summary>
         /// Prune price memory using attention-based strategy. Same logic as news pruning.
         /// </summary>
         internal void PricePruneMemory(int maxSize)
         {
+            if (PriceMemory == null)
+                return;
+
+            if (maxSize <= 0)
+            {
+                PriceMemory.Clear();
+                return;
+            }
+
             if (PriceMemory.Count <= maxSize)
+                return;
+
+            if (PruningConfig == null || !PruningConfig.UseAttentionBasedPruning)
             {
+                PriceMemory = PriceMemory
+                    .OrderByDescending(e => e.AbsoluteTimestamp)
+                    .Take(maxSize)
+                    .OrderBy(e => e.AbsoluteTimestamp)
+                    .ToList();
+
                 return;
             }
 
-            if (!PruningConfig.UseAttentionBasedPruning)
-            {
-                PriceMemory = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).Take(maxSize).ToList();
-                return;
-            }
+            float reserveFraction = Math.Clamp(PruningConfig.NewEntryReserveFraction, 0f, 1f);
 
-            int reserveCount = Math.Max(1, (int)(maxSize * PruningConfig.NewEntryReserveFraction));
-            int scorePruneCount = maxSize - reserveCount;
+            int reserveCount = (int)(maxSize * reserveFraction);
 
-            var byTime = PriceMemory.OrderByDescending(e => e.AbsoluteTimestamp).ToList();
-            var reserved = byTime.Take(reserveCount).ToHashSet();
-            var candidates = byTime.Skip(reserveCount).ToList();
+            if (reserveFraction > 0f && reserveCount == 0)
+                reserveCount = 1;
 
-            var kept = candidates.OrderByDescending(e => e.QueryCount >= PruningConfig.MinQueryCountForPruning ? e.AttentionScore : float.MaxValue)
-                .Take(scorePruneCount)
+            reserveCount = Math.Clamp(reserveCount, 0, maxSize);
+
+            int scoreKeepCount = maxSize - reserveCount;
+
+            var byNewest = PriceMemory
+                .OrderByDescending(e => e.AbsoluteTimestamp)
                 .ToList();
 
-            PriceMemory = reserved.Concat(kept).ToList();
+            var reserved = byNewest.Take(reserveCount).ToList();
+            var reservedSet = reserved.ToHashSet();
+
+            var candidates = byNewest
+                .Where(e => !reservedSet.Contains(e))
+                .ToList();
+
+            var keptByScore = candidates
+                .OrderByDescending(e =>
+                    e.QueryCount >= PruningConfig.MinQueryCountForPruning
+                        ? e.AttentionScore
+                        : float.MaxValue)
+                .ThenByDescending(e => e.AbsoluteTimestamp)
+                .Take(scoreKeepCount)
+                .ToList();
+
+            PriceMemory = reserved
+                .Concat(keptByScore)
+                .OrderBy(e => e.AbsoluteTimestamp)
+                .ToList();
         }
 
-        public void UpdateNewsMemory(NewsStory[] stories, double ts, double tpp = 1.0, int max = 100)
-        {
-            if (stories == null || stories.Length == 0)
-            {
-                return;
-            }
-            var (sh, _) = EncodeStories(stories); int ed = _config.Price.EmbeddingDim;
-            for (int i = 0; i < stories.Length; i++)
-            {
-                var hv = new float[ed];
-                for (int d = 0; d < ed; d++)
-                {
-                    hv[d] = sh[i, d];
-                }
-                NewsMemory.Add(new NewsMemoryEntry
-                {
-                    HiddenState = hv,
-                    AbsoluteTimestamp = ts + stories[i].ArrivalTime * tpp
-                });
-            }
-            LastPriceTimestamp = ts;
-            PruneNewsMemory(max);
-        }
-
+     
         public void ClearAllMemory()
         {
             NewsMemory.Clear();
@@ -584,72 +723,144 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         public (float[,], float[]) EncodeStories(NewsStory[] stories)
         {
-            int n = stories.Length, ed = _config.Text.EmbeddingDim;
-            var sh = new float[n, ed]; var at = new float[n];
-            for (int s = 0; s < n; s++)
-            {
-                var th = ForwardTextEncoder(stories[s].TokenIds); int sl = th.GetLength(0);
-                for (int d = 0; d < ed; d++)
-                {
-                    float sum = 0;
-                    for (int t = 0; t < sl; t++)
-                        sum += th[t, d];
-                    sh[s, d] = sum / sl;  // mean pool - outside the t loop
-                }
-                at[s] = stories[s].ArrivalTime;
-            }
-            return (sh, at);
-        }
+            if (stories == null)
+                throw new ArgumentNullException(nameof(stories));
 
+            int storyCount = stories.Length;
+            int embeddingDim = _config.Text.EmbeddingDim;
+
+            var storyHidden = new float[storyCount, embeddingDim];
+            var arrivalTimes = new float[storyCount];
+
+            for (int s = 0; s < storyCount; s++)
+            {
+                if (stories[s]?.TokenIds == null || stories[s].TokenIds.Length == 0)
+                    throw new ArgumentException($"Story {s} has no token IDs.", nameof(stories));
+
+                var tokenHidden = ForwardTextEncoder(stories[s].TokenIds);
+                int tokenCount = tokenHidden.GetLength(0);
+
+                if (tokenCount <= 0)
+                    throw new InvalidOperationException($"Story {s} produced an empty text hidden state.");
+
+                float invTokenCount = 1.0f / tokenCount;
+
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    float sum = 0f;
+
+                    for (int t = 0; t < tokenCount; t++)
+                        sum += tokenHidden[t, d];
+
+                    storyHidden[s, d] = sum * invTokenCount;
+                }
+
+                arrivalTimes[s] = stories[s].ArrivalTime;
+            }
+
+            return (storyHidden, arrivalTimes);
+        }
         internal (float[,], float[]) EncodeStoriesWithCache(NewsStory[] stories, MultimodalForwardCache cache)
         {
-            int n = stories.Length, ed = _config.Text.EmbeddingDim;
-            var sh = new float[n, ed]; var at = new float[n];
-            cache.StoryCaches = new List<MultimodalForwardCache>(); cache.StoryTokenCounts = new int[n];
-            for (int s = 0; s < n; s++)
-            {
-                var sc = new MultimodalForwardCache(_config.Text.NumLayers, 0);
-                var th = ForwardTextEncoderWithCache(stories[s].TokenIds, sc);
-                cache.StoryCaches.Add(sc); cache.StoryTokenCounts[s] = stories[s].TokenIds.Length;
-                int sl = th.GetLength(0);
-                for (int d = 0; d < ed; d++)
-                {
-                    float sum = 0;
-                    for (int t = 0; t < sl; t++)
-                    {
-                        sum += th[t, d]; sh[s, d] = sum / sl;
-                    }
-                }
-                at[s] = stories[s].ArrivalTime;
-            }
-            cache.TextFinalHidden = sh; cache.TextTokenIds = stories.SelectMany(s => s.TokenIds).ToArray();
-            return (sh, at);
-        }
+            if (stories == null)
+                throw new ArgumentNullException(nameof(stories));
 
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            int storyCount = stories.Length;
+            int embeddingDim = _config.Text.EmbeddingDim;
+
+            var storyHidden = new float[storyCount, embeddingDim];
+            var arrivalTimes = new float[storyCount];
+
+            cache.StoryCaches = new List<MultimodalForwardCache>(storyCount);
+            cache.StoryTokenCounts = new int[storyCount];
+
+            for (int s = 0; s < storyCount; s++)
+            {
+                if (stories[s]?.TokenIds == null || stories[s].TokenIds.Length == 0)
+                    throw new ArgumentException($"Story {s} has no token IDs.", nameof(stories));
+
+                var storyCache = new MultimodalForwardCache(_config.Text.NumLayers, 0);
+                var tokenHidden = ForwardTextEncoderWithCache(stories[s].TokenIds, storyCache);
+
+                cache.StoryCaches.Add(storyCache);
+
+                int tokenCount = tokenHidden.GetLength(0);
+
+                if (tokenCount <= 0)
+                    throw new InvalidOperationException($"Story {s} produced an empty text hidden state.");
+
+                cache.StoryTokenCounts[s] = tokenCount;
+
+                float invTokenCount = 1.0f / tokenCount;
+
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    float sum = 0f;
+
+                    for (int t = 0; t < tokenCount; t++)
+                        sum += tokenHidden[t, d];
+
+                    storyHidden[s, d] = sum * invTokenCount;
+                }
+
+                arrivalTimes[s] = stories[s].ArrivalTime;
+            }
+
+            cache.TextFinalHidden = storyHidden;
+            cache.TextTokenIds = stories.SelectMany(s => s.TokenIds).ToArray();
+            cache.NumNewsContext = storyCount;
+            cache.NumPriceContext = 0;
+            cache.PriceContextHidden = null;
+
+            return (storyHidden, arrivalTimes);
+        }
         private float[,] ForwardPriceDecoder(float[,] priceSequence, float[,] ctx, float[] ctxTimes)
         {
-            int sl = priceSequence.GetLength(0);
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
 
-            var emb = EmbedPriceSequence(priceSequence, sl);
+            int seqLen = priceSequence.GetLength(0);
 
-            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
+            if (seqLen <= 0)
+                throw new ArgumentException("priceSequence must contain at least one row.", nameof(priceSequence));
 
-            var x = emb;
+            int embeddingDim = _config.Price.EmbeddingDim;
 
-            // Precompute once (not inside loop)
-            float[,] td = null;
-            float[] ktr = null;
+            bool hasContext = ctx != null && ctx.GetLength(0) > 0;
 
-            if (ctx != null && ctxTimes != null)
+            if (hasContext)
             {
-                td = _accel.ComputeTimeDiffMatrix(sl, ctxTimes);
-                ktr = ctxTimes;
+                if (ctx.GetLength(1) != embeddingDim)
+                    throw new ArgumentException($"Context embedding dim must be {embeddingDim}.", nameof(ctx));
+
+                if (ctxTimes != null && ctxTimes.Length != ctx.GetLength(0))
+                    throw new ArgumentException("ctxTimes length must match context row count.", nameof(ctxTimes));
+            }
+            else
+            {
+                ctx = null;
+                ctxTimes = null;
+            }
+
+            var x = EmbedPriceSequence(priceSequence, seqLen);
+            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
+
+            float[,] timeDiffs = null;
+            float[] keyTimes = null;
+
+            if (hasContext && ctxTimes != null && _config.DecayNetwork.Enabled)
+            {
+                timeDiffs = _accel.ComputeTimeDiffMatrix(seqLen, ctxTimes);
+                keyTimes = ctxTimes;
             }
 
             foreach (var block in PriceBlocks)
             {
                 block.SetContext(ctx);
-                block.SetTimeData(td, ktr);
+                block.SetTimeData(timeDiffs, keyTimes);
                 block.SetTraining(false);
 
                 x = block.Forward(x, mask);
@@ -698,6 +909,213 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         // Existing signature remains for compatibility.
         // It now delegates to the new overload.
+        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+        {
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            if (rowStart < 0)
+                throw new ArgumentOutOfRangeException(nameof(rowStart));
+
+            if (rowCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(rowCount));
+
+            if (rowStart + rowCount > priceSequence.GetLength(0))
+                throw new ArgumentException("rowStart + rowCount exceeds priceSequence row count.");
+
+            int seqLen = rowCount;
+            int embeddingDim = _config.Price.EmbeddingDim;
+            int numHeads = _config.Price.NumHeads;
+            int headDim = embeddingDim / numHeads;
+            float scale = 1.0f / MathF.Sqrt(headDim);
+
+            bool hasContext = storyHidden != null && storyHidden.GetLength(0) > 0;
+
+            if (hasContext)
+            {
+                if (storyHidden.GetLength(1) != embeddingDim)
+                    throw new ArgumentException($"storyHidden embedding dim must be {embeddingDim}.", nameof(storyHidden));
+
+                if (storyTimes != null && storyTimes.Length != storyHidden.GetLength(0))
+                    throw new ArgumentException("storyTimes length must match storyHidden row count.", nameof(storyTimes));
+            }
+            else
+            {
+                storyHidden = null;
+                storyTimes = null;
+            }
+
+            var emb = EmbedPriceSequence(priceSequence, rowStart, rowCount);
+
+            cache.PriceEmbedded = emb;
+            cache.PriceContinuousInput =
+                (rowStart == 0)
+                    ? priceSequence
+                    : _accel.SliceRows(priceSequence, rowStart, rowStart + rowCount);
+
+            bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
+            var x = emb;
+
+            for (int layer = 0; layer < _config.Price.NumLayers; layer++)
+            {
+                var block = PriceBlocks[layer];
+                var blockCache = cache.PriceBlockCaches[layer];
+
+                blockCache.BlockInput = x;
+
+                var selfQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
+                var selfK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
+                var selfV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
+
+                RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
+
+                blockCache.SelfQ = selfQ;
+                blockCache.SelfK = selfK;
+                blockCache.SelfV = selfV;
+
+                var selfAttnOutput = _accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfMask);
+
+                blockCache.SelfAttnOutput = selfAttnOutput;
+
+                var selfProjected = ComputeProjection(selfAttnOutput, block.SelfAttention.WO, block.SelfAttention.BiasO);
+                var selfResidual = _accel.MatrixAdd(x, selfProjected);
+
+                blockCache.SelfResidualInput = selfResidual;
+
+                var (normedSelf, selfMean, selfVariance, selfNormalized) =
+                    _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
+
+                blockCache.LNSelfCache.Input = selfResidual;
+                blockCache.LNSelfCache.Mean = selfMean;
+                blockCache.LNSelfCache.Variance = selfVariance;
+                blockCache.LNSelfCache.Normalized = selfNormalized;
+                blockCache.NormedSelf = normedSelf;
+
+                float[,] crossNormed;
+
+                if (hasContext)
+                {
+                    float[,] timeDiffs = null;
+                    float[] keyTimes = null;
+
+                    if (storyTimes != null && _config.DecayNetwork.Enabled)
+                    {
+                        timeDiffs = _accel.ComputeTimeDiffMatrix(seqLen, storyTimes);
+                        keyTimes = storyTimes;
+                    }
+
+                    blockCache.TimeDiffs = timeDiffs;
+                    blockCache.KeyTimesFromRef = keyTimes;
+                    blockCache.DecayCache = null;
+                    blockCache.CrossAttentionWeights = null;
+                    blockCache.CrossScoresPreSoftmax = null;
+
+                    var crossQ = ComputeProjection(normedSelf, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
+                    var crossK = ComputeProjection(storyHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
+                    var crossV = ComputeProjection(storyHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+
+                    RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
+
+                    blockCache.CrossQ = crossQ;
+                    blockCache.CrossK = crossK;
+                    blockCache.CrossV = crossV;
+
+                    var crossAttnOutput = ContentAwareCrossAttentionWithCache(
+                        crossQ,
+                        crossK,
+                        crossV,
+                        timeDiffs,
+                        keyTimes,
+                        normedSelf,
+                        storyHidden,
+                        block,
+                        blockCache,
+                        isTraining,
+                        dropoutRng);
+
+                    blockCache.CrossAttnOutput = crossAttnOutput;
+
+                    var crossProjected = ComputeProjection(crossAttnOutput, block.CrossAttention.WO, block.CrossAttention.BiasO);
+                    var crossResidual = _accel.MatrixAdd(normedSelf, crossProjected);
+
+                    blockCache.CrossResidualInput = crossResidual;
+
+                    var (normedCross, crossMean, crossVariance, crossNormalized) =
+                        _accel.LayerNormForward(crossResidual, block.LnCrossGamma, block.LnCrossBeta);
+
+                    blockCache.LNCrossCache.Input = crossResidual;
+                    blockCache.LNCrossCache.Mean = crossMean;
+                    blockCache.LNCrossCache.Variance = crossVariance;
+                    blockCache.LNCrossCache.Normalized = crossNormalized;
+                    blockCache.NormedCross = normedCross;
+
+                    crossNormed = normedCross;
+                }
+                else
+                {
+                    blockCache.CrossQ = null;
+                    blockCache.CrossK = null;
+                    blockCache.CrossV = null;
+                    blockCache.CrossAttnOutput = null;
+                    blockCache.CrossAttentionWeights = null;
+                    blockCache.CrossScoresPreSoftmax = null;
+                    blockCache.TimeDiffs = null;
+                    blockCache.KeyTimesFromRef = null;
+                    blockCache.DecayCache = null;
+
+                    var (normedCross, crossMean, crossVariance, crossNormalized) =
+                        _accel.LayerNormForward(normedSelf, block.LnCrossGamma, block.LnCrossBeta);
+
+                    blockCache.LNCrossCache.Input = normedSelf;
+                    blockCache.LNCrossCache.Mean = crossMean;
+                    blockCache.LNCrossCache.Variance = crossVariance;
+                    blockCache.LNCrossCache.Normalized = crossNormalized;
+                    blockCache.NormedCross = normedCross;
+
+                    crossNormed = normedCross;
+                }
+
+                var ffnInputRows = new float[seqLen][];
+
+                for (int i = 0; i < seqLen; i++)
+                {
+                    var row = new float[embeddingDim];
+
+                    for (int j = 0; j < embeddingDim; j++)
+                        row[j] = crossNormed[i, j];
+
+                    ffnInputRows[i] = row;
+                }
+
+                var ffnOutput = _accel.FFNForwardBatch(
+                    crossNormed,
+                    seqLen,
+                    embeddingDim,
+                    block.FeedForwardNetwork.ForwardPassOnly);
+
+                blockCache.FFNInputRows = ffnInputRows;
+                blockCache.FFNOutput = ffnOutput;
+
+                var ffnResidual = _accel.MatrixAdd(crossNormed, ffnOutput);
+
+                blockCache.FFNResidualInput = ffnResidual;
+
+                var (normedFfn, ffnMean, ffnVariance, ffnNormalized) =
+                    _accel.LayerNormForward(ffnResidual, block.LNFFNGamma, block.LNFFNBeta);
+
+                blockCache.LNFFNCache.Input = ffnResidual;
+                blockCache.LNFFNCache.Mean = ffnMean;
+                blockCache.LNFFNCache.Variance = ffnVariance;
+                blockCache.LNFFNCache.Normalized = ffnNormalized;
+
+                x = normedFfn;
+            }
+
+            return x;
+        }
         internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
             int sl = priceSequence.GetLength(0);
@@ -712,175 +1130,176 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 dropoutRng: dropoutRng);
         }
 
-        // accepts rowStart/rowCount so caller can avoid SliceRows.
-        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
-        {
-            if (priceSequence == null)
-            {
-                throw new ArgumentNullException(nameof(priceSequence));
-            }
-            if (rowStart < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(rowStart));
-            }
+        /* 
+         // accepts rowStart/rowCount so caller can avoid SliceRows.
+         internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+         {
+             if (priceSequence == null)
+             {
+                 throw new ArgumentNullException(nameof(priceSequence));
+             }
+             if (rowStart < 0)
+             {
+                 throw new ArgumentOutOfRangeException(nameof(rowStart));
+             }
 
-            if (rowCount < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(rowCount));
-            }
-            if (rowStart + rowCount > priceSequence.GetLength(0))
-            {
-                throw new ArgumentException("rowStart + rowCount exceeds priceSequence row count.");
-            }
+             if (rowCount < 0)
+             {
+                 throw new ArgumentOutOfRangeException(nameof(rowCount));
+             }
+             if (rowStart + rowCount > priceSequence.GetLength(0))
+             {
+                 throw new ArgumentException("rowStart + rowCount exceeds priceSequence row count.");
+             }
 
-            int sl = rowCount;
-            int ed = _config.Price.EmbeddingDim;
-            int nh = _config.Price.NumHeads;
-            int hd = ed / nh;
+             int sl = rowCount;
+             int ed = _config.Price.EmbeddingDim;
+             int nh = _config.Price.NumHeads;
+             int hd = ed / nh;
 
-            float scale = 1.0f / MathF.Sqrt(hd);
+             float scale = 1.0f / MathF.Sqrt(hd);
 
-            var emb = EmbedPriceSequence(priceSequence, rowStart, rowCount);
+             var emb = EmbedPriceSequence(priceSequence, rowStart, rowCount);
 
-            cache.PriceEmbedded = emb;
-            cache.PriceContinuousInput = (rowStart == 0) ? priceSequence : _accel.SliceRows(priceSequence, rowStart, rowStart + rowCount);
+             cache.PriceEmbedded = emb;
+             cache.PriceContinuousInput = (rowStart == 0) ? priceSequence : _accel.SliceRows(priceSequence, rowStart, rowStart + rowCount);
 
-            bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
-            var x = emb;
+             bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
+             var x = emb;
 
-            for (int layer = 0; layer < _config.Price.NumLayers; layer++)
-            {
-                var block = PriceBlocks[layer];
-                var bc = cache.PriceBlockCaches[layer];
-                bc.BlockInput = x;
+             for (int layer = 0; layer < _config.Price.NumLayers; layer++)
+             {
+                 var block = PriceBlocks[layer];
+                 var bc = cache.PriceBlockCaches[layer];
+                 bc.BlockInput = x;
 
-                var sQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
-                var sK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
-                var sV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
+                 var sQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
+                 var sK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
+                 var sV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
 
-                RotaryPositionEmbedding.ApplyInPlace(sQ, sK, nh);
+                 RotaryPositionEmbedding.ApplyInPlace(sQ, sK, nh);
 
-                bc.SelfQ = sQ;
-                bc.SelfK = sK;
-                bc.SelfV = sV;
+                 bc.SelfQ = sQ;
+                 bc.SelfK = sK;
+                 bc.SelfV = sV;
 
-                var sao = _accel.MultiHeadAttentionForward(sQ, sK, sV, nh, scale, selfMask);
-                bc.SelfAttnOutput = sao;
+                 var sao = _accel.MultiHeadAttentionForward(sQ, sK, sV, nh, scale, selfMask);
+                 bc.SelfAttnOutput = sao;
 
-                var sp = ComputeProjection(sao, block.SelfAttention.WO, block.SelfAttention.BiasO);
-                var sr = _accel.MatrixAdd(x, sp);
-                bc.SelfResidualInput = sr;
+                 var sp = ComputeProjection(sao, block.SelfAttention.WO, block.SelfAttention.BiasO);
+                 var sr = _accel.MatrixAdd(x, sp);
+                 bc.SelfResidualInput = sr;
 
-                var (ns, sm, sv, sn) = _accel.LayerNormForward(sr, block.LNSelfGamma, block.LNSelfBeta);
-                bc.LNSelfCache.Input = sr;
-                bc.LNSelfCache.Mean = sm;
-                bc.LNSelfCache.Variance = sv;
-                bc.LNSelfCache.Normalized = sn;
-                bc.NormedSelf = ns;
+                 var (ns, sm, sv, sn) = _accel.LayerNormForward(sr, block.LNSelfGamma, block.LNSelfBeta);
+                 bc.LNSelfCache.Input = sr;
+                 bc.LNSelfCache.Mean = sm;
+                 bc.LNSelfCache.Variance = sv;
+                 bc.LNSelfCache.Normalized = sn;
+                 bc.NormedSelf = ns;
 
-                float[,] nc;
+                 float[,] nc;
 
-                if (storyHidden != null)
-                {
-                    float[,] td = null;
-                    float[] ktr = null;
+                 if (storyHidden != null)
+                 {
+                     float[,] td = null;
+                     float[] ktr = null;
 
-                    if (storyTimes != null)
-                    {
-                        // sl is already the logical sequence length, so time diff matrix stays correct.
-                        td = _accel.ComputeTimeDiffMatrix(sl, storyTimes);
-                        ktr = storyTimes;
-                        bc.TimeDiffs = td;
-                        bc.KeyTimesFromRef = ktr;
-                    }
+                     if (storyTimes != null)
+                     {
+                         // sl is already the logical sequence length, so time diff matrix stays correct.
+                         td = _accel.ComputeTimeDiffMatrix(sl, storyTimes);
+                         ktr = storyTimes;
+                         bc.TimeDiffs = td;
+                         bc.KeyTimesFromRef = ktr;
+                     }
 
-                    var cQ = ComputeProjection(ns, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
-                    var cK = ComputeProjection(storyHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
-                    var cV = ComputeProjection(storyHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+                     var cQ = ComputeProjection(ns, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
+                     var cK = ComputeProjection(storyHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
+                     var cV = ComputeProjection(storyHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
 
-                    RotaryPositionEmbedding.ApplyInPlace(cQ, cK, nh);
+                     RotaryPositionEmbedding.ApplyInPlace(cQ, cK, nh);
 
-                    bc.CrossQ = cQ;
-                    bc.CrossK = cK;
-                    bc.CrossV = cV;
+                     bc.CrossQ = cQ;
+                     bc.CrossK = cK;
+                     bc.CrossV = cV;
 
-                    var cao = ContentAwareCrossAttentionWithCache(
-                        cQ, cK, cV,
-                        td, ktr,
-                        ns, storyHidden,
-                        block, bc,
-                        isTraining, dropoutRng);
+                     var cao = ContentAwareCrossAttentionWithCache(
+                         cQ, cK, cV,
+                         td, ktr,
+                         ns, storyHidden,
+                         block, bc,
+                         isTraining, dropoutRng);
 
-                    bc.CrossAttnOutput = cao;
+                     bc.CrossAttnOutput = cao;
 
-                    var cp = ComputeProjection(cao, block.CrossAttention.WO, block.CrossAttention.BiasO);
-                    var cr = _accel.MatrixAdd(ns, cp);
-                    bc.CrossResidualInput = cr;
+                     var cp = ComputeProjection(cao, block.CrossAttention.WO, block.CrossAttention.BiasO);
+                     var cr = _accel.MatrixAdd(ns, cp);
+                     bc.CrossResidualInput = cr;
 
-                    var (ncr, cm, cvr, cn) = _accel.LayerNormForward(cr, block.LnCrossGamma, block.LnCrossBeta);
-                    bc.LNCrossCache.Input = cr;
-                    bc.LNCrossCache.Mean = cm;
-                    bc.LNCrossCache.Variance = cvr;
-                    bc.LNCrossCache.Normalized = cn;
-                    bc.NormedCross = ncr;
+                     var (ncr, cm, cvr, cn) = _accel.LayerNormForward(cr, block.LnCrossGamma, block.LnCrossBeta);
+                     bc.LNCrossCache.Input = cr;
+                     bc.LNCrossCache.Mean = cm;
+                     bc.LNCrossCache.Variance = cvr;
+                     bc.LNCrossCache.Normalized = cn;
+                     bc.NormedCross = ncr;
 
-                    nc = ncr;
-                }
-                else
-                {
-                    bc.CrossQ = null;
-                    bc.CrossK = null;
-                    bc.CrossV = null;
-                    bc.CrossAttnOutput = null;
-                    bc.TimeDiffs = null;
-                    bc.DecayCache = null;
+                     nc = ncr;
+                 }
+                 else
+                 {
+                     bc.CrossQ = null;
+                     bc.CrossK = null;
+                     bc.CrossV = null;
+                     bc.CrossAttnOutput = null;
+                     bc.TimeDiffs = null;
+                     bc.DecayCache = null;
 
-                    var (ncr, cm, cvr, cn) = _accel.LayerNormForward(ns, block.LnCrossGamma, block.LnCrossBeta);
-                    bc.LNCrossCache.Input = ns;
-                    bc.LNCrossCache.Mean = cm;
-                    bc.LNCrossCache.Variance = cvr;
-                    bc.LNCrossCache.Normalized = cn;
-                    bc.NormedCross = ncr;
+                     var (ncr, cm, cvr, cn) = _accel.LayerNormForward(ns, block.LnCrossGamma, block.LnCrossBeta);
+                     bc.LNCrossCache.Input = ns;
+                     bc.LNCrossCache.Mean = cm;
+                     bc.LNCrossCache.Variance = cvr;
+                     bc.LNCrossCache.Normalized = cn;
+                     bc.NormedCross = ncr;
 
-                    nc = ncr;
-                }
+                     nc = ncr;
+                 }
 
-                // NOTE: this still allocates ffnIn rows; speeding that up requires changes elsewhere.
-                var ffnIn = new float[sl][];
+                 // NOTE: this still allocates ffnIn rows; speeding that up requires changes elsewhere.
+                 var ffnIn = new float[sl][];
 
-                for (int i = 0; i < sl; i++)
-                {
-                    var ir = new float[ed];
+                 for (int i = 0; i < sl; i++)
+                 {
+                     var ir = new float[ed];
 
-                    for (int j = 0; j < ed; j++)
-                    {
-                        ir[j] = nc[i, j];
-                    }
+                     for (int j = 0; j < ed; j++)
+                     {
+                         ir[j] = nc[i, j];
+                     }
 
-                    ffnIn[i] = ir;
-                }
+                     ffnIn[i] = ir;
+                 }
 
-                var ffOut = _accel.FFNForwardBatch(nc, sl, ed, block.FeedForwardNetwork.ForwardPassOnly);
+                 var ffOut = _accel.FFNForwardBatch(nc, sl, ed, block.FeedForwardNetwork.ForwardPassOnly);
 
-                bc.FFNInputRows = ffnIn;
-                bc.FFNOutput = ffOut;
+                 bc.FFNInputRows = ffnIn;
+                 bc.FFNOutput = ffOut;
 
-                var fr = _accel.MatrixAdd(nc, ffOut);
-                bc.FFNResidualInput = fr;
+                 var fr = _accel.MatrixAdd(nc, ffOut);
+                 bc.FFNResidualInput = fr;
 
-                var (nf, fm, fv, fn) = _accel.LayerNormForward(fr, block.LNFFNGamma, block.LNFFNBeta);
+                 var (nf, fm, fv, fn) = _accel.LayerNormForward(fr, block.LNFFNGamma, block.LNFFNBeta);
 
-                bc.LNFFNCache.Input = fr;
-                bc.LNFFNCache.Mean = fm;
-                bc.LNFFNCache.Variance = fv;
-                bc.LNFFNCache.Normalized = fn;
+                 bc.LNFFNCache.Input = fr;
+                 bc.LNFFNCache.Mean = fm;
+                 bc.LNFFNCache.Variance = fv;
+                 bc.LNFFNCache.Normalized = fn;
 
-                x = nf;
-            }
+                 x = nf;
+             }
 
-            return x;
-        }
-
+             return x;
+         }
+         */
         private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, bool isTraining = false, Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
@@ -1010,14 +1429,19 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private void InitTextEncoder()
         {
             TextTokenEmbedding = new float[_config.Text.VocabSize, _config.Text.EmbeddingDim];
+
             float std = MathF.Sqrt(1.0f / _config.Text.EmbeddingDim);
+
             for (int i = 0; i < _config.Text.VocabSize; i++)
+            {
                 for (int j = 0; j < _config.Text.EmbeddingDim; j++)
+                {
                     TextTokenEmbedding[i, j] = SampleGaussian() * std;
+                }
+            }
 
-
-            // No throwaway TransformerConfig needed - pass parameters directly.
             TextBlocks = new TransformerBlock[_config.Text.NumLayers];
+
             for (int i = 0; i < _config.Text.NumLayers; i++)
             {
                 TextBlocks[i] = new TransformerBlock(
@@ -1033,10 +1457,143 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     accelerationDeviceId: _config.Runtime.AccelerationDeviceId,
                     accel: _accel,
                     random: _random);
+
+                DeterministicallyInitializeFeedForwardNetwork(TextBlocks[i].FeedForwardNetwork, _random);
+            }
+        }
+        private static void DeterministicallyInitializeFeedForwardNetwork(NeuralNetwork network, Random random)
+        {
+            if (network == null)
+                throw new ArgumentNullException(nameof(network));
+
+            random ??= new Random();
+
+            CallaghanDev.ML.Data state = network.GetInternalData();
+
+            if (state == null)
+                return;
+
+            var seen = new HashSet<object>();
+            ReinitializeFloatStorage(state, random, seen);
+
+            network.RestoreState(state);
+        }
+
+        private static void ReinitializeFloatStorage(object value, Random random, HashSet<object> seen)
+        {
+            if (value == null)
+                return;
+
+            if (value is string)
+                return;
+
+            if (value is float[,] matrix)
+            {
+                FillDeterministicMatrix(matrix, random);
+                return;
+            }
+
+            if (value is float[] vector)
+            {
+                Array.Clear(vector, 0, vector.Length);
+                return;
+            }
+
+            Type type = value.GetType();
+
+            if (type.IsPrimitive || type.IsEnum)
+                return;
+
+            if (!type.IsValueType && !seen.Add(value))
+                return;
+
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                foreach (object child in enumerable)
+                    ReinitializeFloatStorage(child, random, seen);
+
+                return;
+            }
+
+            var fields = type.GetFields(
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic);
+
+            Array.Sort(fields, (a, b) => string.CompareOrdinal(a.Name, b.Name));
+
+            foreach (var field in fields)
+            {
+                if (field.FieldType.IsPointer)
+                    continue;
+
+                object child;
+
+                try
+                {
+                    child = field.GetValue(value);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                ReinitializeFloatStorage(child, random, seen);
+            }
+
+            var properties = type.GetProperties(
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic);
+
+            Array.Sort(properties, (a, b) => string.CompareOrdinal(a.Name, b.Name));
+
+            foreach (var property in properties)
+            {
+                if (!property.CanRead)
+                    continue;
+
+                if (property.GetIndexParameters().Length != 0)
+                    continue;
+
+                object child;
+
+                try
+                {
+                    child = property.GetValue(value);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                ReinitializeFloatStorage(child, random, seen);
             }
         }
 
+        private static void FillDeterministicMatrix(float[,] matrix, Random random)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
 
+            float std = MathF.Sqrt(2.0f / Math.Max(1, rows + cols));
+
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    matrix[r, c] = SampleGaussian(random) * std;
+                }
+            }
+        }
+
+        private static float SampleGaussian(Random random)
+        {
+            double u1 = 1.0 - random.NextDouble();
+            double u2 = 1.0 - random.NextDouble();
+
+            return (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
+        }
         private void InitPriceDecoder()
         {
             PriceInputProjection = new float[_config.Price.EmbeddingDim, _config.Price.InputFeatureDim];
@@ -1069,11 +1626,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     _config.DecayNetwork.MemAttentionDropout,
                     _config.DecayNetwork.MlpDropout,
                     _config.DecayNetwork.WeightDecay,
-                    _config.DecayNetwork.TimeEncodingBases
-                );
+                    _config.DecayNetwork.TimeEncodingBases);
+
+                DeterministicallyInitializeFeedForwardNetwork(PriceBlocks[i].FeedForwardNetwork, _random);
             }
         }
-
         private void InitOutputHead()
         {
             int ed = _config.Price.EmbeddingDim;
@@ -1103,58 +1660,38 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         }
         private float[,] EmbedTextTokens(int[] ids, int sl)
         {
-            int maxTokenId = TextTokenEmbedding.GetLength(0) - 1;
+            if (ids == null)
+                throw new ArgumentNullException(nameof(ids));
+
+            if (sl <= 0)
+                throw new ArgumentOutOfRangeException(nameof(sl), "Text sequence must contain at least one token.");
+
+            if (sl > ids.Length)
+                throw new ArgumentException("sl cannot exceed ids.Length.", nameof(sl));
+
+            int vocabSize = TextTokenEmbedding.GetLength(0);
+            int embeddingDim = _config.Text.EmbeddingDim;
+
+            var embedded = new float[sl, embeddingDim];
 
             for (int i = 0; i < sl; i++)
             {
-                if (ids[i] < 0 || ids[i] > maxTokenId)
+                int tokenId = ids[i];
+
+                if (tokenId < 0 || tokenId >= vocabSize)
                 {
                     throw new InvalidOperationException(
-                        $"Token ID {ids[i]} at position {i} is out of bounds for embedding table (size {maxTokenId + 1}). " +
-                        "The tokenizer vocab size exceeds TextVocabSize in the config. Increase TextVocabSize or retrain the tokenizer.");
+                        $"Token ID {tokenId} at position {i} is out of bounds for embedding table size {vocabSize}. " +
+                        "The tokenizer vocab size exceeds TextVocabSize in the config, or the token stream is invalid.");
                 }
+
+                for (int j = 0; j < embeddingDim; j++)
+                    embedded[i, j] = TextTokenEmbedding[tokenId, j];
             }
 
-            if (sl <= _config.Text.MaxSequenceLength)
-            {
-                var e = new float[sl, _config.Text.EmbeddingDim];
-
-                for (int i = 0; i < sl; i++)
-                    for (int j = 0; j < _config.Text.EmbeddingDim; j++)
-                        e[i, j] = TextTokenEmbedding[ids[i], j];
-
-                return e;
-            }
-
-            int chunkSize = _config.Text.MaxSequenceLength;
-            int numChunks = (sl + chunkSize - 1) / chunkSize;
-            var pooled = new float[sl, _config.Text.EmbeddingDim];
-
-            int offset = 0;
-            for (int chunk = 0; chunk < numChunks; chunk++)
-            {
-                int len = Math.Min(chunkSize, sl - offset);
-                var chunkEmb = new float[len, _config.Text.EmbeddingDim];
-
-                for (int i = 0; i < len; i++)
-                    for (int j = 0; j < _config.Text.EmbeddingDim; j++)
-                        chunkEmb[i, j] = TextTokenEmbedding[ids[offset + i], j];
-
-                bool[,] mask = _config.Text.UseDecoderOnly ? CreateCausalMask(len) : null;
-                var hidden = chunkEmb;
-
-                foreach (var b in TextBlocks)
-                    hidden = b.Forward(hidden, mask);
-
-                for (int i = 0; i < len; i++)
-                    for (int j = 0; j < _config.Text.EmbeddingDim; j++)
-                        pooled[offset + i, j] = hidden[i, j];
-
-                offset += len;
-            }
-
-            return pooled;
+            return embedded;
         }
+
         // Existing method kept for compatibility
         private float[,] EmbedPriceSequence(float[,] ps, int sl)
         {
@@ -1284,9 +1821,22 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             return x;
         }
 
-        public (float[,] predictions, float[,] confidence) ForwardWithPriceContextAndCache(NewsStory[] stories, float[,] currentPriceInput, float[,] priceCtxHidden, float[] priceCtxTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+        public (float[,] predictions, float[,] confidence) ForwardWithPriceContextAndCache(
+        NewsStory[] stories,
+        float[,] currentPriceInput,
+        float[,] priceCtxHidden,
+        float[] priceCtxTimes,
+        MultimodalForwardCache cache,
+        bool isTraining = true,
+        Random dropoutRng = null)
         {
-            int ed = _config.Price.EmbeddingDim;
+            if (currentPriceInput == null)
+                throw new ArgumentNullException(nameof(currentPriceInput));
+
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
+            int embeddingDim = _config.Price.EmbeddingDim;
 
             float[,] newsHidden = null;
             float[] newsTimes = null;
@@ -1294,15 +1844,31 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             if (stories != null && stories.Length > 0)
             {
-                (newsHidden, newsTimes) = EncodeStoriesWithCache(stories, cache); numNews = newsHidden.GetLength(0);
+                (newsHidden, newsTimes) = EncodeStoriesWithCache(stories, cache);
+                numNews = newsHidden.GetLength(0);
+
+                if (newsHidden.GetLength(1) != embeddingDim)
+                    throw new InvalidOperationException("Text embedding dim must match price embedding dim for cross-attention.");
             }
             else
             {
                 cache.TextFinalHidden = null;
                 cache.TextTokenIds = null;
+                cache.StoryCaches = new List<MultimodalForwardCache>();
+                cache.StoryTokenCounts = Array.Empty<int>();
             }
 
             int numPriceCtx = priceCtxHidden != null ? priceCtxHidden.GetLength(0) : 0;
+
+            if (numPriceCtx > 0)
+            {
+                if (priceCtxHidden.GetLength(1) != embeddingDim)
+                    throw new ArgumentException($"priceCtxHidden embedding dim must be {embeddingDim}.", nameof(priceCtxHidden));
+
+                if (priceCtxTimes == null || priceCtxTimes.Length != numPriceCtx)
+                    throw new ArgumentException("priceCtxTimes length must match priceCtxHidden row count.", nameof(priceCtxTimes));
+            }
+
             int totalCtx = numNews + numPriceCtx;
 
             float[,] combinedHidden = null;
@@ -1310,56 +1876,51 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             if (totalCtx > 0)
             {
-                combinedHidden = new float[totalCtx, ed];
+                combinedHidden = new float[totalCtx, embeddingDim];
                 combinedTimes = new float[totalCtx];
+                var typeIndices = new int[totalCtx];
 
                 for (int i = 0; i < numNews; i++)
                 {
-                    for (int d = 0; d < ed; d++)
-                    {
+                    combinedTimes[i] = newsTimes[i];
+                    typeIndices[i] = 0;
+
+                    for (int d = 0; d < embeddingDim; d++)
                         combinedHidden[i, d] = newsHidden[i, d];
-                        combinedTimes[i] = newsTimes[i];
-                    }
-                }
-                for (int i = 0; i < numPriceCtx; i++)
-                {
-                    int ci = numNews + i;
-                    for (int d = 0; d < ed; d++)
-                    {
-                        combinedHidden[ci, d] = priceCtxHidden[i, d];
-                        combinedTimes[ci] = priceCtxTimes[i];
-                    }
-                }
-
-                // Apply context type embeddings
-                for (int i = 0; i < numNews; i++)
-                {
-                    for (int d = 0; d < ed; d++)
-                    {
-                        combinedHidden[i, d] += ContextTypeEmbedding[0, d];  // news
-                    }
                 }
 
                 for (int i = 0; i < numPriceCtx; i++)
                 {
-                    for (int d = 0; d < ed; d++)
-                    {
-                        combinedHidden[numNews + i, d] += ContextTypeEmbedding[1, d];  // price memory
-                    }
+                    int dst = numNews + i;
+
+                    combinedTimes[dst] = priceCtxTimes[i];
+                    typeIndices[dst] = 1;
+
+                    for (int d = 0; d < embeddingDim; d++)
+                        combinedHidden[dst, d] = priceCtxHidden[i, d];
                 }
+
+                _accel.ApplyContextTypeEmbedding(combinedHidden, ContextTypeEmbedding, typeIndices);
             }
 
-            cache.NumNewsContext = numNews; cache.NumPriceContext = numPriceCtx; cache.PriceContextHidden = priceCtxHidden;
+            cache.NumNewsContext = numNews;
+            cache.NumPriceContext = numPriceCtx;
+            cache.PriceContextHidden = priceCtxHidden;
+            cache.TextFinalHidden = combinedHidden;
+            cache.StoryArrivalTimes = combinedTimes;
 
-            cache.TextFinalHidden = combinedHidden; cache.StoryArrivalTimes = combinedTimes;
-
-            var priceHidden = ForwardPriceDecoderWithCache(currentPriceInput, combinedHidden, combinedTimes, cache, isTraining, dropoutRng);
+            var priceHidden = ForwardPriceDecoderWithCache(
+                currentPriceInput,
+                combinedHidden,
+                combinedTimes,
+                cache,
+                isTraining,
+                dropoutRng);
 
             cache.PriceFinalHidden = priceHidden;
 
             return ProjectToOutput(priceHidden);
         }
-
         #region Save/Load
         private static MultimodalTransformerConfig BuildConfig(Dictionary<string, JsonElement> d)
         {

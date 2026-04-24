@@ -2,6 +2,7 @@ using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Transformers.Cache;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
+using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,8 +30,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             _trainConfig = trainConfig;
             _gradients = new Gradients(_config);
             _accel = model.AccelerationManager;
-            _random = new Random();
-            _dropoutRng = new Random(_random.Next());
+            _random = new Random(12345);
+            _dropoutRng = new Random(67890);
             _textFFNWeightGrads = new List<List<float[,]>>();
             _textFFNBiasGrads = new List<List<float[]>>();
 
@@ -54,6 +55,13 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         //TODO: Clean this up
         public void Train(NewsStory[][] storiesPerSample, float[][,] priceInputs, float[][,] priceTargets, float[][] confTargets = null)
         {
+            if (storiesPerSample == null)
+                throw new ArgumentNullException(nameof(storiesPerSample));
+            if (priceInputs == null)
+                throw new ArgumentNullException(nameof(priceInputs));
+            if (priceTargets == null)
+                throw new ArgumentNullException(nameof(priceTargets));
+
             int n = storiesPerSample.Length;
 
             int totalEpochs = _trainConfig.Epochs;
@@ -66,18 +74,23 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 {
                     Console.WriteLine($"\n=== Epoch {ep + 1}/{_trainConfig.Epochs} ===");
                 }
+                var sh = Enumerable.Range(0, n).ToArray();
 
-                var sh = Enumerable.Range(0, n).OrderBy(_ => _random.Next()).ToArray();
-
-                float el = 0;
-
+                float el = 0f;
                 int nb = 0;
 
                 for (int i = 0; i < sh.Length; i += _trainConfig.BatchSize)
                 {
                     int bs = Math.Min(_trainConfig.BatchSize, sh.Length - i);
 
-                    float bl = TrainBatch(sh.Skip(i).Take(bs).ToArray(), storiesPerSample, priceInputs, priceTargets, confTargets, lr);
+                    float bl = TrainBatch(
+                        sh.Skip(i).Take(bs).ToArray(),
+                        storiesPerSample,
+                        priceInputs,
+                        priceTargets,
+                        confTargets,
+                        lr,
+                        ep);
 
                     el += bl;
                     nb++;
@@ -87,88 +100,70 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         Console.WriteLine($"  Batch {nb}: Loss = {bl:F6}");
                     }
                 }
+
                 if (_trainConfig.Verbose)
                 {
                     Console.WriteLine($"  Epoch {ep + 1} Average Loss: {(nb > 0 ? el / nb : 0):F6}");
                 }
             }
         }
-
         public void Train(int[][] textSequences, float[][,] priceInputs, float[][,] priceTargets, float[][] confTargets = null)
         {
-            Train(textSequences.Select(t => t != null && t.Length > 0 ? new[] { new NewsStory(t, 0f) } : null).ToArray(), priceInputs, priceTargets, confTargets);
+            if (textSequences == null)
+                throw new ArgumentNullException(nameof(textSequences));
+
+            var stories = new NewsStory[textSequences.Length][];
+
+            for (int i = 0; i < textSequences.Length; i++)
+                stories[i] = new[] { new NewsStory((int[])textSequences[i].Clone(), 0f) };
+
+            Train(stories, priceInputs, priceTargets, confTargets);
         }
 
-
         //TODO: See if you cant speed this up with some accelleration magic
-        public void TrainSequential(NewsStory[][] stories, float[][,] priceInputs, float[][,] priceTargets, double[] timestamps, double timeUnitsPerPosition = 1.0, int maxNewsMemory = 100, int maxPriceMemory = 200, float[][] confTargets = null)
+        public void TrainSequential(
+            NewsStory[][] stories,
+            float[][,] priceInputs,
+            float[][,] priceTargets,
+            double[] timestamps,
+            double timeUnitsPerPosition = 1.0,
+            int maxNewsMemory = 100,
+            int maxPriceMemory = 200,
+            float[][] confTargets = null)
         {
-            // Guard: timeUnitsPerPosition=0 would cause divide-by-zero when computing relative times
+            if (stories == null)
+                throw new ArgumentNullException(nameof(stories));
+
+            if (priceInputs == null)
+                throw new ArgumentNullException(nameof(priceInputs));
+
+            if (priceTargets == null)
+                throw new ArgumentNullException(nameof(priceTargets));
+
+            if (timestamps == null)
+                throw new ArgumentNullException(nameof(timestamps));
+
             if (timeUnitsPerPosition == 0.0)
-            {
                 throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition));
-            }
 
             int n = stories.Length;
-            int totalEpochs = _trainConfig.Epochs;
-            int embDim = _config.Price.EmbeddingDim;
 
-            // Precompute reciprocal so inner loops multiply instead of divide
+            if (priceInputs.Length < n || priceTargets.Length < n || timestamps.Length < n)
+                throw new ArgumentException("stories, priceInputs, priceTargets, and timestamps must have compatible lengths.");
+
+            int totalEpochs = _trainConfig.Epochs;
+            int embeddingDim = _config.Price.EmbeddingDim;
             float invTime = (float)(1.0 / timeUnitsPerPosition);
 
-            // Reusable heap buffers allocated once and grown as needed
-            // These live outside both loops so they survive across epochs and samples.
-            // Only reallocated when a larger size is needed.
-            float[,] priceCtxHiddenBuf = null;
-            float[] priceCtxTimesBuf = null;
-            float[,] newsMemHiddenBuf = null;
-            float[] newsMemTimesBuf = null;
-            float[,] combinedHiddenBuf = null;
-            float[] combinedTimesBuf = null;
-
-            // Grow-only 2-D buffer helper: reallocates only if null, too few rows, or wrong cols
-            static void Ensure2DBuffer(ref float[,] buf, int rows, int cols)
-            {
-                if (rows <= 0)
-                {
-                    return;
-                }
-                if (buf == null || buf.GetLength(0) < rows || buf.GetLength(1) != cols)
-                {
-                    buf = new float[rows, cols];
-                }
-            }
-
-            // Grow-only 1-D buffer helper: reallocates only if null or too short
-            static void Ensure1DBuffer(ref float[] buf, int len)
-            {
-                if (len <= 0)
-                {
-                    return;
-                }
-                if (buf == null || buf.Length < len)
-                {
-                    buf = new float[len];
-                }
-            }
-
-            // One cache object reused across all samples in every epoch 
-            // Reset() is called per-sample; the object itself is never re-newed.
             var cache = new MultimodalForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
 
             for (int ep = 0; ep < totalEpochs; ep++)
             {
-                // Compute learning rate for this epoch (may apply schedule/decay)
                 float lr = ComputeLearningRate(ep, totalEpochs);
 
                 if (_trainConfig.Verbose)
-                {
                     Console.WriteLine($"\n=== Epoch {ep + 1}/{totalEpochs} (Sequential)[{_accel.GetType().Name}] ===");
-                }
 
-                // Clear rolling memory at the START of each epoch so memory builds
-                // fresh from sample 0 of this epoch rather than carrying over stale
-                // hidden states from the previous epoch.
                 _model.ClearAllMemory();
 
                 float epochLoss = 0f;
@@ -176,316 +171,212 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 for (int idx = 0; idx < n; idx++)
                 {
-                    var ps = priceInputs[idx];
-                    var pt = priceTargets[idx];
+                    var priceSequence = priceInputs[idx];
+                    var targetSequence = priceTargets[idx];
 
-                    // Skip samples with missing price data
-                    if (ps == null || pt == null)
-                    {
+                    if (priceSequence == null || targetSequence == null)
                         continue;
-                    }
 
-                    int sl = ps.GetLength(0);
+                    int seqLen = priceSequence.GetLength(0);
 
-                    // Need at least 2 timesteps: one input (t) and one target (t+1)
-                    if (sl < 2)
-                    {
+                    if (seqLen < 2)
                         continue;
-                    }
 
                     double currentTs = timestamps[idx];
 
                     try
                     {
-                        // Input / target window
-                        // Input  : rows [0 .. sl-2]  (all but the last timestep)
-                        // Target : rows [1 .. sl-1]  (all but the first timestep)
-                        // Passed as offset+count rather than pre-sliced to avoid allocation.
-                        float[,] inp = ps;
-                        int inpStart = 0;
-                        int inpCount = sl - 1;
+                        int inputStart = 0;
+                        int inputCount = seqLen - 1;
 
-                        float[,] tgt = pt;
-                        int tgtStart = 1;
-                        int tgtCount = sl - 1;
+                        int targetStart = 1;
+                        int targetCount = seqLen - 1;
 
-                        // Confidence targets (optional)
-                        // Shift by 1 to align with the target window; skip if too short.
-                        float[] ct = null;
-                        var src = confTargets?[idx];
+                        float[] confTarget = null;
+                        var confSource = confTargets?[idx];
 
-
-                        if (src != null && src.Length >= sl)
+                        if (confSource != null && confSource.Length >= seqLen)
                         {
-                            ct = new float[sl - 1];
-                            Array.Copy(src, 1, ct, 0, sl - 1);
+                            confTarget = new float[seqLen - 1];
+                            Array.Copy(confSource, 1, confTarget, 0, seqLen - 1);
                         }
 
-                        // Snapshot current memory counts before this sample
-                        // Memory is read-only during forward/backward; new entries are
-                        // added AFTER the parameter update (see end of this iteration).
                         int newsMemCount = _model.NewsMemory?.Count ?? 0;
                         int priceMemCount = _model.PriceMemory?.Count ?? 0;
 
-                        // Clear per-sample tensors in the cache (leaves list capacities intact)
                         cache.Reset();
 
-                        // Pack price memory into contiguous buffers.
-                        float[,] priceCtxHidden = null;
-                        float[] priceCtxTimes = null;
+                        NewsStory[] currentStories =
+                            stories[idx] != null && stories[idx].Length > 0
+                                ? stories[idx]
+                                : null;
 
-                        if (priceMemCount > 0)
-                        {
-                            Ensure2DBuffer(ref priceCtxHiddenBuf, priceMemCount, embDim);
-                            Ensure1DBuffer(ref priceCtxTimesBuf, priceMemCount);
-
-                            // Point locals at the reusable buffers
-                            priceCtxHidden = priceCtxHiddenBuf;
-                            priceCtxTimes = priceCtxTimesBuf;
-
-                            for (int i = 0; i < priceMemCount; i++)
-                            {
-                                var entry = _model.PriceMemory[i];
-                                var hs = entry.HiddenState;
-
-                                for (int d = 0; d < embDim; d++)
-                                {
-                                    priceCtxHidden[i, d] = hs[d];
-                                }
-
-                                // Negative = in the past relative to currentTs; scale by invTime
-                                priceCtxTimes[i] = -(float)(currentTs - entry.AbsoluteTimestamp) * invTime;
-                            }
-                        }
-
-                        // Pack news memory into contiguous buffers
-                        float[,] newsMemHidden = null;
-                        float[] newsMemTimes = null;
-
-                        if (newsMemCount > 0)
-                        {
-                            Ensure2DBuffer(ref newsMemHiddenBuf, newsMemCount, embDim);
-                            Ensure1DBuffer(ref newsMemTimesBuf, newsMemCount);
-
-                            newsMemHidden = newsMemHiddenBuf;
-                            newsMemTimes = newsMemTimesBuf;
-
-                            for (int i = 0; i < newsMemCount; i++)
-                            {
-                                var entry = _model.NewsMemory[i];
-                                var hs = entry.HiddenState;
-
-                                for (int d = 0; d < embDim; d++)
-                                {
-                                    newsMemHidden[i, d] = hs[d];
-                                }
-
-                                newsMemTimes[i] = -(float)(currentTs - entry.AbsoluteTimestamp) * invTime;
-                            }
-                        }
-
-                        // Encode any fresh news stories arriving at this timestep
-                        NewsStory[] currentStories = stories[idx];
-                        NewsStory[] adjustedStories = (currentStories != null && currentStories.Length > 0) ? currentStories : null;
-
-                        float[,] pred, conf;
+                        float[,] predictions;
+                        float[,] confidence;
+                        float[,] combinedHidden = null;
+                        float[] combinedTimes = null;
 
                         if (newsMemCount > 0 || priceMemCount > 0)
                         {
-                            // Encode fresh stories through the text encoder
                             float[,] freshNewsHidden = null;
                             float[] freshNewsTimes = null;
                             int freshNewsCount = 0;
 
-                            if (adjustedStories != null)
+                            if (currentStories != null)
                             {
-                                // Encodes each story to a hidden vector; result is [numStories, embDim]
-                                (freshNewsHidden, freshNewsTimes) = _model.EncodeStoriesWithCache(adjustedStories, cache);
+                                (freshNewsHidden, freshNewsTimes) = _model.EncodeStoriesWithCache(currentStories, cache);
                                 freshNewsCount = freshNewsHidden.GetLength(0);
                             }
+                            else
+                            {
+                                cache.StoryCaches = new List<MultimodalForwardCache>();
+                                cache.StoryTokenCounts = Array.Empty<int>();
+                            }
 
-                            // Build combined context: [newsMemory | freshNews | priceMemory]
                             int totalCtx = newsMemCount + freshNewsCount + priceMemCount;
-
-                            float[,] combinedHidden = null;
-                            float[] combinedTimes = null;
 
                             if (totalCtx > 0)
                             {
-                                Ensure2DBuffer(ref combinedHiddenBuf, totalCtx, embDim);
-                                Ensure1DBuffer(ref combinedTimesBuf, totalCtx);
+                                combinedHidden = new float[totalCtx, embeddingDim];
+                                combinedTimes = new float[totalCtx];
 
-                                combinedHidden = combinedHiddenBuf;
-                                combinedTimes = combinedTimesBuf;
+                                var typeIndices = new int[totalCtx];
 
-                                int ci = 0;
+                                int ctx = 0;
 
-                                // Paste news memory entries first
-                                for (int i = 0; i < newsMemCount; i++, ci++)
+                                for (int i = 0; i < newsMemCount; i++, ctx++)
                                 {
-                                    for (int d = 0; d < embDim; d++)
-                                    {
-                                        combinedHidden[ci, d] = newsMemHidden[i, d];
-                                    }
-                                    combinedTimes[ci] = newsMemTimes[i];
+                                    var entry = _model.NewsMemory[i];
+
+                                    for (int d = 0; d < embeddingDim; d++)
+                                        combinedHidden[ctx, d] = entry.HiddenState[d];
+
+                                    combinedTimes[ctx] = (float)((entry.AbsoluteTimestamp - currentTs) * invTime);
+                                    typeIndices[ctx] = 0;
                                 }
 
-                                //  aste freshly encoded stories
-                                for (int i = 0; i < freshNewsCount; i++, ci++)
+                                for (int i = 0; i < freshNewsCount; i++, ctx++)
                                 {
-                                    for (int d = 0; d < embDim; d++)
-                                    {
-                                        combinedHidden[ci, d] = freshNewsHidden[i, d];
-                                    }
-                                    combinedTimes[ci] = freshNewsTimes[i];
+                                    for (int d = 0; d < embeddingDim; d++)
+                                        combinedHidden[ctx, d] = freshNewsHidden[i, d];
+
+                                    combinedTimes[ctx] = freshNewsTimes[i];
+                                    typeIndices[ctx] = 0;
                                 }
 
-                                // Paste price memory entries last
-                                for (int i = 0; i < priceMemCount; i++, ci++)
+                                for (int i = 0; i < priceMemCount; i++, ctx++)
                                 {
-                                    for (int d = 0; d < embDim; d++)
-                                    {
-                                        combinedHidden[ci, d] = priceCtxHidden[i, d];
-                                    }
-                                    combinedTimes[ci] = priceCtxTimes[i];
+                                    var entry = _model.PriceMemory[i];
+
+                                    for (int d = 0; d < embeddingDim; d++)
+                                        combinedHidden[ctx, d] = entry.HiddenState[d];
+
+                                    combinedTimes[ctx] = (float)((entry.AbsoluteTimestamp - currentTs) * invTime);
+                                    typeIndices[ctx] = 1;
                                 }
 
-                                // Apply context-type embeddings (from v1)
-                                // Adds a learned type vector to every context token so the
-                                // decoder can distinguish news tokens from price tokens.
-                                // Index 0 = news type embedding, index 1 = price type embedding.
-                                int newsTotal = newsMemCount + freshNewsCount;
+                                _accel.ApplyContextTypeEmbedding(combinedHidden, _model.ContextTypeEmbedding, typeIndices);
 
-                                for (int i = 0; i < newsTotal; i++)
-                                {
-                                    for (int d = 0; d < embDim; d++)
-                                    {
-                                        combinedHidden[i, d] += _model.ContextTypeEmbedding[0, d];
-                                    }
-                                }
-
-                                for (int i = 0; i < priceMemCount; i++)
-                                {
-                                    for (int d = 0; d < embDim; d++)
-                                    {
-                                        combinedHidden[newsTotal + i, d] += _model.ContextTypeEmbedding[1, d];
-                                    }
-                                }
-
-                                // Store context metadata on cache for backward pass 
-                                // BackwardPass reads these to know how the context was split.
                                 cache.NumNewsContext = newsMemCount + freshNewsCount;
                                 cache.NumPriceContext = priceMemCount;
-                                cache.PriceContextHidden = priceCtxHidden;
+                                cache.PriceContextHidden = null;
                                 cache.TextFinalHidden = combinedHidden;
                                 cache.StoryArrivalTimes = combinedTimes;
                             }
 
-                            // Forward pass through the price decoder
-                            // Uses offset+count variant to avoid pre-slicing inp
-                            var priceHidden = _model.ForwardPriceDecoderWithCache(inp, inpStart, inpCount, combinedHidden, combinedTimes, cache, isTraining: true, dropoutRng: _dropoutRng);
+                            var priceHidden = _model.ForwardPriceDecoderWithCache(
+                                priceSequence,
+                                inputStart,
+                                inputCount,
+                                combinedHidden,
+                                combinedTimes,
+                                cache,
+                                isTraining: true,
+                                dropoutRng: _dropoutRng);
 
-                            // Store final hidden for memory update below
                             cache.PriceFinalHidden = priceHidden;
 
-                            // Project decoder output to prediction + confidence heads
-                            (pred, conf) = _model.ProjectToOutput(priceHidden);
+                            (predictions, confidence) = _model.ProjectToOutput(priceHidden);
                         }
                         else
                         {
-                            // No memory context at all: run the simpler joint forward pass
-                            (pred, conf) = _model.ForwardWithCache(adjustedStories, inp, inpStart, inpCount, cache, isTraining: true, dropoutRng: _dropoutRng);
+                            (predictions, confidence) = _model.ForwardWithCache(
+                                currentStories,
+                                priceSequence,
+                                inputStart,
+                                inputCount,
+                                cache,
+                                isTraining: true,
+                                dropoutRng: _dropoutRng);
                         }
 
-                        // Backward pass
-                        // Zero accumulated gradients from any previous iteration first
                         ZeroAllGradients();
 
-                        float loss = BackwardPass(pred, conf, tgt, tgtStart, tgtCount, ct, cache);
+                        float loss = BackwardPass(
+                            predictions,
+                            confidence,
+                            targetSequence,
+                            targetStart,
+                            targetCount,
+                            confTarget,
+                            cache);
 
-                        // Skip parameter update if loss is NaN or Inf (numerically unstable step)
                         if (!float.IsFinite(loss))
                         {
                             ZeroAllGradients();
                             continue;
                         }
 
-                        // Optionally clip gradient global norm to prevent exploding gradients
                         if (_trainConfig.UseGradientClipping)
-                        {
                             ClipGradients(_trainConfig.GradientClipThreshold);
-                        }
 
-                        // Apply SGD / Adam step
                         UpdateAllParameters(lr);
+
+                        if (combinedHidden != null)
+                            _model.UpdateMemoryAttentionScores(cache.PriceFinalHidden, combinedHidden, combinedHidden.GetLength(0));
 
                         epochLoss += loss;
                         validCount++;
 
-                        // Update rolling memory AFTER parameter update
-                        // This is the key difference from TrainSequential (old): memory
-                        // accumulates within the epoch so each subsequent sample sees the
-                        // hidden states produced by all previous samples this epoch.
-
-                        // Add fresh news stories to news memory
-                        if (adjustedStories != null)
+                        if (currentStories != null)
                         {
-                            // Re-encode with updated weights so memory stays consistent
-                            // with the current model state after this step's update.
-                            (var encodedNews, _) = _model.EncodeStories(adjustedStories);
-
-                            for (int i = 0; i < adjustedStories.Length; i++)
-                            {
-                                var hv = new float[embDim];
-
-                                for (int d = 0; d < embDim; d++)
-                                {
-                                    hv[d] = encodedNews[i, d];
-                                }
-
-                                _model.NewsMemory.Add(new NewsMemoryEntry
-                                {
-                                    HiddenState = hv,
-                                    // Convert story arrival time from relative positions to absolute timestamp
-                                    AbsoluteTimestamp = currentTs + adjustedStories[i].ArrivalTime * timeUnitsPerPosition
-                                });
-                            }
+                            _model.UpdateNewsMemory(
+                                currentStories,
+                                currentTs,
+                                timeUnitsPerPosition,
+                                maxNewsMemory);
                         }
 
-                        // Add each price decoder hidden state to price memory
-                        int priceSeqLen = cache.PriceFinalHidden.GetLength(0);
-                        for (int t = 0; t < priceSeqLen; t++)
+                        int hiddenSeqLen = cache.PriceFinalHidden.GetLength(0);
+
+                        for (int t = 0; t < hiddenSeqLen; t++)
                         {
-                            var pv = new float[embDim];
-                            for (int d = 0; d < embDim; d++)
-                            {
-                                pv[d] = cache.PriceFinalHidden[t, d];
-                            }
+                            var hidden = new float[embeddingDim];
+
+                            for (int d = 0; d < embeddingDim; d++)
+                                hidden[d] = cache.PriceFinalHidden[t, d];
 
                             _model.PriceMemory.Add(new PriceMemoryEntry
                             {
-                                HiddenState = pv,
-                                // Each position t in the sequence maps to one time unit forward
+                                HiddenState = hidden,
                                 AbsoluteTimestamp = currentTs + t * timeUnitsPerPosition
                             });
                         }
 
-                        // Record the timestamp of the last processed price sequence
-                        _model.LastPriceTimestamp = currentTs;
+                        _model.LastPriceTimestamp = currentTs + Math.Max(0, hiddenSeqLen - 1) * timeUnitsPerPosition;
 
-                        // Trim memory to configured maximums (oldest entries dropped first)
                         _model.PruneNewsMemory(maxNewsMemory);
                         _model.PricePruneMemory(maxPriceMemory);
 
                         if (_trainConfig.Verbose && validCount % 50 == 0)
                         {
-                            Console.WriteLine($"  Sample {validCount}: Loss = {loss:F6}, NewsMemory = {_model.NewsMemory.Count}, PriceMemory = {_model.PriceMemory.Count}");
+                            Console.WriteLine(
+                                $"  Sample {validCount}: Loss = {loss:F6}, " +
+                                $"NewsMemory = {_model.NewsMemory.Count}, PriceMemory = {_model.PriceMemory.Count}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        // Swallow per-sample exceptions so one bad sample doesn't abort the epoch.
-                        // Zero gradients so a partial backward doesn't corrupt the next update.
                         ZeroAllGradients();
 
                         if (_trainConfig.Verbose)
@@ -497,159 +388,271 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
 
                 if (_trainConfig.Verbose)
-                {
                     Console.WriteLine($"  Epoch {ep + 1} Average Loss: {(validCount > 0 ? epochLoss / validCount : 0):F6}");
-                }
             }
         }
-
-
-        private float TrainBatch(int[] bi, NewsStory[][] allS, float[][,] allP, float[][,] allT, float[][] allC, float lr)
+        private float TrainBatch(
+            int[] batchIndices,
+            NewsStory[][] allStories,
+            float[][,] allPriceInputs,
+            float[][,] allPriceTargets,
+            float[][] allConfidenceTargets,
+            float lr,
+            int epoch)
         {
-            ZeroAllGradients();
+            var batchGradients = new Gradients(_config);
+            var (batchTextFFNWeightGrads, batchTextFFNBiasGrads) = CreateTextFFNGradientStorage();
+            var (batchPriceFFNWeightGrads, batchPriceFFNBiasGrads) = CreatePriceFFNGradientStorage();
 
-            float tl = 0;
-            int vc = 0;
+            float totalLoss = 0f;
+            int validCount = 0;
 
-            int minSplitLen = _config.PriceContext.MinHistoryLength + _config.PriceContext.MinCurrentLength + 1;
+            int minSplitLen =
+                _config.PriceContext.MinHistoryLength +
+                _config.PriceContext.MinCurrentLength +
+                1;
 
-            foreach (int idx in bi)
+            foreach (int idx in batchIndices)
             {
-                var ps = allP[idx]; int sl = ps.GetLength(0);
+                ZeroAllGradients();
 
-                if (sl < 2)
-                {
-                    continue;
-                }
                 try
                 {
-                    bool canSplit = sl >= minSplitLen;
+                    if (idx < 0 ||
+                        idx >= allStories.Length ||
+                        idx >= allPriceInputs.Length ||
+                        idx >= allPriceTargets.Length)
+                    {
+                        continue;
+                    }
+
+                    var stories = allStories[idx];
+                    var priceInput = allPriceInputs[idx];
+                    var priceTarget = allPriceTargets[idx];
+
+                    if (priceInput == null || priceTarget == null)
+                        continue;
+
+                    int seqLen = priceInput.GetLength(0);
+
+                    if (seqLen < 2)
+                        continue;
+
+                    float loss;
+
+                    bool canSplit =
+                        _config.PriceContext.Enabled &&
+                        seqLen >= minSplitLen;
+
+                    Random sampleDropoutRng = CreateSampleDropoutRandom(stories, priceInput, epoch);
 
                     if (canSplit)
                     {
-                        float loss = TrainWithPriceContext(idx, allS, allP, allT, allC);
-                        if (float.IsNaN(loss) || float.IsInfinity(loss))
-                        {
-                            continue;
-                        }
-                        tl += loss; vc++;
+                        loss = TrainWithPriceContext(
+                            idx,
+                            allStories,
+                            allPriceInputs,
+                            allPriceTargets,
+                            allConfidenceTargets,
+                            epoch,
+                            sampleDropoutRng);
                     }
                     else
                     {
-                        var inp = SliceRows(ps, 0, sl - 1);
-                        var tgt = SliceRows(allT[idx], 1, sl);
-                        float[] ct = allC?[idx] != null ? allC[idx].Skip(1).Take(sl - 1).ToArray() : null;
+                        float[,] input = SliceRows(priceInput, 0, seqLen - 1);
+                        float[,] target = SliceRows(priceTarget, 1, seqLen);
 
-                        var cache = new MultimodalForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
+                        float[] confTarget = null;
 
-                        var (pred, conf) = _model.ForwardWithCache(allS[idx], inp, cache, isTraining: true, dropoutRng: _dropoutRng);
-
-                        float loss = BackwardPass(pred, conf, tgt, ct, cache);
-
-                        if (float.IsNaN(loss) || float.IsInfinity(loss))
+                        if (allConfidenceTargets != null &&
+                            idx < allConfidenceTargets.Length &&
+                            allConfidenceTargets[idx] != null)
                         {
-                            continue;
+                            confTarget = allConfidenceTargets[idx]
+                                .Skip(1)
+                                .Take(seqLen - 1)
+                                .ToArray();
                         }
-                        tl += loss; vc++;
+
+                        var cache = new MultimodalForwardCache(
+                            _config.Text.NumLayers,
+                            _config.Price.NumLayers);
+
+                        var (pred, conf) = _model.ForwardWithCache(
+                            stories,
+                            input,
+                            cache,
+                            isTraining: true,
+                            dropoutRng: sampleDropoutRng);
+
+                        loss = BackwardPass(pred, conf, target, confTarget, cache);
                     }
+
+                    if (!float.IsFinite(loss))
+                    {
+                        ZeroAllGradients();
+                        continue;
+                    }
+
+                    AccumulateLiveGradientsInto(
+                        batchGradients,
+                        batchTextFFNWeightGrads,
+                        batchTextFFNBiasGrads,
+                        batchPriceFFNWeightGrads,
+                        batchPriceFFNBiasGrads);
+
+                    totalLoss += loss;
+                    validCount++;
                 }
                 catch (Exception ex)
                 {
-                    if (_trainConfig.Verbose) Console.WriteLine($"  WARNING: {ex.Message}");
+                    ZeroAllGradients();
+
+                    if (_trainConfig.Verbose)
+                        Console.WriteLine($"  WARNING: {ex.Message}");
+                }
+                finally
+                {
+                    ZeroAllGradients();
                 }
             }
 
-            if (vc == 0)
-            {
+            if (validCount == 0)
                 return 0f;
-            }
-            ScaleAllGradients(1.0f / vc);
+
+            LoadAccumulatedGradientsIntoLive(
+                batchGradients,
+                batchTextFFNWeightGrads,
+                batchTextFFNBiasGrads,
+                batchPriceFFNWeightGrads,
+                batchPriceFFNBiasGrads);
+
+            ScaleAllGradients(1.0f / validCount);
 
             if (_trainConfig.UseGradientClipping)
-            {
                 ClipGradients(_trainConfig.GradientClipThreshold);
-            }
 
             UpdateAllParameters(lr);
+            ZeroAllGradients();
 
-            return tl / vc;
+            return totalLoss / validCount;
         }
-
-        private float TrainWithPriceContext(int idx, NewsStory[][] allS, float[][,] allP, float[][,] allT, float[][] allC)
+        private float TrainWithPriceContext(
+            int idx,
+            NewsStory[][] allStories,
+            float[][,] allPriceInputs,
+            float[][,] allPriceTargets,
+            float[][] allConfidenceTargets,
+            int epoch,
+            Random dropoutRng)
         {
-            var ps = allP[idx]; int sl = ps.GetLength(0);
-            int featureDim = ps.GetLength(1);
+            if (!_config.PriceContext.Enabled)
+                return 0f;
 
-            int minHist = _config.PriceContext.MinHistoryLength;
-            int maxHist = sl - _config.PriceContext.MinCurrentLength - 1;
-            int splitPoint = minHist + _random.Next(maxHist - minHist + 1);
+            var priceSequence = allPriceInputs[idx];
+            int seqLen = priceSequence.GetLength(0);
 
-            int histLen = splitPoint;
-            int currentLen = sl - splitPoint;
+            int minHistory = _config.PriceContext.MinHistoryLength;
+            int maxHistory = seqLen - _config.PriceContext.MinCurrentLength - 1;
 
-            var histPrices = SliceRows(ps, 0, histLen);
-            var currentInput = SliceRows(ps, splitPoint, sl - 1);
-            var currentTarget = SliceRows(allT[idx], splitPoint + 1, sl);
+            if (maxHistory < minHistory)
+                return 0f;
+
+            NewsStory[] sourceStories =
+                allStories != null && idx >= 0 && idx < allStories.Length
+                    ? allStories[idx]
+                    : null;
+
+            int splitPoint = ChooseDeterministicSplitPoint(
+                sourceStories,
+                priceSequence,
+                minHistory,
+                maxHistory,
+                epoch);
+
+            int historyLen = splitPoint;
+
+            var historyPrices = SliceRows(priceSequence, 0, historyLen);
+            var currentInput = SliceRows(priceSequence, splitPoint, seqLen - 1);
+            var currentTarget = SliceRows(allPriceTargets[idx], splitPoint + 1, seqLen);
+
             int currentSeqLen = currentInput.GetLength(0);
 
-            if (currentSeqLen < 2)
-            {
+            if (currentSeqLen <= 0)
                 return 0f;
-            }
 
-            float[] confTgt = null;
+            float[] confidenceTarget = null;
 
-            if (allC?[idx] != null)
+            if (allConfidenceTargets != null &&
+                idx < allConfidenceTargets.Length &&
+                allConfidenceTargets[idx] != null)
             {
-                confTgt = allC[idx].Skip(splitPoint + 1).Take(currentSeqLen).ToArray();
+                confidenceTarget = allConfidenceTargets[idx]
+                    .Skip(splitPoint + 1)
+                    .Take(currentSeqLen)
+                    .ToArray();
             }
 
-            var priceCtxHidden = _model.EncodePriceHistory(histPrices);
+            var priceCtxHidden = _model.EncodePriceHistory(historyPrices);
+            var priceCtxTimes = new float[historyLen];
 
-            var priceCtxTimes = new float[histLen];
-             
-
-            // Positive age: oldest history gets the largest age, newest gets age 1
-            for (int t = 0; t < histLen; t++)
-            {
-                priceCtxTimes[t] = histLen - t;
-            }
+            for (int t = 0; t < historyLen; t++)
+                priceCtxTimes[t] = t - splitPoint;
 
             NewsStory[] adjustedStories = null;
 
-            if (allS[idx] != null && allS[idx].Length > 0)
+            if (sourceStories != null && sourceStories.Length > 0)
             {
-                adjustedStories = new NewsStory[allS[idx].Length];
+                adjustedStories = new NewsStory[sourceStories.Length];
 
-                for (int i = 0; i < allS[idx].Length; i++)
+                for (int i = 0; i < sourceStories.Length; i++)
                 {
-                    adjustedStories[i] = new NewsStory(allS[idx][i].TokenIds, allS[idx][i].ArrivalTime - splitPoint);
+                    adjustedStories[i] = new NewsStory(
+                        sourceStories[i].TokenIds,
+                        sourceStories[i].ArrivalTime - splitPoint);
                 }
             }
 
             var cache = new MultimodalForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
 
-            var (pred, conf) = _model.ForwardWithPriceContextAndCache(adjustedStories, currentInput, priceCtxHidden, priceCtxTimes, cache, isTraining: true, dropoutRng: _dropoutRng);
+            var (pred, conf) = _model.ForwardWithPriceContextAndCache(
+                adjustedStories,
+                currentInput,
+                priceCtxHidden,
+                priceCtxTimes,
+                cache,
+                isTraining: true,
+                dropoutRng: dropoutRng);
 
-            return BackwardPass(pred, conf, currentTarget, confTgt, cache);
+            return BackwardPass(pred, conf, currentTarget, confidenceTarget, cache);
         }
-
         #region Validation
 
         public float Validate(NewsStory[][] stories, float[][,] priceInputs, float[][,] priceTargets)
         {
             float totalLoss = 0f;
             int totalCount = 0;
-            int minSplitLength = _config.PriceContext.MinHistoryLength + _config.PriceContext.MinCurrentLength + 1;
+
+            int minSplitLength =
+                _config.PriceContext.MinHistoryLength +
+                _config.PriceContext.MinCurrentLength +
+                1;
 
             for (int i = 0; i < stories.Length; i++)
             {
                 float[,] inputPrices = priceInputs[i];
+
+                if (inputPrices == null || priceTargets[i] == null)
+                    continue;
+
                 int sequenceLength = inputPrices.GetLength(0);
 
-                if (sequenceLength < 2) continue;
+                if (sequenceLength < 2)
+                    continue;
 
-                bool canUseContextSplit = (sequenceLength >= minSplitLength);
+                bool canUseContextSplit =
+                    _config.PriceContext.Enabled &&
+                    sequenceLength >= minSplitLength;
 
                 if (canUseContextSplit)
                 {
@@ -663,34 +666,38 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                     int currentSeqLength = currentInput.GetLength(0);
 
-                    if (currentSeqLength < 2)
-                    {
+                    if (currentSeqLength <= 0)
                         continue;
-                    }
 
                     float[,] priceContextHidden = _model.EncodePriceHistory(historyPrices);
-
                     float[] priceContextTimes = new float[splitPoint];
 
                     for (int t = 0; t < splitPoint; t++)
-                    {
-                        // oldest gets largest age, newest gets age 1
-                        priceContextTimes[t] = (splitPoint - t);
-                    }
+                        priceContextTimes[t] = t - splitPoint;
 
                     NewsStory[] adjustedStories = null;
+
                     if (stories[i] != null && stories[i].Length > 0)
                     {
                         adjustedStories = new NewsStory[stories[i].Length];
+
                         for (int s = 0; s < stories[i].Length; s++)
                         {
-                            adjustedStories[s] = new NewsStory(stories[i][s].TokenIds, stories[i][s].ArrivalTime - splitPoint);
+                            adjustedStories[s] = new NewsStory(
+                                stories[i][s].TokenIds,
+                                stories[i][s].ArrivalTime - splitPoint);
                         }
                     }
 
                     var cache = new MultimodalForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
 
-                    var (predictions, _) = _model.ForwardWithPriceContextAndCache(adjustedStories, currentInput, priceContextHidden, priceContextTimes, cache, isTraining: false);
+                    var (predictions, _) = _model.ForwardWithPriceContextAndCache(
+                        adjustedStories,
+                        currentInput,
+                        priceContextHidden,
+                        priceContextTimes,
+                        cache,
+                        isTraining: false);
 
                     for (int t = 0; t < currentSeqLength; t++)
                     {
@@ -727,12 +734,21 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
 
-            return totalCount > 0 ? totalLoss / (totalCount * _config.Output.OutputDim) : 0f;
+            return totalCount > 0
+                ? totalLoss / (totalCount * _config.Output.OutputDim)
+                : 0f;
         }
-
         public float Validate(int[][] texts, float[][,] pi, float[][,] pt)
         {
-            return Validate(texts.Select(t => t != null && t.Length > 0 ? new[] { new NewsStory(t, 0f) } : null).ToArray(), pi, pt);
+            if (texts == null)
+                throw new ArgumentNullException(nameof(texts));
+
+            var stories = new NewsStory[texts.Length][];
+
+            for (int i = 0; i < texts.Length; i++)
+                stories[i] = new[] { new NewsStory(texts[i], 0f) };
+
+            return Validate(stories, pi, pt);
         }
 
         #endregion
@@ -1193,29 +1209,47 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
         }
 
-        private void BackpropMultiStoryTextEncoder(float[,] dSH, MultimodalForwardCache cache)
+        private void BackpropMultiStoryTextEncoder(float[,] dStoryHidden, MultimodalForwardCache cache)
         {
-            int ns = cache.StoryCaches.Count;
-            int ed = _config.Text.EmbeddingDim;
+            if (dStoryHidden == null || cache?.StoryCaches == null || cache.StoryCaches.Count == 0)
+                return;
 
-            for (int s = 0; s < ns; s++)
+            int storyCount = cache.StoryCaches.Count;
+            int embeddingDim = _config.Text.EmbeddingDim;
+
+            // In sequential memory training, context is:
+            // [existing news memory | fresh news stories | price memory]
+            //
+            // StoryCaches only contains fresh news stories, so gradients for fresh stories
+            // start after existing news-memory rows.
+            int contextOffset = 0;
+
+            if (cache.NumNewsContext > storyCount)
+                contextOffset = cache.NumNewsContext - storyCount;
+
+            if (contextOffset + storyCount > dStoryHidden.GetLength(0))
+                contextOffset = Math.Max(0, dStoryHidden.GetLength(0) - storyCount);
+
+            for (int s = 0; s < storyCount; s++)
             {
-                int tc = cache.StoryTokenCounts[s];
-                float inv = 1.0f / tc;
-                var dTH = new float[tc, ed];
+                int sourceRow = contextOffset + s;
+                int tokenCount = cache.StoryTokenCounts[s];
 
-                for (int t = 0; t < tc; t++)
+                if (tokenCount <= 0)
+                    continue;
+
+                float invTokenCount = 1.0f / tokenCount;
+                var dTokenHidden = new float[tokenCount, embeddingDim];
+
+                for (int t = 0; t < tokenCount; t++)
                 {
-                    for (int d = 0; d < ed; d++)
-                    {
-                        dTH[t, d] = dSH[s, d] * inv;
-                    }
+                    for (int d = 0; d < embeddingDim; d++)
+                        dTokenHidden[t, d] = dStoryHidden[sourceRow, d] * invTokenCount;
                 }
 
-                BackpropTextEncoder(dTH, cache.StoryCaches[s]);
+                BackpropTextEncoder(dTokenHidden, cache.StoryCaches[s]);
             }
         }
-
         private void BackpropTextEncoder(float[,] dTH, MultimodalForwardCache cache)
         {
             int ed = _config.Text.EmbeddingDim;
@@ -1685,7 +1719,271 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             _accel.Matrix3DScaleInPlace(g.MemAttnOutputWGrad, s);
             _accel.Matrix3DScaleInPlace(g.W1Grad, s);
         }
+        private (List<List<float[,]>> weightGrads, List<List<float[]>> biasGrads) CreateTextFFNGradientStorage()
+        {
+            var weights = new List<List<float[,]>>();
+            var biases = new List<List<float[]>>();
 
+            for (int i = 0; i < _config.Text.NumLayers; i++)
+            {
+                var (w, b) = _model.TextBlocks[i].FeedForwardNetwork.CreateGradientStorage();
+                weights.Add(w);
+                biases.Add(b);
+            }
+
+            return (weights, biases);
+        }
+
+        private (List<List<float[,]>> weightGrads, List<List<float[]>> biasGrads) CreatePriceFFNGradientStorage()
+        {
+            var weights = new List<List<float[,]>>();
+            var biases = new List<List<float[]>>();
+
+            for (int i = 0; i < _config.Price.NumLayers; i++)
+            {
+                var (w, b) = _model.PriceBlocks[i].FeedForwardNetwork.CreateGradientStorage();
+                weights.Add(w);
+                biases.Add(b);
+            }
+
+            return (weights, biases);
+        }
+
+        private void AccumulateLiveGradientsInto(
+            Gradients target,
+            List<List<float[,]>> targetTextFFNWeightGrads,
+            List<List<float[]>> targetTextFFNBiasGrads,
+            List<List<float[,]>> targetPriceFFNWeightGrads,
+            List<List<float[]>> targetPriceFFNBiasGrads)
+        {
+            AccumulateGradients(target, _gradients);
+
+            AccumulateFFNGradients(targetTextFFNWeightGrads, targetTextFFNBiasGrads, _textFFNWeightGrads, _textFFNBiasGrads);
+            AccumulateFFNGradients(targetPriceFFNWeightGrads, targetPriceFFNBiasGrads, _priceFFNWeightGrads, _priceFFNBiasGrads);
+        }
+
+        private void LoadAccumulatedGradientsIntoLive(
+            Gradients source,
+            List<List<float[,]>> sourceTextFFNWeightGrads,
+            List<List<float[]>> sourceTextFFNBiasGrads,
+            List<List<float[,]>> sourcePriceFFNWeightGrads,
+            List<List<float[]>> sourcePriceFFNBiasGrads)
+        {
+            ZeroAllGradients();
+
+            AccumulateGradients(_gradients, source);
+
+            AccumulateFFNGradients(_textFFNWeightGrads, _textFFNBiasGrads, sourceTextFFNWeightGrads, sourceTextFFNBiasGrads);
+            AccumulateFFNGradients(_priceFFNWeightGrads, _priceFFNBiasGrads, sourcePriceFFNWeightGrads, sourcePriceFFNBiasGrads);
+        }
+
+        private void AccumulateGradients(Gradients target, Gradients source)
+        {
+            if (!_config.Text.Freeze)
+            {
+                _accel.MatrixAccumulate(target.TextEmbeddingGrad, source.TextEmbeddingGrad);
+
+                for (int i = 0; i < _config.Text.NumLayers; i++)
+                {
+                    AccumulateAttentionGradients(target.TextAttnGrads[i], source.TextAttnGrads[i]);
+                    AccumulateLayerNormGradients(target.TextLN1Grads[i], source.TextLN1Grads[i]);
+                    AccumulateLayerNormGradients(target.TextLN2Grads[i], source.TextLN2Grads[i]);
+                }
+            }
+
+            _accel.MatrixAccumulate(target.PriceInputProjectionGrad, source.PriceInputProjectionGrad);
+            _accel.VectorAccumulate(target.PriceInputProjectionBiasGrad, source.PriceInputProjectionBiasGrad);
+
+            for (int i = 0; i < _config.Price.NumLayers; i++)
+            {
+                AccumulateCrossAttentionBlockGradients(target.PriceBlockGrads[i], source.PriceBlockGrads[i]);
+            }
+
+            _accel.MatrixAccumulate(target.OutputProjectionGrad, source.OutputProjectionGrad);
+            _accel.VectorAccumulate(target.OutputBiasGrad, source.OutputBiasGrad);
+
+            if (_config.Output.UseConfidenceHead &&
+                target.ConfidenceProjectionGrad != null &&
+                source.ConfidenceProjectionGrad != null)
+            {
+                _accel.MatrixAccumulate(target.ConfidenceProjectionGrad, source.ConfidenceProjectionGrad);
+                _accel.VectorAccumulate(target.ConfidenceBiasGrad, source.ConfidenceBiasGrad);
+            }
+
+            _accel.MatrixAccumulate(target.ContextTypeEmbeddingGrad, source.ContextTypeEmbeddingGrad);
+        }
+
+        private void AccumulateAttentionGradients(AttentionGradients target, AttentionGradients source)
+        {
+            _accel.MatrixAccumulate(target.WQ_Grad, source.WQ_Grad);
+            _accel.MatrixAccumulate(target.WK_Grad, source.WK_Grad);
+            _accel.MatrixAccumulate(target.WV_Grad, source.WV_Grad);
+            _accel.MatrixAccumulate(target.WO_Grad, source.WO_Grad);
+
+            _accel.VectorAccumulate(target.BiasQ_Grad, source.BiasQ_Grad);
+            _accel.VectorAccumulate(target.BiasK_Grad, source.BiasK_Grad);
+            _accel.VectorAccumulate(target.BiasV_Grad, source.BiasV_Grad);
+            _accel.VectorAccumulate(target.BiasO_Grad, source.BiasO_Grad);
+        }
+
+        private void AccumulateLayerNormGradients(LayerNormGradients target, LayerNormGradients source)
+        {
+            _accel.VectorAccumulate(target.GammaGrad, source.GammaGrad);
+            _accel.VectorAccumulate(target.BetaGrad, source.BetaGrad);
+        }
+
+        private void AccumulateCrossAttentionBlockGradients(CrossAttentionBlockGradients target, CrossAttentionBlockGradients source)
+        {
+            AccumulateAttentionGradients(target.SelfAttnGrads, source.SelfAttnGrads);
+            AccumulateLayerNormGradients(target.LNSelfGrads, source.LNSelfGrads);
+
+            AccumulateAttentionGradients(target.CrossAttnGrads, source.CrossAttnGrads);
+            AccumulateLayerNormGradients(target.LNCrossGrads, source.LNCrossGrads);
+
+            if (target.DecayGrads != null && source.DecayGrads != null)
+                AccumulateDecayGrads(target.DecayGrads, source.DecayGrads);
+
+            AccumulateLayerNormGradients(target.LNFFNGrads, source.LNFFNGrads);
+        }
+
+        private void AccumulateFFNGradients(
+            List<List<float[,]>> targetWeights,
+            List<List<float[]>> targetBiases,
+            List<List<float[,]>> sourceWeights,
+            List<List<float[]>> sourceBiases)
+        {
+            if (targetWeights != null && sourceWeights != null)
+            {
+                int layerCount = Math.Min(targetWeights.Count, sourceWeights.Count);
+
+                for (int layer = 0; layer < layerCount; layer++)
+                {
+                    int matrixCount = Math.Min(targetWeights[layer].Count, sourceWeights[layer].Count);
+
+                    for (int i = 0; i < matrixCount; i++)
+                        _accel.MatrixAccumulate(targetWeights[layer][i], sourceWeights[layer][i]);
+                }
+            }
+
+            if (targetBiases != null && sourceBiases != null)
+            {
+                int layerCount = Math.Min(targetBiases.Count, sourceBiases.Count);
+
+                for (int layer = 0; layer < layerCount; layer++)
+                {
+                    int vectorCount = Math.Min(targetBiases[layer].Count, sourceBiases[layer].Count);
+
+                    for (int i = 0; i < vectorCount; i++)
+                        _accel.VectorAccumulate(targetBiases[layer][i], sourceBiases[layer][i]);
+                }
+            }
+        }
+
+        private Random CreateSampleDropoutRandom(NewsStory[] stories, float[,] priceInput, int epoch)
+        {
+            return new Random(CreateStableSampleSeed(stories, priceInput, epoch, 7919));
+        }
+
+        private int ChooseDeterministicSplitPoint(
+            NewsStory[] stories,
+            float[,] priceSequence,
+            int minHistory,
+            int maxHistory,
+            int epoch)
+        {
+            if (maxHistory <= minHistory)
+                return minHistory;
+
+            int seed = CreateStableSampleSeed(stories, priceSequence, epoch, 104729);
+            int span = maxHistory - minHistory + 1;
+
+            return minHistory + (int)((uint)seed % (uint)span);
+        }
+
+        private static int CreateStableSampleSeed(NewsStory[] stories, float[,] priceInput, int epoch, int salt)
+        {
+            unchecked
+            {
+                int hash = unchecked((int)2166136261);
+
+                MixHash(ref hash, salt);
+                MixHash(ref hash, epoch);
+
+                if (stories == null)
+                {
+                    MixHash(ref hash, -1);
+                }
+                else
+                {
+                    MixHash(ref hash, stories.Length);
+
+                    for (int s = 0; s < stories.Length; s++)
+                    {
+                        var story = stories[s];
+
+                        if (story == null)
+                        {
+                            MixHash(ref hash, -2);
+                            continue;
+                        }
+
+                        MixHash(ref hash, FloatToStableBits(story.ArrivalTime));
+
+                        if (story.TokenIds == null)
+                        {
+                            MixHash(ref hash, -3);
+                        }
+                        else
+                        {
+                            MixHash(ref hash, story.TokenIds.Length);
+
+                            for (int i = 0; i < story.TokenIds.Length; i++)
+                                MixHash(ref hash, story.TokenIds[i]);
+                        }
+                    }
+                }
+
+                if (priceInput == null)
+                {
+                    MixHash(ref hash, -4);
+                }
+                else
+                {
+                    int rows = priceInput.GetLength(0);
+                    int cols = priceInput.GetLength(1);
+
+                    MixHash(ref hash, rows);
+                    MixHash(ref hash, cols);
+
+                    for (int r = 0; r < rows; r++)
+                    {
+                        for (int c = 0; c < cols; c++)
+                            MixHash(ref hash, FloatToStableBits(priceInput[r, c]));
+                    }
+                }
+
+                hash &= 0x7fffffff;
+
+                return hash == 0 ? 1 : hash;
+            }
+        }
+
+        private static void MixHash(ref int hash, int value)
+        {
+            unchecked
+            {
+                hash ^= value;
+                hash *= 16777619;
+            }
+        }
+
+        private static int FloatToStableBits(float value)
+        {
+            if (value == 0f)
+                value = 0f;
+
+            return BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
+        }
         private float[,] SliceRows(float[,] m, int s, int e)
         {
             int c = m.GetLength(1);

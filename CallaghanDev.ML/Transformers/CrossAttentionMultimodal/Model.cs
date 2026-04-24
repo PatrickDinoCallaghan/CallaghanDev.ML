@@ -1,4 +1,5 @@
 using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.Cache;
 using CallaghanDev.ML.Transformers.Configuration;

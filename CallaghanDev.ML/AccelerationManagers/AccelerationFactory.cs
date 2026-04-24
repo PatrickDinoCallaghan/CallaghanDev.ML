@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Enums;
+﻿using CallaghanDev.ML.AccelerationManagers.GPU;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.Configuration;
 using System;
 using System.Collections.Generic;

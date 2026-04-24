@@ -1138,14 +1138,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return pred;
         }
 
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
-            float[,] queryEmbeddings,
-            float[,] keyEmbeddings,
-            float[,] timeDiffs,
-            float[] keyTimesFromRef,
-            ContentAwareDecayNetwork network,
-            bool isTraining = false,
-            Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
         {
             if (queryEmbeddings == null) throw new ArgumentNullException(nameof(queryEmbeddings));
             if (keyEmbeddings == null) throw new ArgumentNullException(nameof(keyEmbeddings));
@@ -1212,14 +1205,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             if (useMemAttnDrop)
             {
                 if (network.MemoryAttentionDropout >= 1f)
+                {
                     throw new ArgumentOutOfRangeException(nameof(network.MemoryAttentionDropout), "MemoryAttentionDropout must be < 1.");
+                }
                 cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
             }
 
             if (useMLPDrop)
             {
                 if (network.MLPDropout >= 1f)
+                {
                     throw new ArgumentOutOfRangeException(nameof(network.MLPDropout), "MLPDropout must be < 1.");
+                }
                 cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
             }
 
@@ -1233,7 +1230,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.QueryProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
+                        {
                             val += network.QueryProjection[h, p, d] * queryEmbeddings[q, d];
+                        }
                         cache.QueryProj[h, q, p] = val;
                     }
                 }
@@ -1244,7 +1243,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.KeyProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
+                        {
                             val += network.KeyProjection[h, p, d] * keyEmbeddings[s, d];
+                        }
                         cache.KeyProj[h, s, p] = val;
                     }
                 }
@@ -1265,7 +1266,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.TimeProjBias[h, p];
                         for (int r = 0; r < rawDim; r++)
+                        {
                             val += network.TimeProj[h, p, r] * cache.TimeRawFeatures[h, s, r];
+                        }
                         cache.TimeEncoding[h, s, p] = val;
                     }
                 }
@@ -1291,10 +1294,15 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float dot = 0f;
                         for (int p = 0; p < projDim; p++)
+                        {
                             dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+                        }
 
                         scores[j] = dot * memScale;
-                        if (scores[j] > maxScore) maxScore = scores[j];
+                        if (scores[j] > maxScore) 
+                        { 
+                            maxScore = scores[j];
+                        }
                     }
 
                     float sumExp = 0f;
@@ -1329,7 +1337,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = 0f;
                         for (int j = 0; j < keyLen; j++)
+                        {
                             val += cache.MemAttnWeights[h, i, j] * cache.KeyProj[h, j, p];
+                        }
                         cache.MemAttnOutput[h, i, p] = val;
                     }
                 }
@@ -1340,7 +1350,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.MemAttnOutputB[h, p];
                         for (int q = 0; q < projDim; q++)
+                        {
                             val += network.MemAttnOutputW[h, p, q] * cache.MemAttnOutput[h, s, q];
+                        }
                         cache.RefinedKey[h, s, p] = val + cache.KeyProj[h, s, p];
                     }
                 }
@@ -1363,9 +1375,18 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float logTd = MathF.Log(1f + normTd);
 
                         int idx = 0;
-                        for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
-                        for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
-                        for (int p = 0; p < projDim; p++) cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p] * cache.RefinedKey[h, si, p];
+                        for (int p = 0; p < projDim; p++)
+                        {
+                            cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
+                        }
+                        for (int p = 0; p < projDim; p++)
+                        {
+                            cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
+                        }
+                        for (int p = 0; p < projDim; p++)
+                        {
+                            cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p] * cache.RefinedKey[h, si, p];
+                        }
                         cache.MLPInput[qi, si, h, idx++] = normTd;
                         cache.MLPInput[qi, si, h, idx++] = logTd;
 

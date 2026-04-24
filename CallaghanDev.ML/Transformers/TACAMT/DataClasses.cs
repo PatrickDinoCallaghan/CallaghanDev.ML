@@ -12,20 +12,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
     public class NewsMemoryEntry
     {
+        public int[] TokenIds { get; set; }
+
         public float[] HiddenState { get; set; }
+
         public double AbsoluteTimestamp { get; set; }
 
-        /// <summary>
-        /// Running exponential moving average of attention weight this entry receives
-        /// from recent queries. Used for attention-based memory pruning.
-        /// Entries with consistently low attention are effectively dead and can be pruned
-        /// even if they are newer than entries that still get attended to.
-        /// </summary>
         public float AttentionScore { get; set; } = 1.0f;
 
-        /// <summary>
-        /// Number of times this entry has been queried (used for EMA warmup).
-        /// </summary>
         public int QueryCount { get; set; } = 0;
     }
 

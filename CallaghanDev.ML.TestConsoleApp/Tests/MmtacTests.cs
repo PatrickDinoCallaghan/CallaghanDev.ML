@@ -25,6 +25,13 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private (Action, string)[] Tests() => new (Action, string)[]
         {
+            // High-confidence functional tests
+            (Test_HighConfidence_OutputHeadFiniteDifferenceUpdateDirection, "Grad: one-step output-head updates follow finite-difference loss direction"),
+            (Test_HighConfidence_TargetAlignment_TrainSimpleLearnsNextRowTargets, "Train: simple path learns next-row target alignment"),
+            (Test_HighConfidence_TargetAlignment_PriceContextLearnsNextRowTargets, "Train: price-context path learns next-row target alignment"),
+            (Test_HighConfidence_MultimodalHeldOutAblation, "E2E: multimodal held-out improves and ablations hurt"),
+            (Test_HighConfidence_SequentialMemoryCarryTask, "E2E: sequential rolling memory improves carry task"),
+
             // Construction / configuration
             (Test_Config_ValidPresets, "Config: presets validate"),
             (Test_Construction_CoreShapes, "Construction: core tensor shapes are correct"),
@@ -122,7 +129,314 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             (Test_Stability_ManyStoriesNoNaN, "Stability: many simultaneous stories produce finite outputs"),
             (Test_Stability_NoNaNAfterManyEpochs, "Stability: no NaN after many epochs"),
         };
+        // ---------------------------------------------------------------------
+        // High-confidence functional tests
+        // ---------------------------------------------------------------------
 
+        private void Test_HighConfidence_OutputHeadFiniteDifferenceUpdateDirection()
+        {
+            var (inputs, targets) = TinyGradientData();
+
+            void Check(string label, Func<MmtacModel, float> getter, Action<MmtacModel, float> setter)
+            {
+                var cfg = Cfg(embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, useConf: false, priceContextEnabled: false);
+
+                cfg.Output.CloseDirectionConsistencyWeight = 0f;
+                cfg.Output.CloseDirectionConsistencyMargin = 0f;
+
+                var model = new MmtacModel(cfg, new Random(42));
+
+                AssertOneStepUpdateOpposesFiniteDifference(
+                    label,
+                    model,
+                    inputs,
+                    targets,
+                    getter,
+                    setter);
+            }
+
+            Check(
+                "RegressionBias[Close]",
+                m => m.RegressionBias[2],
+                (m, v) => m.RegressionBias[2] = v);
+
+            Check(
+                "RangeBias[0]",
+                m => m.RangeBias[0],
+                (m, v) => m.RangeBias[0] = v);
+
+            Check(
+                "QualityBias[0]",
+                m => m.QualityBias[0],
+                (m, v) => m.QualityBias[0] = v);
+
+            Check(
+                "DirectionBias[0]",
+                m => m.DirectionBias[0],
+                (m, v) => m.DirectionBias[0] = v);
+
+            Check(
+                "MidDirectionBias[0]",
+                m => m.MidDirectionBias[0],
+                (m, v) => m.MidDirectionBias[0] = v);
+        }
+
+        private void Test_HighConfidence_TargetAlignment_TrainSimpleLearnsNextRowTargets()
+        {
+            var (inputs, targets) = NextRowAlignmentData(sampleCount: 14, seqLen: 7);
+
+            var cfg = Cfg(
+                embDim: 24,
+                numHeads: 4,
+                numLayers: 1,
+                ffnDim: 48,
+                priceSeqLen: 8,
+                priceContextEnabled: false);
+
+            cfg.Output.CloseDirectionConsistencyWeight = 0f;
+            cfg.Output.CloseDirectionConsistencyMargin = 0f;
+
+            var model = new MmtacModel(cfg, new Random(42));
+
+            new MmtacTrainer(model, TC(lr: 0.004f, bs: 7, epochs: 120))
+                .Train(inputs, targets);
+
+            float nextErr = 0f;
+            float currentErr = 0f;
+            int count = 0;
+
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                int sl = inputs[i].PriceSequence.GetLength(0);
+                var priceInp = SliceRows(inputs[i].PriceSequence, 0, sl - 1);
+
+                var wrapped = new MultimodalInput
+                {
+                    PredictionTimestamp = inputs[i].PredictionTimestamp,
+                    PriceSequence = priceInp
+                };
+
+                var (reg, _, _, _, _, _) = model.Forward(wrapped);
+
+                for (int t = 0; t < reg.GetLength(0); t++)
+                {
+                    float predicted = reg[t, 2];
+
+                    // Correct trainer alignment is input row t -> target row t + 1.
+                    float correct = targets[i][t + 1].Close;
+
+                    // This is the common off-by-one bug: input row t -> target row t.
+                    float wrongCurrent = targets[i][t].Close;
+
+                    nextErr += MathF.Abs(predicted - correct);
+                    currentErr += MathF.Abs(predicted - wrongCurrent);
+                    count++;
+                }
+            }
+
+            nextErr /= Math.Max(1, count);
+            currentErr /= Math.Max(1, count);
+
+            Assert(nextErr < 0.12f,
+                $"Model did not learn next-row target alignment. nextErr={nextErr:F6}");
+
+            Assert(nextErr < currentErr * 0.70f,
+                $"Predictions look closer to current-row targets than next-row targets. nextErr={nextErr:F6}, currentErr={currentErr:F6}");
+        }
+
+        private void Test_HighConfidence_TargetAlignment_PriceContextLearnsNextRowTargets()
+        {
+            // seqLen=7 with MinHistory=3 and MinCurrent=3 makes TrainWithPriceContext choose split=3.
+            // Current rows are [3,4,5], and the correct targets are [4,5,6].
+            var (inputs, targets) = NextRowAlignmentData(sampleCount: 14, seqLen: 7);
+
+            var cfg = Cfg(
+                embDim: 24,
+                numHeads: 4,
+                numLayers: 1,
+                ffnDim: 48,
+                priceSeqLen: 8,
+                priceContextEnabled: true);
+
+            cfg.PriceContext.MinHistoryLength = 3;
+            cfg.PriceContext.MinCurrentLength = 3;
+            cfg.Output.CloseDirectionConsistencyWeight = 0f;
+            cfg.Output.CloseDirectionConsistencyMargin = 0f;
+
+            var model = new MmtacModel(cfg, new Random(42));
+
+            new MmtacTrainer(model, TC(lr: 0.004f, bs: 7, epochs: 140))
+                .Train(inputs, targets);
+
+            int split = 3;
+
+            float nextErr = 0f;
+            float currentErr = 0f;
+            int count = 0;
+
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                int sl = inputs[i].PriceSequence.GetLength(0);
+
+                var hist = SliceRows(inputs[i].PriceSequence, 0, split);
+                var current = SliceRows(inputs[i].PriceSequence, split, sl - 1);
+
+                var priceCtxH = model.EncodePriceHistory(hist);
+                var priceCtxT = Enumerable.Range(0, split)
+                    .Select(t => -(float)(split - t))
+                    .ToArray();
+
+                var wrapped = new MultimodalInput
+                {
+                    PredictionTimestamp = inputs[i].PredictionTimestamp,
+                    PriceSequence = current
+                };
+
+                var cache = new MmtacForwardCache(
+                    cfg.Text.NumLayers,
+                    cfg.Price.NumLayers);
+
+                var (reg, _, _, _, _, _) = InvokeForwardWithPriceContextAndCache(
+                    model,
+                    wrapped,
+                    priceCtxH,
+                    priceCtxT,
+                    cache,
+                    isTraining: false);
+
+                for (int t = 0; t < reg.GetLength(0); t++)
+                {
+                    float predicted = reg[t, 2];
+
+                    // Correct price-context alignment:
+                    // current local row t corresponds to original row split + t,
+                    // target should be original row split + t + 1.
+                    float correct = targets[i][split + t + 1].Close;
+
+                    // Common off-by-one bug:
+                    // target original row split + t.
+                    float wrongCurrent = targets[i][split + t].Close;
+
+                    nextErr += MathF.Abs(predicted - correct);
+                    currentErr += MathF.Abs(predicted - wrongCurrent);
+                    count++;
+                }
+            }
+
+            nextErr /= Math.Max(1, count);
+            currentErr /= Math.Max(1, count);
+
+            Assert(nextErr < 0.14f,
+                $"Price-context branch did not learn next-row target alignment. nextErr={nextErr:F6}");
+
+            Assert(nextErr < currentErr * 0.70f,
+                $"Price-context predictions look closer to current-row targets than next-row targets. nextErr={nextErr:F6}, currentErr={currentErr:F6}");
+        }
+
+        private void Test_HighConfidence_MultimodalHeldOutAblation()
+        {
+            var (tok, trainInputs, trainTargets, testInputs, testTargets) =
+                CompositionalMultimodalData(trainN: 96, testN: 32, seqLen: 6);
+
+            var cfg = Cfg(
+                vocabSize: tok.VocabSize + 2,
+                embDim: 32,
+                numHeads: 4,
+                numLayers: 1,
+                ffnDim: 64,
+                globalDim: 3);
+
+            cfg.Output.CloseDirectionConsistencyWeight = 0f;
+            cfg.Output.CloseDirectionConsistencyMargin = 0f;
+
+            var model = new MmtacModel(cfg, new Random(42));
+
+            float before = new MmtacTrainer(model, TC(epochs: 1))
+                .ValidateAligned(testInputs, testTargets);
+
+            new MmtacTrainer(model, TC(lr: 0.003f, bs: 8, epochs: 140))
+                .Train(trainInputs, trainTargets);
+
+            var validator = new MmtacTrainer(model, TC(epochs: 1));
+
+            float baseLoss = validator.ValidateAligned(testInputs, testTargets);
+
+            var noPrice = testInputs
+                .Select(x => CloneInput(x, keepPrice: false, keepNews: true, keepGlobals: true))
+                .ToArray();
+
+            var noNews = testInputs
+                .Select(x => CloneInput(x, keepPrice: true, keepNews: false, keepGlobals: true))
+                .ToArray();
+
+            var noGlobal = testInputs
+                .Select(x => CloneInput(x, keepPrice: true, keepNews: true, keepGlobals: false))
+                .ToArray();
+
+            float noPriceLoss = validator.ValidateAligned(noPrice, testTargets);
+            float noNewsLoss = validator.ValidateAligned(noNews, testTargets);
+            float noGlobalLoss = validator.ValidateAligned(noGlobal, testTargets);
+
+            Assert(baseLoss < before * 0.65f,
+                $"Multimodal held-out loss did not improve enough. before={before:F6}, after={baseLoss:F6}");
+
+            AssertAblationHurts("price", baseLoss, noPriceLoss);
+            AssertAblationHurts("news", baseLoss, noNewsLoss);
+            AssertAblationHurts("global", baseLoss, noGlobalLoss);
+        }
+
+        private void Test_HighConfidence_SequentialMemoryCarryTask()
+        {
+            int seqLen = 6;
+
+            var (trainInputs, trainTargets, trainTs) =
+                SequentialCarryPairsData(pairCount: 40, seqLen: seqLen, offset: 0);
+
+            var (testInputs, testTargets, testTs) =
+                SequentialCarryPairsData(pairCount: 16, seqLen: seqLen, offset: 10_000);
+
+            var cfg = Cfg(
+                embDim: 32,
+                numHeads: 4,
+                numLayers: 1,
+                ffnDim: 64,
+                priceSeqLen: 8);
+
+            cfg.Output.CloseDirectionConsistencyWeight = 0f;
+            cfg.Output.CloseDirectionConsistencyMargin = 0f;
+            cfg.Decay.MemAttentionDropout = 0f;
+            cfg.Decay.MlpDropout = 0f;
+            cfg.Runtime.AccelerationType = AccelerationType.CPU;
+
+            var model = new MmtacModel(cfg, new Random(42));
+
+            new MmtacTrainer(model, TC(lr: 0.003f, bs: 1, epochs: 110))
+                .TrainSequential(
+                    trainInputs,
+                    trainTargets,
+                    trainTs,
+                    timeUnitsPerPosition: 1.0,
+                    maxNewsMemory: 0,
+                    maxPriceMemory: seqLen);
+
+            float withMemoryErr = AverageCarryCloseErrorWithMemory(
+                model,
+                testInputs,
+                testTargets,
+                testTs,
+                maxPriceMemory: seqLen);
+
+            float statelessErr = AverageCarryCloseErrorStateless(
+                model,
+                testInputs,
+                testTargets);
+
+            Assert(withMemoryErr < statelessErr * 0.75f,
+                $"Rolling price memory should materially improve carried-regime prediction. withMemory={withMemoryErr:F6}, stateless={statelessErr:F6}");
+
+            Assert(withMemoryErr < 0.22f,
+                $"Rolling memory carry error is still high. withMemory={withMemoryErr:F6}");
+        }
         // ---------------------------------------------------------------------
         // Construction / config
         // ---------------------------------------------------------------------
@@ -2113,6 +2427,398 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 Assert(a.PriceMemory[i].HiddenState.Length == a.Config.Price.EmbeddingDim,
                     label + $": price hidden dim does not match embedding dim {i}");
             }
+        }
+
+        private (MultimodalInput[] inputs, ModelTarget[][] targets) TinyGradientData()
+        {
+            var inputs = new[]
+            {
+        new MultimodalInput
+        {
+            PredictionTimestamp = DateTime.UtcNow,
+            PriceSequence = ConstantPriceSequence(
+                5,
+                0.30f,
+                -0.20f,
+                0.10f,
+                0.05f,
+                1f)
+        }
+    };
+
+            var targets = new[]
+            {
+        ConstantTargets(
+            seqLen: 5,
+            close: 0.85f,
+            range: 0.28f,
+            quality: 0.90f,
+            direction: 1,
+            midDirection: 0)
+    };
+
+            return (inputs, targets);
+        }
+
+        private void AssertOneStepUpdateOpposesFiniteDifference(
+            string label,
+            MmtacModel model,
+            MultimodalInput[] inputs,
+            ModelTarget[][] targets,
+            Func<MmtacModel, float> getter,
+            Action<MmtacModel, float> setter)
+        {
+            const float eps = 1e-3f;
+            const float lr = 1e-3f;
+
+            float original = getter(model);
+
+            setter(model, original + eps);
+            float lossPlus = new MmtacTrainer(model, TC(epochs: 1))
+                .ValidateAligned(inputs, targets);
+
+            setter(model, original - eps);
+            float lossMinus = new MmtacTrainer(model, TC(epochs: 1))
+                .ValidateAligned(inputs, targets);
+
+            setter(model, original);
+
+            float finiteDiff = (lossPlus - lossMinus) / (2f * eps);
+
+            Assert(float.IsFinite(finiteDiff),
+                $"{label}: finite-difference gradient is not finite: {finiteDiff}");
+
+            Assert(MathF.Abs(finiteDiff) > 1e-7f,
+                $"{label}: finite-difference gradient is too close to zero: {finiteDiff:E6}");
+
+            var tc = TC(lr: lr, bs: inputs.Length, epochs: 1, clip: false);
+
+            new MmtacTrainer(model, tc)
+                .Train(inputs, targets);
+
+            float delta = getter(model) - original;
+
+            Assert(MathF.Abs(delta) > 1e-10f,
+                $"{label}: parameter did not move after one training step");
+
+            Assert(delta * finiteDiff < 0f,
+                $"{label}: update moved with the finite-difference gradient instead of against it. fd={finiteDiff:E6}, delta={delta:E6}");
+        }
+
+        private (MultimodalInput[] inputs, ModelTarget[][] targets) NextRowAlignmentData(
+            int sampleCount,
+            int seqLen)
+        {
+            var inputs = new MultimodalInput[sampleCount];
+            var targets = new ModelTarget[sampleCount][];
+
+            for (int s = 0; s < sampleCount; s++)
+            {
+                var ps = new float[seqLen, 5];
+                var tg = new ModelTarget[seqLen];
+
+                for (int t = 0; t < seqLen; t++)
+                {
+                    // Alternating target rows make current-row vs next-row alignment visibly different.
+                    float close = ((s + t) % 2 == 0) ? 0.82f : 0.18f;
+
+                    // Small sample-dependent perturbation prevents a pure two-value memorisation shortcut.
+                    close += 0.02f * ((s % 3) - 1);
+                    close = Clamp01(close);
+
+                    float range = close > 0.5f ? 0.18f : 0.10f;
+
+                    tg[t] = new ModelTarget
+                    {
+                        High = close + range * 0.5f,
+                        Low = close - range * 0.5f,
+                        Close = close,
+                        Range = range,
+                        Quality = close > 0.5f ? 0.90f : 0.65f,
+                        Direction = close > 0.5f ? 1f : 0f,
+                        MidWindowDirection = ((s + t) % 3 == 0) ? 1f : 0f
+                    };
+                }
+
+                // Row t directly contains the value that should be predicted for target row t + 1.
+                for (int t = 0; t < seqLen - 1; t++)
+                {
+                    float nextClose = tg[t + 1].Close;
+                    ps[t, 0] = nextClose;
+                    ps[t, 1] = 1f - nextClose;
+                    ps[t, 2] = nextClose * nextClose;
+                    ps[t, 3] = nextClose > 0.5f ? 1f : -1f;
+                    ps[t, 4] = 1f;
+                }
+
+                // Final row is not used by TrainSimple/TrainWithPriceContext target alignment.
+                ps[seqLen - 1, 0] = 0f;
+                ps[seqLen - 1, 1] = 0f;
+                ps[seqLen - 1, 2] = 0f;
+                ps[seqLen - 1, 3] = 0f;
+                ps[seqLen - 1, 4] = 1f;
+
+                inputs[s] = new MultimodalInput
+                {
+                    PredictionTimestamp = DateTime.UtcNow.AddMinutes(s),
+                    PriceSequence = ps
+                };
+
+                targets[s] = tg;
+            }
+
+            return (inputs, targets);
+        }
+
+        private static (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf)
+            InvokeForwardWithPriceContextAndCache(
+                MmtacModel model,
+                MultimodalInput input,
+                float[,] priceCtxHidden,
+                float[] priceCtxTimes,
+                MmtacForwardCache cache,
+                bool isTraining)
+        {
+            var method = typeof(MmtacModel).GetMethod(
+                "ForwardWithPriceContextAndCache",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+            if (method == null)
+                throw new InvalidOperationException("Could not find MmtacModel.ForwardWithPriceContextAndCache via reflection.");
+
+            var result = method.Invoke(
+                model,
+                new object[]
+                {
+            input,
+            priceCtxHidden,
+            priceCtxTimes,
+            cache,
+            isTraining,
+            null
+                });
+
+            var tuple = ((float[,] reg,
+                          float[,] range,
+                          float[,] quality,
+                          float[,] dir,
+                          float[,] midDir,
+                          float[,] conf))result;
+
+            return tuple;
+        }
+
+        private (BPETokenizer tok,
+                 MultimodalInput[] trainInputs,
+                 ModelTarget[][] trainTargets,
+                 MultimodalInput[] testInputs,
+                 ModelTarget[][] testTargets)
+            CompositionalMultimodalData(
+                int trainN = 96,
+                int testN = 32,
+                int seqLen = 6,
+                int seed = 12345)
+        {
+            string bullText = "central bank support growth demand";
+            string bearText = "credit stress slowdown recession";
+
+            var tok = new BPETokenizer();
+            tok.Train(new[] { bullText, bearText }, vocabSize: 80, minFrequency: 1);
+
+            int[] bull = tok.Encode(bullText, addSpecialTokens: true);
+            int[] bear = tok.Encode(bearText, addSpecialTokens: true);
+
+            var rng = new Random(seed);
+
+            MultimodalInput MakeInput(float priceSignal, int newsSign, int globalSign, int idx)
+            {
+                return new MultimodalInput
+                {
+                    PredictionTimestamp = DateTime.UtcNow.AddMinutes(idx),
+
+                    PriceSequence = ConstantPriceSequence(
+                        seqLen,
+                        priceSignal,
+                        priceSignal * priceSignal,
+                        MathF.Sign(priceSignal),
+                        0.5f * priceSignal,
+                        1f),
+
+                    NewsStories = new[]
+                    {
+                new NewsStory(newsSign > 0 ? bull : bear, 0f)
+            },
+
+                    GlobalFeatures = new[]
+                    {
+                globalSign > 0 ? 1f : 0f,
+                globalSign < 0 ? 1f : 0f,
+                MathF.Abs(priceSignal)
+            }
+                };
+            }
+
+            ModelTarget[] MakeTarget(float priceSignal, int newsSign, int globalSign)
+            {
+                // All three modalities matter with similar strength.
+                float score =
+                    0.42f * priceSignal +
+                    0.38f * newsSign +
+                    0.34f * globalSign;
+
+                float close = 0.50f + 0.24f * MathF.Tanh(score);
+                float range = 0.07f + 0.04f * MathF.Abs(score);
+                float quality = Clamp01(0.50f + 0.35f * MathF.Tanh(score));
+                int direction = score > 0f ? 1 : 0;
+                int midDirection = (0.55f * priceSignal + 0.45f * globalSign) > 0f ? 1 : 0;
+
+                return ConstantTargets(seqLen, close, range, quality, direction, midDirection);
+            }
+
+            void Fill(int n, int offset, out MultimodalInput[] inputs, out ModelTarget[][] targets)
+            {
+                inputs = new MultimodalInput[n];
+                targets = new ModelTarget[n][];
+
+                for (int i = 0; i < n; i++)
+                {
+                    float priceSignal = (float)(rng.NextDouble() * 2.0 - 1.0);
+                    int newsSign = rng.Next(2) == 0 ? -1 : 1;
+                    int globalSign = rng.Next(2) == 0 ? -1 : 1;
+
+                    inputs[i] = MakeInput(priceSignal, newsSign, globalSign, offset + i);
+                    targets[i] = MakeTarget(priceSignal, newsSign, globalSign);
+                }
+            }
+
+            Fill(trainN, 0, out var trainInputs, out var trainTargets);
+            Fill(testN, 10_000, out var testInputs, out var testTargets);
+
+            return (tok, trainInputs, trainTargets, testInputs, testTargets);
+        }
+
+        private void AssertAblationHurts(string modality, float baseLoss, float ablatedLoss)
+        {
+            bool relativeHurt = ablatedLoss > baseLoss * 1.15f;
+            bool absoluteHurt = ablatedLoss > baseLoss + 0.02f;
+
+            Assert(relativeHurt || absoluteHurt, $"{modality} ablation should hurt held-out loss. base={baseLoss:F6}, ablated={ablatedLoss:F6}");
+        }
+
+        private static (MultimodalInput[] inputs, ModelTarget[][] targets, double[] timestamps) SequentialCarryPairsData(int pairCount, int seqLen, int offset)
+        {
+            var inputs = new MultimodalInput[pairCount * 2];
+            var targets = new ModelTarget[pairCount * 2][];
+            var timestamps = new double[pairCount * 2];
+
+            for (int pair = 0; pair < pairCount; pair++)
+            {
+                bool positive = pair % 2 == 0;
+
+                float driverSignal = positive ? 1f : -1f;
+                float targetClose = positive ? 0.80f : 0.20f;
+                int direction = positive ? 1 : 0;
+
+                int driverIdx = pair * 2;
+                int carryIdx = driverIdx + 1;
+
+                inputs[driverIdx] = new MultimodalInput
+                {
+                    PredictionTimestamp = DateTime.UtcNow.AddMinutes(offset + driverIdx),
+                    PriceSequence = ConstantPriceSequence(
+                        seqLen,
+                        driverSignal,
+                        driverSignal * driverSignal,
+                        MathF.Sign(driverSignal),
+                        0.5f * driverSignal,
+                        1f)
+                };
+
+                targets[driverIdx] = ConstantTargets(
+                    seqLen,
+                    close: targetClose,
+                    range: 0.12f,
+                    quality: 0.90f,
+                    direction: direction,
+                    midDirection: direction);
+
+                // The carry sample is neutral. Its target depends on the immediately previous driver.
+                inputs[carryIdx] = new MultimodalInput
+                {
+                    PredictionTimestamp = DateTime.UtcNow.AddMinutes(offset + carryIdx),
+                    PriceSequence = ConstantPriceSequence(
+                        seqLen,
+                        0f,
+                        0f,
+                        0f,
+                        0f,
+                        1f)
+                };
+
+                targets[carryIdx] = ConstantTargets(
+                    seqLen,
+                    close: targetClose,
+                    range: 0.12f,
+                    quality: 0.90f,
+                    direction: direction,
+                    midDirection: direction);
+
+                timestamps[driverIdx] = (offset + driverIdx) * 10.0;
+                timestamps[carryIdx] = (offset + carryIdx) * 10.0;
+            }
+
+            return (inputs, targets, timestamps);
+        }
+
+        private float AverageCarryCloseErrorWithMemory(MmtacModel model, MultimodalInput[] inputs, ModelTarget[][] targets, double[] timestamps, int maxPriceMemory)
+        {
+            float total = 0f;
+            int count = 0;
+
+            for (int i = 0; i < inputs.Length; i += 2)
+            {
+                model.ClearAllMemory();
+
+                _ = model.PredictWithMemory(
+                    inputs[i],
+                    timestamps[i],
+                    timeUnitsPerPosition: 1.0,
+                    maxNewsMemorySize: 0,
+                    maxPriceMemorySize: maxPriceMemory);
+
+                var carryPred = model.PredictWithMemory(
+                    inputs[i + 1],
+                    timestamps[i + 1],
+                    timeUnitsPerPosition: 1.0,
+                    maxNewsMemorySize: 0,
+                    maxPriceMemorySize: maxPriceMemory);
+
+                float targetClose = targets[i + 1][targets[i + 1].Length - 1].Close;
+
+                total += MathF.Abs(carryPred.Close - targetClose);
+                count++;
+            }
+
+            model.ClearAllMemory();
+
+            return total / Math.Max(1, count);
+        }
+
+        private float AverageCarryCloseErrorStateless(MmtacModel model, MultimodalInput[] inputs, ModelTarget[][] targets)
+        {
+            float total = 0f;
+            int count = 0;
+
+            for (int i = 1; i < inputs.Length; i += 2)
+            {
+                var pred = model.PredictNext(inputs[i]);
+                float targetClose = targets[i][targets[i].Length - 1].Close;
+
+                total += MathF.Abs(pred.Close - targetClose);
+                count++;
+            }
+
+            return total / Math.Max(1, count);
         }
     }
 }
