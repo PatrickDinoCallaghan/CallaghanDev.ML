@@ -3,6 +3,7 @@ using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
 using CallaghanDev.ML.Transformers.TACAMT;
+using ILGPU;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,7 +30,483 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private int _passed;
         private int _failed;
         private readonly List<string> _failures = new List<string>();
+        private void Test_PredictWithMemory_StoredPriceMemoryMatchesExplicitPriceContext()
+        {
+            var config = CreateConfig(
+                inputFeatures: 2,
+                outputDim: 1,
+                embDim: 12,
+                numHeads: 3,
+                priceSeqLen: 8,
+                priceContextEnabled: true);
 
+            var model = new TACAMT_Model(config, new Random(42));
+            var price = RandomMatrix(5, 2, new Random(124), 0.2f);
+
+            int embDim = config.Price.EmbeddingDim;
+            double currentTs = 100.0;
+            double timeUnitsPerPosition = 5.0;
+
+            var memory0 = new float[embDim];
+            var memory1 = new float[embDim];
+
+            for (int d = 0; d < embDim; d++)
+            {
+                memory0[d] = d % 2 == 0 ? 3.0f + d * 0.01f : -2.0f - d * 0.01f;
+                memory1[d] = d % 2 == 0 ? -4.0f - d * 0.02f : 2.5f + d * 0.02f;
+            }
+
+            model.PriceMemory.Add(new PriceMemoryEntry
+            {
+                HiddenState = CloneVector(memory0),
+                AbsoluteTimestamp = 80.0
+            });
+
+            model.PriceMemory.Add(new PriceMemoryEntry
+            {
+                HiddenState = CloneVector(memory1),
+                AbsoluteTimestamp = 95.0
+            });
+
+            var explicitPriceContext = new float[2, embDim];
+
+            for (int d = 0; d < embDim; d++)
+            {
+                explicitPriceContext[0, d] = memory0[d];
+                explicitPriceContext[1, d] = memory1[d];
+            }
+
+            var explicitTimes = new[]
+            {
+        (float)((80.0 - currentTs) / timeUnitsPerPosition),
+        (float)((95.0 - currentTs) / timeUnitsPerPosition)
+    };
+
+            var directCache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+
+            var (directWithPriceMemory, _) = model.ForwardWithPriceContextAndCache(
+                null,
+                price,
+                explicitPriceContext,
+                explicitTimes,
+                directCache,
+                isTraining: false);
+
+            float[] expected = GetLastRow(directWithPriceMemory);
+
+            var noMemoryModel = new TACAMT_Model(config, new Random(42));
+            float[] noMemory = GetLastRow(noMemoryModel.Forward((NewsStory[])null, price).predictions);
+
+            Assert(
+                VectorMaxAbsDiff(expected, noMemory) > 1e-6f,
+                "Precondition failed: explicit price memory context should affect the prediction, otherwise this test cannot detect whether PredictWithMemory uses it.");
+
+            var (actual, _) = model.PredictWithMemory(
+                null,
+                price,
+                currentAbsoluteTimestamp: currentTs,
+                timeUnitsPerPosition: timeUnitsPerPosition,
+                maxNewsMemorySize: 0,
+                maxPriceMemorySize: 100);
+
+            AssertVectorClose(
+                expected,
+                actual,
+                1e-5f,
+                "PredictWithMemory should feed stored PriceMemory rows into the same price-context path used by ForwardWithPriceContextAndCache.");
+        }
+        private void Test_Backward_PriceHistoryContext_BackpropsIntoPriceEncoder()
+        {
+            var config = CreateConfig(
+                inputFeatures: 2,
+                outputDim: 1,
+                embDim: 12,
+                numHeads: 3,
+                priceSeqLen: 8,
+                priceContextEnabled: true,
+                priceCtxMinHist: 3,
+                priceCtxMinCurrent: 3);
+
+            var model = new TACAMT_Model(config, new Random(42));
+
+            var trainer = new TACAMT_Trainer(
+                model,
+                new TrainingConfig
+                {
+                    LearningRate = 0.001f,
+                    BatchSize = 1,
+                    Epochs = 1,
+                    Verbose = false
+                });
+
+            // With seqLen = minHistory + minCurrent + 1, TrainWithPriceContext must split at row 3.
+            // Rows [0..2] are historical context; rows [3..5] are the current decoder input.
+            // The current decoder input is all zeros, so PriceInputProjectionGrad can only become
+            // non-zero if gradients from historical price context route back through the price-history encoder.
+            var price = FilledMatrix(7, 2, 0f);
+
+            price[0, 0] = 0.40f;
+            price[0, 1] = -0.20f;
+            price[1, 0] = 0.75f;
+            price[1, 1] = 0.15f;
+            price[2, 0] = -0.35f;
+            price[2, 1] = 0.60f;
+
+            var target = FilledMatrix(7, 1, 0.75f);
+
+            InvokePrivate(trainer, "ZeroAllGradients");
+
+            float loss = (float)InvokePrivate(
+                trainer,
+                "TrainWithPriceContext",
+                0,
+                new NewsStory[1][],
+                new[] { price },
+                new[] { target },
+                null,
+                0,
+                new Random(1));
+
+            AssertFinite(loss, "price-history-context training loss");
+
+            var grads = GetGradients(trainer);
+
+            Assert(
+                SumAbsRow(grads.ContextTypeEmbeddingGrad, 1) > 1e-10f,
+                "Sanity check failed: price context should be used by cross-attention in this sample.");
+
+            Assert(
+                SumAbs(grads.PriceInputProjectionGrad) > 1e-10f,
+                "Historical price context should backpropagate into the price encoder. With zero current-price inputs, a non-zero PriceInputProjectionGrad proves the historical context path is trained by later prediction loss.");
+        }
+        private void Test_UpdateMemoryAttentionScoresFromCache_UsesActualCrossAttentionWeights()
+        {
+            var config = CreateConfig(embDim: 12, numHeads: 3);
+            int embDim = config.Price.EmbeddingDim;
+
+            // First prove the approximate dot-product fallback would prefer the news row.
+            var approximateModel = new TACAMT_Model(config, new Random(42));
+            approximateModel.PruningConfig.AttentionScoreAlpha = 1f;
+
+            approximateModel.NewsMemory.Add(new NewsMemoryEntry
+            {
+                HiddenState = new float[embDim],
+                AbsoluteTimestamp = 1.0
+            });
+
+            approximateModel.PriceMemory.Add(new PriceMemoryEntry
+            {
+                HiddenState = new float[embDim],
+                AbsoluteTimestamp = 2.0
+            });
+
+            var priceHidden = new float[3, embDim];
+            var contextHidden = new float[2, embDim];
+
+            for (int d = 0; d < embDim; d++)
+            {
+                priceHidden[2, d] = 1f;
+                contextHidden[0, d] = 1f;   // Approximate scorer likes this news row.
+                contextHidden[1, d] = -1f;  // Approximate scorer dislikes this price row.
+            }
+
+            InvokePrivate(approximateModel, "UpdateMemoryAttentionScores", priceHidden, contextHidden, 2);
+
+            Assert(
+                approximateModel.NewsMemory[0].AttentionScore > approximateModel.PriceMemory[0].AttentionScore,
+                "Precondition failed: approximate similarity should prefer the news row for this setup.");
+
+            // Now provide cached post-decay cross-attention weights that strongly prefer the price row.
+            // The actual-cache updater should use these weights, not recompute approximate similarity.
+            var actualModel = new TACAMT_Model(config, new Random(42));
+            actualModel.PruningConfig.AttentionScoreAlpha = 1f;
+
+            actualModel.NewsMemory.Add(new NewsMemoryEntry
+            {
+                HiddenState = new float[embDim],
+                AbsoluteTimestamp = 1.0
+            });
+
+            actualModel.PriceMemory.Add(new PriceMemoryEntry
+            {
+                HiddenState = new float[embDim],
+                AbsoluteTimestamp = 2.0
+            });
+
+            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers)
+            {
+                TextFinalHidden = contextHidden,
+                StoryArrivalTimes = new[] { -1f, -2f },
+                PriceFinalHidden = priceHidden,
+                NumNewsContext = 1,
+                NumPriceContext = 1
+            };
+
+            var weightsByHead = new float[config.Price.NumHeads][,];
+
+            for (int h = 0; h < config.Price.NumHeads; h++)
+            {
+                weightsByHead[h] = new float[3, 2];
+
+                weightsByHead[h][0, 0] = 0.50f;
+                weightsByHead[h][0, 1] = 0.50f;
+
+                weightsByHead[h][1, 0] = 0.50f;
+                weightsByHead[h][1, 1] = 0.50f;
+
+                weightsByHead[h][2, 0] = 0.10f;
+                weightsByHead[h][2, 1] = 0.90f;
+            }
+
+            cache.PriceBlockCaches[0].CrossAttentionWeights = weightsByHead;
+
+            InvokeCachedMemoryAttentionScoreUpdate(
+                actualModel,
+                cache,
+                storedNewsCount: 1,
+                storedPriceCount: 1);
+
+            Assert(
+                actualModel.NewsMemory[0].QueryCount == 1,
+                "News memory query count should increment from cached attention.");
+
+            Assert(
+                actualModel.PriceMemory[0].QueryCount == 1,
+                "Price memory query count should increment from cached attention.");
+
+            AssertClose(
+                0.10f,
+                actualModel.NewsMemory[0].AttentionScore,
+                1e-6f,
+                "News score should equal the cached last-query post-decay cross-attention contribution.");
+
+            AssertClose(
+                0.90f,
+                actualModel.PriceMemory[0].AttentionScore,
+                1e-6f,
+                "Price score should equal the cached last-query post-decay cross-attention contribution.");
+        }
+        private void Test_DecayNetwork_MemoryAttention_MasksFutureKeys()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+            var net = new ContentAwareDecayNetwork(
+                numHeads: 2,
+                contentDim: 16,
+                projectionDim: 8,
+                hiddenDim: 16,
+                random: rng,
+                memAttnDropout: 0f,
+                mlpDropout: 0f);
+
+            var query = RandomMatrix(2, 16, new Random(201), 0.2f);
+            var key = RandomMatrix(3, 16, new Random(202), 0.2f);
+            var keyTimes = new[] { -2f, -1f, 1f };
+            var timeDiffs = accel.ComputeTimeDiffMatrix(query.GetLength(0), keyTimes);
+
+            var (_, cache) = accel.ContentAwareDecayForward(
+                query,
+                key,
+                timeDiffs,
+                keyTimes,
+                net,
+                isTraining: false);
+
+            for (int h = 0; h < net.NumHeads; h++)
+            {
+                AssertClose(0f, cache.MemAttnWeights[h, 0, 1], 0f,
+                    "A key at t=-2 must not refine itself using a future key at t=-1.");
+                AssertClose(0f, cache.MemAttnWeights[h, 0, 2], 0f,
+                    "A key at t=-2 must not refine itself using a future key at t=1.");
+                AssertClose(0f, cache.MemAttnWeights[h, 1, 2], 0f,
+                    "A key at t=-1 must not refine itself using a future key at t=1.");
+
+                Assert(cache.MemAttnWeights[h, 0, 0] > 0f,
+                    "A key should still be able to attend to itself.");
+                Assert(cache.MemAttnWeights[h, 2, 0] > 0f &&
+                       cache.MemAttnWeights[h, 2, 1] > 0f &&
+                       cache.MemAttnWeights[h, 2, 2] > 0f,
+                    "The newest key should still be able to attend to past and current keys.");
+            }
+        }
+
+        private void Test_DecayNetwork_Backward_MemoryAttentionMaskBlocksFutureKeyGradient()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+            var net = new ContentAwareDecayNetwork(
+                numHeads: 2,
+                contentDim: 16,
+                projectionDim: 8,
+                hiddenDim: 16,
+                random: rng,
+                memAttnDropout: 0f,
+                mlpDropout: 0f);
+
+            var query = RandomMatrix(1, 16, new Random(203), 0.2f);
+            var key = RandomMatrix(3, 16, new Random(204), 0.2f);
+            var keyTimes = new[] { -2f, -1f, 1f };
+            var timeDiffs = accel.ComputeTimeDiffMatrix(query.GetLength(0), keyTimes);
+
+            var (_, cache) = accel.ContentAwareDecayForward(
+                query,
+                key,
+                timeDiffs,
+                keyTimes,
+                net,
+                isTraining: false);
+
+            var dDecayBias = new float[1, 3, net.NumHeads];
+
+            for (int h = 0; h < net.NumHeads; h++)
+                dDecayBias[0, 0, h] = 1f; // Only the oldest key's decay path contributes loss.
+
+            var (_, _, dKeyEmbeddings) = net.Backward(dDecayBias, cache);
+
+            Assert(SumAbsRow(dKeyEmbeddings, 0) > 1e-10f,
+                "Sanity check: the directly-used oldest key should receive gradient.");
+            Assert(SumAbsRow(dKeyEmbeddings, 1) < 1e-10f,
+                "A future key at t=-1 must not receive gradient through the oldest key's refinement path.");
+            Assert(SumAbsRow(dKeyEmbeddings, 2) < 1e-10f,
+                "A future key at t=1 must not receive gradient through the oldest key's refinement path.");
+        }
+
+        private void Test_CrossAttention_DecayDisabled_StillAppliesFutureTimeMask_WithCache()
+        {
+            var config = CreateConfig(
+                textVocabSize: 50,
+                embDim: 12,
+                numHeads: 3,
+                inputFeatures: 2,
+                outputDim: 1,
+                priceSeqLen: 8,
+                priceContextEnabled: false);
+
+            config.DecayNetwork.Enabled = false;
+
+            var model = new TACAMT_Model(config, new Random(42));
+            var price = RandomMatrix(5, 2, new Random(205), 0.2f);
+
+            var stories = new[]
+            {
+        new NewsStory(new[] { 4, 5, 6 }, -1f),
+        new NewsStory(new[] { 20, 21, 22 }, 10f)
+    };
+
+            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+
+            model.ForwardWithCache(stories, price, cache, isTraining: false);
+
+            var blockCache = cache.PriceBlockCaches[0];
+
+            Assert(blockCache.TimeDiffs != null,
+                "TimeDiffs should still be cached when decay is disabled so temporal masking can run.");
+            Assert(blockCache.DecayCache == null,
+                "DecayCache should remain null when DecayNetwork.Enabled=false.");
+            Assert(blockCache.CrossAttentionWeights != null,
+                "Cross-attention weights should be cached.");
+
+            for (int h = 0; h < blockCache.CrossAttentionWeights.Length; h++)
+            {
+                var weights = blockCache.CrossAttentionWeights[h];
+
+                for (int q = 0; q < weights.GetLength(0); q++)
+                {
+                    AssertClose(0f, weights[q, 1], 0f,
+                        $"Future context row should be masked with decay disabled. head={h}, query={q}");
+                }
+            }
+        }
+
+        private void Test_Forward_DecayDisabled_FutureContextDoesNotAffectOutputs()
+        {
+            var config = CreateConfig(
+                textVocabSize: 50,
+                embDim: 12,
+                numHeads: 3,
+                inputFeatures: 2,
+                outputDim: 1,
+                priceSeqLen: 8,
+                priceContextEnabled: false);
+
+            config.DecayNetwork.Enabled = false;
+
+            var model = new TACAMT_Model(config, new Random(42));
+            var price = RandomMatrix(5, 2, new Random(206), 0.2f);
+
+            var past = new NewsStory(new[] { 4, 5, 6 }, -1f);
+            var futureA = new NewsStory(new[] { 10, 11, 12 }, 10f);
+            var futureB = new NewsStory(new[] { 30, 31, 32 }, 10f);
+
+            var (predA, _) = model.Forward(new[] { past, futureA }, price);
+            var (predB, _) = model.Forward(new[] { past, futureB }, price);
+
+            AssertMatrixClose(predA, predB, 1e-6f,
+                "When decay is disabled, future timed context should still be masked and therefore should not alter non-cache Forward output.");
+        }
+
+        private void Test_Backward_DecayDisabled_MaskedFutureStoryReceivesNoTextGradient()
+        {
+            var config = CreateConfig(
+                textVocabSize: 50,
+                embDim: 12,
+                numHeads: 3,
+                inputFeatures: 2,
+                outputDim: 1,
+                priceSeqLen: 8,
+                freezeText: false,
+                priceContextEnabled: false);
+
+            config.DecayNetwork.Enabled = false;
+
+            var model = new TACAMT_Model(config, new Random(42));
+            var trainer = new TACAMT_Trainer(
+                model,
+                new TrainingConfig
+                {
+                    LearningRate = 0.001f,
+                    BatchSize = 1,
+                    Epochs = 1,
+                    Verbose = false
+                });
+
+            var pastTokens = new[] { 4, 5, 6 };
+            var futureTokens = new[] { 20, 21, 22 };
+
+            var stories = new[]
+            {
+        new NewsStory(pastTokens, -1f),
+        new NewsStory(futureTokens, 10f)
+    };
+
+            var price = RandomMatrix(5, 2, new Random(207), 0.2f);
+            var target = FilledMatrix(5, 1, 0.25f);
+            var cache = new MultimodalForwardCache(config.Text.NumLayers, config.Price.NumLayers);
+
+            var (pred, conf) = model.ForwardWithCache(
+                stories,
+                price,
+                cache,
+                isTraining: true,
+                dropoutRng: new Random(1));
+
+            RunBackward(trainer, pred, conf, target, null, cache);
+
+            var grads = GetGradients(trainer);
+
+            float pastGrad = 0f;
+            foreach (int tokenId in pastTokens)
+                pastGrad += SumAbsRow(grads.TextEmbeddingGrad, tokenId);
+
+            float futureGrad = 0f;
+            foreach (int tokenId in futureTokens)
+                futureGrad += SumAbsRow(grads.TextEmbeddingGrad, tokenId);
+
+            Assert(pastGrad > 1e-10f,
+                "Sanity check: the visible past story should receive text embedding gradient.");
+            Assert(futureGrad < 1e-10f,
+                $"The masked future story should not receive text embedding gradient when decay is disabled. futureGrad={futureGrad:E6}");
+        }
         public void RunAllTests()
         {
             CountNumber++;
@@ -45,6 +522,15 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             var tests = new (Action Test, string Name)[]
             {
+                (Test_DecayNetwork_MemoryAttention_MasksFutureKeys, "Decay: memory attention masks future keys"),
+                (Test_DecayNetwork_Backward_MemoryAttentionMaskBlocksFutureKeyGradient, "Backward: decay memory mask blocks future-key gradients"),
+                (Test_CrossAttention_DecayDisabled_StillAppliesFutureTimeMask_WithCache, "Decay disabled: cached cross-attention still masks future context"),
+                (Test_Forward_DecayDisabled_FutureContextDoesNotAffectOutputs, "Decay disabled: non-cache forward still masks future context"),
+                (Test_Backward_DecayDisabled_MaskedFutureStoryReceivesNoTextGradient, "Decay disabled: masked future story receives no text gradient"),
+                (Test_PredictWithMemory_StoredPriceMemoryMatchesExplicitPriceContext, "Memory: PredictWithMemory uses stored price memory"),
+                (Test_Backward_PriceHistoryContext_BackpropsIntoPriceEncoder, "Backward: historical price context trains price encoder"),
+                (Test_UpdateMemoryAttentionScoresFromCache_UsesActualCrossAttentionWeights, "Hardening: memory scores use actual cross-attention weights"),
+
                 // Configuration / construction
                 (Test_Config_GoodConfig_Validates, "Config: good config validates"),
                 (Test_Config_BadHeadDims_Throws, "Config: embedding dims must divide by heads"),
@@ -197,6 +683,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             }
         }
 
+       
         #region Configuration / construction
 
         private void Test_Config_GoodConfig_Validates()
@@ -2391,7 +2878,103 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 // Test cleanup best-effort only.
             }
         }
+        private void InvokeCachedMemoryAttentionScoreUpdate(
+    TACAMT_Model model,
+    MultimodalForwardCache cache,
+    int storedNewsCount,
+    int storedPriceCount)
+        {
+            var methods = typeof(TACAMT_Model)
+                .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+                .Where(m => m.Name == "UpdateMemoryAttentionScoresFromCache" || m.Name == "UpdateMemoryAttentionScores")
+                .OrderByDescending(m => m.Name == "UpdateMemoryAttentionScoresFromCache")
+                .ToArray();
 
+            foreach (var method in methods)
+            {
+                var parameters = method.GetParameters();
+                var args = new object[parameters.Length];
+
+                bool compatible = true;
+                bool hasCacheParameter = false;
+                int unnamedIntIndex = 0;
+
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    var parameter = parameters[i];
+                    string name = (parameter.Name ?? string.Empty).ToLowerInvariant();
+
+                    if (parameter.ParameterType == typeof(MultimodalForwardCache))
+                    {
+                        args[i] = cache;
+                        hasCacheParameter = true;
+                    }
+                    else if (parameter.ParameterType == typeof(float[,]))
+                    {
+                        args[i] = name.Contains("price") && !name.Contains("context")
+                            ? cache.PriceFinalHidden
+                            : cache.TextFinalHidden;
+                    }
+                    else if (parameter.ParameterType == typeof(int))
+                    {
+                        if (name.Contains("fresh"))
+                        {
+                            args[i] = 0;
+                        }
+                        else if (name.Contains("news"))
+                        {
+                            args[i] = storedNewsCount;
+                        }
+                        else if (name.Contains("price"))
+                        {
+                            args[i] = storedPriceCount;
+                        }
+                        else if (name.Contains("total") || name.Contains("ctx") || name.Contains("context"))
+                        {
+                            args[i] = cache.TextFinalHidden.GetLength(0);
+                        }
+                        else
+                        {
+                            args[i] = unnamedIntIndex++ == 0
+                                ? storedNewsCount
+                                : storedPriceCount;
+                        }
+                    }
+                    else
+                    {
+                        compatible = false;
+                        break;
+                    }
+                }
+
+                if (!compatible || !hasCacheParameter)
+                    continue;
+
+                object result = method.Invoke(model, args);
+
+                if (method.ReturnType == typeof(bool) && result is bool usedCache && !usedCache)
+                {
+                    throw new Exception(
+                        "Cached memory attention-score updater returned false even though cached cross-attention weights were supplied.");
+                }
+
+                return;
+            }
+
+            throw new MissingMethodException(
+                "Expected a memory attention-score updater that accepts MultimodalForwardCache so pruning can use actual learned cross-attention weights instead of approximate dot-product similarity.");
+        }
+        private float VectorMaxAbsDiff(float[] a, float[] b)
+        {
+            Assert(a.Length == b.Length, $"Vector shape mismatch: {a.Length} vs {b.Length}.");
+
+            float max = 0f;
+
+            for (int i = 0; i < a.Length; i++)
+                max = MathF.Max(max, MathF.Abs(a[i] - b[i]));
+
+            return max;
+        }
         #endregion
     }
 }

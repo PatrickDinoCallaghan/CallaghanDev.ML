@@ -36,7 +36,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         /// Should always be true for cross-attention.
         /// </summary>
         public bool RequireSharedCrossAttentionEmbeddingDim { get; set; } = true;
-
         public override void Validate()
         {
             if (Text == null) throw new ArgumentNullException(nameof(Text));
@@ -57,11 +56,13 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             PriceContext.Validate();
             MemoryPruning.Validate();
 
-            if (RequireSharedCrossAttentionEmbeddingDim)
+            // This implementation has no adapter/projection bridge between text-hidden dim
+            // and price-hidden dim, so cross-attention needs them equal even if the flag is false.
+            if (RequireSharedCrossAttentionEmbeddingDim || Text.EmbeddingDim != Price.EmbeddingDim)
             {
                 Require(
                     Text.EmbeddingDim == Price.EmbeddingDim,
-                    $"For cross-attention, {nameof(Text)}.{nameof(Text.EmbeddingDim)} ({Text.EmbeddingDim}) " +
+                    $"For this cross-attention implementation, {nameof(Text)}.{nameof(Text.EmbeddingDim)} ({Text.EmbeddingDim}) " +
                     $"must equal {nameof(Price)}.{nameof(Price.EmbeddingDim)} ({Price.EmbeddingDim}).");
             }
         }

@@ -37,16 +37,21 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                 _ffnBiasGrads.Add(bGrads);
             }
         }
-
         public void Train(int[][] sequences, int[][] validationSequences = null)
         {
             if (!_modelConfig.Data.UsesDiscreteTokens)
                 throw new InvalidOperationException($"Use TrainContinuous() for {_modelConfig.Data.DataType}.");
+            if (sequences == null)
+                throw new ArgumentNullException(nameof(sequences));
+            if (_trainConfig.BatchSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(_trainConfig.BatchSize), "BatchSize must be positive.");
+            if (_trainConfig.Epochs < 0)
+                throw new ArgumentOutOfRangeException(nameof(_trainConfig.Epochs), "Epochs must be non-negative.");
 
             var validSequences = sequences.Where(seq => seq != null && seq.Length >= 2).ToArray();
 
             if (validSequences.Length == 0)
-                throw new ArgumentException("No valid sequences to train on. All sequences must contain at least 2 tokens.");
+                throw new ArgumentException("No valid sequences to train on. All sequences must contain at least 2 tokens.", nameof(sequences));
 
             if (validSequences.Length < sequences.Length && _trainConfig.Verbose)
                 Console.WriteLine($"Filtered out {sequences.Length - validSequences.Length} sequences that were too short.");
@@ -59,7 +64,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                     Console.WriteLine($"\n=== Epoch {epoch + 1}/{_trainConfig.Epochs} ===");
 
                 var shuffled = ShuffleArray(validSequences);
-                float epochLoss = 0;
+                float epochLoss = 0f;
                 int numBatches = 0;
 
                 for (int i = 0; i < shuffled.Length; i += _trainConfig.BatchSize)
@@ -72,7 +77,11 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                     epochLoss += batchLoss;
                     numBatches++;
 
-                    if (validationSequences != null && numBatches % _trainConfig.ValidationInterval == 0)
+                    bool shouldValidate = validationSequences != null
+                                       && _trainConfig.ValidationInterval > 0
+                                       && numBatches % _trainConfig.ValidationInterval == 0;
+
+                    if (shouldValidate)
                     {
                         float valLoss = Validate(validationSequences);
                         if (_trainConfig.Verbose)
@@ -106,20 +115,43 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         {
             if (_modelConfig.Data.UsesDiscreteTokens)
                 throw new InvalidOperationException($"Use Train(int[][]) for {_modelConfig.Data.DataType}.");
+            if (inputs == null)
+                throw new ArgumentNullException(nameof(inputs));
+            if (_trainConfig.BatchSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(_trainConfig.BatchSize), "BatchSize must be positive.");
+            if (_trainConfig.Epochs < 0)
+                throw new ArgumentOutOfRangeException(nameof(_trainConfig.Epochs), "Epochs must be non-negative.");
 
-            if (_modelConfig.Data.DataType == TransformerDataType.TimeSeriesRegression && regressionTargets == null)
-                throw new ArgumentException("regressionTargets is required for TimeSeriesRegression.");
+            if (_modelConfig.Data.DataType == TransformerDataType.TimeSeriesRegression)
+            {
+                if (regressionTargets == null)
+                    throw new ArgumentException("regressionTargets is required for TimeSeriesRegression.", nameof(regressionTargets));
+                if (regressionTargets.Length != inputs.Length)
+                    throw new ArgumentException("regressionTargets length must match inputs length.", nameof(regressionTargets));
+            }
 
-            if (_modelConfig.Data.DataType == TransformerDataType.TimeSeriesClassification && classTargets == null)
-                throw new ArgumentException("classTargets is required for TimeSeriesClassification.");
+            if (_modelConfig.Data.DataType == TransformerDataType.TimeSeriesClassification)
+            {
+                if (classTargets == null)
+                    throw new ArgumentException("classTargets is required for TimeSeriesClassification.", nameof(classTargets));
+                if (classTargets.Length != inputs.Length)
+                    throw new ArgumentException("classTargets length must match inputs length.", nameof(classTargets));
+            }
 
             var validIndices = new List<int>();
             for (int i = 0; i < inputs.Length; i++)
-                if (inputs[i] != null && inputs[i].GetLength(0) >= 2)
-                    validIndices.Add(i);
+            {
+                if (inputs[i] == null || inputs[i].GetLength(0) < 2)
+                    continue;
+
+                if (inputs[i].GetLength(1) != _modelConfig.InputFeatureDim)
+                    throw new ArgumentException($"Input sequence {i} has feature dimension {inputs[i].GetLength(1)}, expected {_modelConfig.InputFeatureDim}.", nameof(inputs));
+
+                validIndices.Add(i);
+            }
 
             if (validIndices.Count == 0)
-                throw new ArgumentException("No valid sequences. All must have at least 2 timesteps.");
+                throw new ArgumentException("No valid sequences. All must have at least 2 timesteps.", nameof(inputs));
 
             float currentLR = _trainConfig.LearningRate;
 
@@ -129,7 +161,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                     Console.WriteLine($"\n=== Epoch {epoch + 1}/{_trainConfig.Epochs} ===");
 
                 var shuffled = validIndices.OrderBy(_ => _random.Next()).ToArray();
-                float epochLoss = 0;
+                float epochLoss = 0f;
                 int numBatches = 0;
 
                 for (int i = 0; i < shuffled.Length; i += _trainConfig.BatchSize)
@@ -158,51 +190,66 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             }
         }
 
+
         private float TrainBatchDiscrete(int[][] batch, float learningRate)
         {
             ZeroAllGradients();
-            float totalLoss = 0;
+            float totalLoss = 0f;
             int validCount = 0;
 
             foreach (var sequence in batch)
             {
-                if (sequence == null || sequence.Length < 2) continue;
+                if (sequence == null || sequence.Length < 2)
+                    continue;
 
                 var input = sequence.Take(sequence.Length - 1).ToArray();
                 var target = sequence.Skip(1).ToArray();
 
-                if (input.Length == 0 || target.Length == 0 || input.Length != target.Length) continue;
-
-                bool hasInvalidTokens = false;
-                int vocabSize = _modelConfig.VocabSize;
-                foreach (int token in input.Concat(target))
-                    if (token < 0 || token >= vocabSize) { hasInvalidTokens = true; break; }
-                if (hasInvalidTokens) continue;
+                if (!TokensAreValid(input) || !TokensAreValid(target))
+                    continue;
 
                 try
                 {
                     var cache = new ForwardCache(_modelConfig.NumLayers);
                     var logits = ForwardWithCacheDiscrete(input, cache);
+                    int effectiveLen = Math.Min(logits.GetLength(0), target.Length);
+                    if (effectiveLen <= 0) continue;
 
-                    if (logits.GetLength(0) != input.Length) continue;
+                    var (loss, dLogits) = _accel.CrossEntropyLossAndGradient(logits, target, effectiveLen);
+                    if (!IsFinite(loss) || !MatrixAllFinite(dLogits))
+                        continue;
 
-                    float loss = BackwardPassCrossEntropy(logits, target, cache);
-
-                    if (float.IsNaN(loss) || float.IsInfinity(loss)) { ZeroAllGradients(); continue; }
-
+                    BackpropFromOutput(dLogits, cache);
                     totalLoss += loss;
                     validCount++;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"ERROR during training: {ex.Message}");
+                    // Avoid applying a partially accumulated batch if a sample failed mid-backprop.
+                    ZeroAllGradients();
+                    totalLoss = 0f;
+                    validCount = 0;
+
+                    if (_trainConfig.Verbose)
+                        Console.WriteLine($"ERROR during training: {ex.Message}");
                 }
             }
 
-            if (validCount == 0) return 0f;
+            if (validCount == 0)
+                return 0f;
 
             ScaleGradients(1.0f / validCount);
-            if (_trainConfig.UseGradientClipping) ClipGradients(_trainConfig.GradientClipThreshold);
+
+            float gradNorm = ComputeGradientNorm();
+            if (!IsFinite(gradNorm))
+            {
+                ZeroAllGradients();
+                return totalLoss / validCount;
+            }
+
+            if (_trainConfig.UseGradientClipping)
+                ClipGradients(_trainConfig.GradientClipThreshold);
+
             UpdateParameters(learningRate);
             return totalLoss / validCount;
         }
@@ -210,53 +257,88 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private float TrainBatchContinuous(int[] batchIndices, float[][,] allInputs, float[][,] allRegTargets, int[][] allClassTargets, float learningRate)
         {
             ZeroAllGradients();
-            float totalLoss = 0;
+            float totalLoss = 0f;
             int validCount = 0;
 
             foreach (int idx in batchIndices)
             {
                 var inputSeq = allInputs[idx];
-                int seqLen = inputSeq.GetLength(0);
-                if (seqLen < 2) continue;
+                if (inputSeq == null) continue;
 
-                var inputSlice = _accel.SliceRows(inputSeq, 0, seqLen - 1);
+                int seqLen = inputSeq.GetLength(0);
+                if (seqLen < 2 || inputSeq.GetLength(1) != _modelConfig.InputFeatureDim)
+                    continue;
+
+                if (!MatrixAllFinite(inputSeq))
+                    continue;
 
                 try
                 {
+                    var inputSlice = _accel.SliceRows(inputSeq, 0, seqLen - 1);
                     var cache = new ForwardCache(_modelConfig.NumLayers);
                     var output = ForwardWithCacheContinuous(inputSlice, cache);
                     float loss;
+                    float[,] dOutput;
 
                     if (_modelConfig.Data.DataType == TransformerDataType.TimeSeriesRegression)
                     {
+                        if (!RegressionTargetIsValid(allRegTargets, idx, seqLen))
+                            continue;
+
                         var targetSlice = _accel.SliceRows(allRegTargets[idx], 1, seqLen);
-                        loss = BackwardPassMSE(output, targetSlice, cache);
+                        int effectiveLen = Math.Min(output.GetLength(0), targetSlice.GetLength(0));
+                        var result = _accel.MSELossAndGradient(output, targetSlice, effectiveLen);
+                        loss = result.loss;
+                        dOutput = result.dOutput;
                     }
                     else
                     {
+                        if (!ClassTargetIsValid(allClassTargets, idx, seqLen))
+                            continue;
+
                         var targetSlice = allClassTargets[idx].Skip(1).Take(seqLen - 1).ToArray();
-                        loss = BackwardPassCrossEntropy(output, targetSlice, cache);
+                        int effectiveLen = Math.Min(output.GetLength(0), targetSlice.Length);
+                        var result = _accel.CrossEntropyLossAndGradient(output, targetSlice, effectiveLen);
+                        loss = result.loss;
+                        dOutput = result.dLogits;
                     }
 
-                    if (float.IsNaN(loss) || float.IsInfinity(loss)) { ZeroAllGradients(); continue; }
+                    if (!IsFinite(loss) || !MatrixAllFinite(dOutput))
+                        continue;
 
+                    BackpropFromOutput(dOutput, cache);
                     totalLoss += loss;
                     validCount++;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"ERROR during continuous training: {ex.Message}");
+                    ZeroAllGradients();
+                    totalLoss = 0f;
+                    validCount = 0;
+
+                    if (_trainConfig.Verbose)
+                        Console.WriteLine($"ERROR during continuous training: {ex.Message}");
                 }
             }
 
-            if (validCount == 0) return 0f;
+            if (validCount == 0)
+                return 0f;
 
             ScaleGradients(1.0f / validCount);
-            if (_trainConfig.UseGradientClipping) ClipGradients(_trainConfig.GradientClipThreshold);
+
+            float gradNorm = ComputeGradientNorm();
+            if (!IsFinite(gradNorm))
+            {
+                ZeroAllGradients();
+                return totalLoss / validCount;
+            }
+
+            if (_trainConfig.UseGradientClipping)
+                ClipGradients(_trainConfig.GradientClipThreshold);
+
             UpdateParameters(learningRate);
             return totalLoss / validCount;
         }
-
         private float[,] ForwardWithCacheDiscrete(int[] tokenIds, ForwardCache cache)
         {
             int seqLen = tokenIds.Length;
@@ -333,10 +415,15 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             return ProjectToOutput(x);
         }
 
+
         private float BackwardPassCrossEntropy(float[,] logits, int[] targets, ForwardCache cache)
         {
             int effectiveLen = Math.Min(logits.GetLength(0), targets.Length);
             var (loss, dLogits) = _accel.CrossEntropyLossAndGradient(logits, targets, effectiveLen);
+
+            if (!IsFinite(loss) || !MatrixAllFinite(dLogits))
+                throw new InvalidOperationException("Cross-entropy produced a non-finite loss or gradient.");
+
             BackpropFromOutput(dLogits, cache);
             return loss;
         }
@@ -345,10 +432,13 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         {
             int effectiveLen = Math.Min(predictions.GetLength(0), targets.GetLength(0));
             var (loss, dOutput) = _accel.MSELossAndGradient(predictions, targets, effectiveLen);
+
+            if (!IsFinite(loss) || !MatrixAllFinite(dOutput))
+                throw new InvalidOperationException("MSE produced a non-finite loss or gradient.");
+
             BackpropFromOutput(dOutput, cache);
             return loss;
         }
-
         private void BackpropFromOutput(float[,] dOutput, ForwardCache cache)
         {
             var dX = _accel.BackpropOutputProjection(
@@ -421,19 +511,33 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             int headDim = embeddingDim / numHeads;
 
             var dConcatenated = new float[seqLen, embeddingDim];
-            _accel.BackpropLinearProjection(cache.AttentionOutput, dOut, attention.WO, grads.WO_Grad, grads.BiasO_Grad, dConcatenated);
+            _accel.BackpropLinearProjection(
+                cache.AttentionOutput,
+                dOut,
+                attention.WO,
+                grads.WO_Grad,
+                grads.BiasO_Grad,
+                dConcatenated);
 
             float scale = 1.0f / MathF.Sqrt(headDim);
-            var (dQ_full, dK_full, dV_full) = _accel.MultiHeadAttentionBackward(
-                cache.Q, cache.K, cache.V,
-                dConcatenated, numHeads, scale, _modelConfig.UseDecoderOnly);
+            bool[,] mask = _modelConfig.UseDecoderOnly ? _accel.CreateCausalMask(seqLen) : null;
 
-            RotaryPositionEmbedding.ApplyBackwardInPlace(dQ_full, dK_full, numHeads);
+            var (dQFull, dKFull, dVFull) = _accel.MultiHeadAttentionBackward(
+                cache.Q,
+                cache.K,
+                cache.V,
+                dConcatenated,
+                numHeads,
+                scale,
+                mask);
+
+            RotaryPositionEmbedding.ApplyBackwardInPlace(dQFull, dKFull, numHeads);
 
             var dInput = new float[seqLen, embeddingDim];
-            _accel.BackpropLinearProjection(cache.Input, dQ_full, attention.WQ, grads.WQ_Grad, grads.BiasQ_Grad, dInput);
-            _accel.BackpropLinearProjection(cache.Input, dK_full, attention.WK, grads.WK_Grad, grads.BiasK_Grad, dInput);
-            _accel.BackpropLinearProjection(cache.Input, dV_full, attention.WV, grads.WV_Grad, grads.BiasV_Grad, dInput);
+            _accel.BackpropLinearProjection(cache.Input, dQFull, attention.WQ, grads.WQ_Grad, grads.BiasQ_Grad, dInput);
+            _accel.BackpropLinearProjection(cache.Input, dKFull, attention.WK, grads.WK_Grad, grads.BiasK_Grad, dInput);
+            _accel.BackpropLinearProjection(cache.Input, dVFull, attention.WV, grads.WV_Grad, grads.BiasV_Grad, dInput);
+
             return dInput;
         }
 
@@ -486,7 +590,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             }
             return count > 0 ? totalLoss / count : 0;
         }
-
+   
         public float ValidateContinuous(float[][,] inputs, float[][,] regressionTargets = null, int[][] classTargets = null)
         {
             float totalLoss = 0;
@@ -571,13 +675,15 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             _accel.MatrixUpdate(_model.OutputProjection, _gradients.OutputProjectionGrad, learningRate);
             _accel.VectorUpdate(_model.OutputBias, _gradients.OutputBiasGrad, learningRate);
         }
-
         private void ClipGradients(float threshold)
         {
-            float totalNorm = ComputeGradientNorm();
-            if (totalNorm > threshold) ScaleGradients(threshold / totalNorm);
-        }
+            if (threshold <= 0f || float.IsNaN(threshold) || float.IsInfinity(threshold))
+                throw new ArgumentOutOfRangeException(nameof(threshold), "Gradient clip threshold must be finite and positive.");
 
+            float totalNorm = ComputeGradientNorm();
+            if (IsFinite(totalNorm) && totalNorm > threshold)
+                ScaleGradients(threshold / totalNorm);
+        }
         private float ComputeGradientNorm()
         {
             float sum = 0;
@@ -662,6 +768,66 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private T[] ShuffleArray<T>(T[] data)
         {
             return Enumerable.Range(0, data.Length).OrderBy(x => _random.Next()).Select(i => data[i]).ToArray();
+        }
+
+
+        private bool TokensAreValid(int[] tokens)
+        {
+            if (tokens == null || tokens.Length == 0)
+                return false;
+
+            int vocabSize = _modelConfig.VocabSize;
+            for (int i = 0; i < tokens.Length; i++)
+                if ((uint)tokens[i] >= (uint)vocabSize)
+                    return false;
+
+            return true;
+        }
+
+        private bool RegressionTargetIsValid(float[][,] targets, int idx, int seqLen)
+        {
+            return targets != null
+                && idx >= 0
+                && idx < targets.Length
+                && targets[idx] != null
+                && targets[idx].GetLength(0) >= seqLen
+                && targets[idx].GetLength(1) == _modelConfig.OutputDim
+                && MatrixAllFinite(targets[idx]);
+        }
+
+        private bool ClassTargetIsValid(int[][] targets, int idx, int seqLen)
+        {
+            if (targets == null || idx < 0 || idx >= targets.Length || targets[idx] == null || targets[idx].Length < seqLen)
+                return false;
+
+            int classCount = _modelConfig.OutputDim;
+            for (int i = 1; i < seqLen; i++)
+                if ((uint)targets[idx][i] >= (uint)classCount)
+                    return false;
+
+            return true;
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+
+        private static bool MatrixAllFinite(float[,] matrix)
+        {
+            if (matrix == null)
+                return false;
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            for (int i = 0; i < rows; i++)
+                for (int j = 0; j < cols; j++)
+                    if (!IsFinite(matrix[i, j]))
+                        return false;
+
+            return true;
         }
     }
 }

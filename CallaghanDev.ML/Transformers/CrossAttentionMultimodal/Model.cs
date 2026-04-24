@@ -239,16 +239,55 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private float[,] EmbedPriceSequence(float[,] priceSequence, int seqLen)
         {
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+
+            int actualSeqLen = priceSequence.GetLength(0);
+            int featureDim = priceSequence.GetLength(1);
+
+            if (actualSeqLen != seqLen)
+                throw new ArgumentException($"Provided seqLen ({seqLen}) does not match priceSequence rows ({actualSeqLen}).", nameof(seqLen));
+
+            if (actualSeqLen <= 0)
+                throw new ArgumentException("Price sequence must contain at least one timestep.", nameof(priceSequence));
+
+            if (actualSeqLen > _config.Price.MaxSequenceLength)
+                throw new ArgumentException(
+                    $"Price sequence length {actualSeqLen} exceeds configured max {_config.Price.MaxSequenceLength}.",
+                    nameof(priceSequence));
+
+            if (featureDim != _config.Price.InputFeatureDim)
+                throw new ArgumentException(
+                    $"Price feature dimension {featureDim} does not match configured input feature dimension {_config.Price.InputFeatureDim}.",
+                    nameof(priceSequence));
+
             var projected = _accel.BatchDotProduct(PriceInputProjection, priceSequence);
             return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
         }
         private float[,] EmbedTextTokens(int[] textTokenIds, int seqLen)
         {
+            if (textTokenIds == null)
+                throw new ArgumentNullException(nameof(textTokenIds));
+
+            if (seqLen != textTokenIds.Length)
+                throw new ArgumentException($"Provided seqLen ({seqLen}) does not match token count ({textTokenIds.Length}).", nameof(seqLen));
+
+            if (seqLen <= 0)
+                throw new ArgumentException("Text token sequence must contain at least one token.", nameof(textTokenIds));
+
+            if (seqLen > _config.Text.MaxSequenceLength)
+                throw new ArgumentException(
+                    $"Text token length {seqLen} exceeds configured max {_config.Text.MaxSequenceLength}.",
+                    nameof(textTokenIds));
+
             var embedded = new float[seqLen, _config.Text.EmbeddingDim];
 
             for (int i = 0; i < seqLen; i++)
             {
                 int tokenId = textTokenIds[i];
+                if ((uint)tokenId >= (uint)_config.Text.VocabSize)
+                    throw new ArgumentOutOfRangeException(nameof(textTokenIds), $"Token id {tokenId} at position {i} is outside vocab size {_config.Text.VocabSize}.");
+
                 for (int j = 0; j < _config.Text.EmbeddingDim; j++)
                     embedded[i, j] = TextTokenEmbedding[tokenId, j];
             }
@@ -309,17 +348,17 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         public (float[,] predictions, float[,] confidence) Forward(int[] textTokenIds, float[,] priceSequence)
         {
-            // 1. Encode text (if available)
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+
+            if (priceSequence.GetLength(0) <= 0)
+                throw new ArgumentException("Price sequence must contain at least one timestep.", nameof(priceSequence));
+
             float[,] textHidden = null;
             if (textTokenIds != null && textTokenIds.Length > 0)
-            {
                 textHidden = ForwardTextEncoder(textTokenIds);
-            }
 
-            // 2. Encode price with cross-attention to text (or self-attention only if text is null)
             var priceHidden = ForwardPriceDecoder(priceSequence, textHidden);
-
-            // 3. Project to output
             return ProjectToOutput(priceHidden);
         }
 
@@ -329,6 +368,13 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         /// </summary>
         public (float[,] predictions, float[,] confidence) ForwardWithCache(int[] textTokenIds, float[,] priceSequence, MultimodalForwardCache cache)
         {
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+            if (priceSequence == null)
+                throw new ArgumentNullException(nameof(priceSequence));
+            if (priceSequence.GetLength(0) <= 0)
+                throw new ArgumentException("Price sequence must contain at least one timestep.", nameof(priceSequence));
+
             float[,] textHidden = null;
 
             if (textTokenIds != null && textTokenIds.Length > 0)
@@ -337,18 +383,16 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             }
             else
             {
+                cache.TextEmbedded = null;
                 cache.TextFinalHidden = null;
                 cache.TextTokenIds = null;
             }
 
-            // Price decoder with cross-attention (or self-attention only) and cache
             var priceHidden = ForwardPriceDecoderWithCache(priceSequence, textHidden, cache);
-
-            // Output
             cache.PriceFinalHidden = priceHidden;
+
             return ProjectToOutput(priceHidden);
         }
-
         /// <summary>
         /// Predict for the last timestep only (inference convenience method).
         /// textTokenIds can be null when no text is available.
@@ -356,15 +400,26 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         public (float[] prediction, float confidence) PredictNext(int[] textTokenIds, float[,] priceSequence)
         {
             var (predictions, confidenceMatrix) = Forward(textTokenIds, priceSequence);
-            int lastPos = predictions.GetLength(0) - 1;
+            int seqLen = predictions.GetLength(0);
 
+            if (seqLen <= 0)
+                throw new InvalidOperationException("Forward returned no timesteps.");
+
+            int lastPos = seqLen - 1;
             var prediction = new float[_config.Output.OutputDim];
+
             for (int j = 0; j < _config.Output.OutputDim; j++)
-            {
                 prediction[j] = predictions[lastPos, j];
 
+            float confidence = 1.0f;
+            if (_config.Output.UseConfidenceHead)
+            {
+                if (confidenceMatrix == null)
+                    throw new InvalidOperationException("Confidence head is enabled but Forward returned null confidence.");
+
+                confidence = confidenceMatrix[lastPos, 0];
             }
-            float confidence = _config.Output.UseConfidenceHead ? confidenceMatrix[lastPos, 0] : 1.0f;
+
             return (prediction, confidence);
         }
 
@@ -393,11 +448,21 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, float[,] textHidden, MultimodalForwardCache cache)
         {
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
             int seqLen = priceSequence.GetLength(0);
             int embDim = _config.Price.EmbeddingDim;
             int numHeads = _config.Price.NumHeads;
             int headDim = embDim / numHeads;
             float scale = 1.0f / MathF.Sqrt(headDim);
+
+            if (textHidden != null && textHidden.GetLength(1) != embDim)
+            {
+                throw new ArgumentException(
+                    $"Text hidden dim {textHidden.GetLength(1)} must equal price embedding dim {embDim} for cross-attention.",
+                    nameof(textHidden));
+            }
 
             var embedded = EmbedPriceSequence(priceSequence, seqLen);
             cache.PriceEmbedded = embedded;
@@ -405,10 +470,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             bool[,] selfMask = null;
             if (_config.Price.UseDecoderOnly)
-            {
-                //selfMask = CreateCausalMask(seqLen);
                 selfMask = _accel.CreateCausalMask(seqLen);
-            }
 
             var x = embedded;
 
@@ -418,7 +480,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var blockCache = cache.PriceBlockCaches[layer];
                 blockCache.BlockInput = x;
 
-                // Self-Attention
+                // === Self-attention ===
                 var selfQ = ComputeProjection(x, block.SelfAttention.WQ, block.SelfAttention.BiasQ);
                 var selfK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
                 var selfV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
@@ -431,36 +493,46 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 var selfAttnOut = _accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfMask);
                 blockCache.SelfAttnOutput = selfAttnOut;
-                var selfProjected = ComputeProjection(selfAttnOut, block.SelfAttention.WO, block.SelfAttention.BiasO);
 
+                var selfProjected = ComputeProjection(selfAttnOut, block.SelfAttention.WO, block.SelfAttention.BiasO);
                 var selfResidual = _accel.MatrixAdd(x, selfProjected);
+
                 blockCache.SelfResidualInput = selfResidual;
-                var (normedSelf, selfMeans, selfVars, selfNormed) = _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
+
+                var (normedSelf, selfMeans, selfVars, selfNormed) =
+                    _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
+
                 blockCache.LNSelfCache.Input = selfResidual;
                 blockCache.LNSelfCache.Mean = selfMeans;
                 blockCache.LNSelfCache.Variance = selfVars;
                 blockCache.LNSelfCache.Normalized = selfNormed;
                 blockCache.NormedSelf = normedSelf;
 
-                // === Cross-Attention (skip if no text) ===
+                // === Cross-attention ===
                 float[,] normedCross;
                 if (textHidden != null)
                 {
                     var crossQ = ComputeProjection(normedSelf, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
                     var crossK = ComputeProjection(textHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
                     var crossV = ComputeProjection(textHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
+
                     RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
+
                     blockCache.CrossQ = crossQ;
                     blockCache.CrossK = crossK;
                     blockCache.CrossV = crossV;
 
                     var crossAttnOut = _accel.MultiHeadAttentionForward(crossQ, crossK, crossV, numHeads, scale, null);
                     blockCache.CrossAttnOutput = crossAttnOut;
-                    var crossProjected = ComputeProjection(crossAttnOut, block.CrossAttention.WO, block.CrossAttention.BiasO);
 
+                    var crossProjected = ComputeProjection(crossAttnOut, block.CrossAttention.WO, block.CrossAttention.BiasO);
                     var crossResidual = _accel.MatrixAdd(normedSelf, crossProjected);
+
                     blockCache.CrossResidualInput = crossResidual;
-                    var (normedCrossResult, crossMeans, crossVars, crossNormedVals) = _accel.LayerNormForward(crossResidual, block.LNCrossGamma, block.LNCrossBeta);
+
+                    var (normedCrossResult, crossMeans, crossVars, crossNormedVals) =
+                        _accel.LayerNormForward(crossResidual, block.LNCrossGamma, block.LNCrossBeta);
+
                     blockCache.LNCrossCache.Input = crossResidual;
                     blockCache.LNCrossCache.Mean = crossMeans;
                     blockCache.LNCrossCache.Variance = crossVars;
@@ -470,13 +542,15 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 }
                 else
                 {
-                    // No text: skip cross-attention, just pass through cross-attn LN
                     blockCache.CrossQ = null;
                     blockCache.CrossK = null;
                     blockCache.CrossV = null;
                     blockCache.CrossAttnOutput = null;
+                    blockCache.CrossResidualInput = normedSelf;
 
-                    var (normedCrossResult, crossMeans, crossVars, crossNormedVals) = _accel.LayerNormForward(normedSelf, block.LNCrossGamma, block.LNCrossBeta);
+                    var (normedCrossResult, crossMeans, crossVars, crossNormedVals) =
+                        _accel.LayerNormForward(normedSelf, block.LNCrossGamma, block.LNCrossBeta);
+
                     blockCache.LNCrossCache.Input = normedSelf;
                     blockCache.LNCrossCache.Mean = crossMeans;
                     blockCache.LNCrossCache.Variance = crossVars;
@@ -491,23 +565,22 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 for (int i = 0; i < seqLen; i++)
                 {
-                    var inputRow = _accel.ExtractRow(normedCross, i, _config.Text.EmbeddingDim);
-
+                    // Bug fix: use price embDim, not _config.Text.EmbeddingDim.
+                    var inputRow = _accel.ExtractRow(normedCross, i, embDim);
                     ffnInputRows[i] = inputRow;
 
                     var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-
-                    _accel.SetRow(ffOutput, i, outputRow, _config.Text.EmbeddingDim);
-                } 
+                    _accel.SetRow(ffOutput, i, outputRow, embDim);
+                }
 
                 blockCache.FFNInputRows = ffnInputRows;
                 blockCache.FFNOutput = ffOutput;
 
                 var ffResidual = _accel.MatrixAdd(normedCross, ffOutput);
-
                 blockCache.FFNResidualInput = ffResidual;
 
-                var (normedFF, ffMeans, ffVars, ffNormedVals) = _accel.LayerNormForward(ffResidual, block.LNFFNGamma, block.LNFFNBeta);
+                var (normedFF, ffMeans, ffVars, ffNormedVals) =
+                    _accel.LayerNormForward(ffResidual, block.LNFFNGamma, block.LNFFNBeta);
 
                 blockCache.LNFFNCache.Input = ffResidual;
                 blockCache.LNFFNCache.Mean = ffMeans;
@@ -519,7 +592,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             return x;
         }
-
         #region Save Load
 
 
@@ -772,22 +844,32 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         {
             int rows = reader.ReadInt32();
             int cols = reader.ReadInt32();
+
+            if (rows != matrix.GetLength(0) || cols != matrix.GetLength(1))
+            {
+                throw new System.IO.InvalidDataException(
+                    $"Saved matrix shape [{rows},{cols}] does not match target shape [{matrix.GetLength(0)},{matrix.GetLength(1)}].");
+            }
+
             for (int i = 0; i < rows; i++)
             {
                 for (int j = 0; j < cols; j++)
-                {
                     matrix[i, j] = reader.ReadSingle();
-                }
             }
         }
 
         private static void ReadVectorInto(System.IO.BinaryReader reader, float[] vector)
         {
             int len = reader.ReadInt32();
-            for (int i = 0; i < len; i++)
+
+            if (len != vector.Length)
             {
-                vector[i] = reader.ReadSingle();
+                throw new System.IO.InvalidDataException(
+                    $"Saved vector length {len} does not match target length {vector.Length}.");
             }
+
+            for (int i = 0; i < len; i++)
+                vector[i] = reader.ReadSingle();
         }
 
         private static void ReadAttentionInto(System.IO.BinaryReader reader, MultiHeadAttention attn)

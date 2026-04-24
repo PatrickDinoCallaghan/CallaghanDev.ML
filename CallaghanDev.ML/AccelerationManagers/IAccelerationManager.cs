@@ -144,6 +144,8 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// </summary>
         (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false);
 
+        (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask);
+
         float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn);
         #endregion
 
@@ -223,8 +225,21 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax);
 
-        float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null);
-
+        float[,] ContentAwareCrossAttentionWithCache(
+         float[,] Q,
+         float[,] K,
+         float[,] V,
+         float[,] timeDiffs,
+         float[] keyTimesFromRef,
+         float[,] queryEmbeddings,
+         float[,] keyEmbeddings,
+         TacamtBlock block,
+         BlockCache bc,
+         int PriceEmbeddingDim,
+         int PriceNumHeads,
+         bool enableDecayBias = true,
+         bool isTraining = false,
+         Random dropoutRng = null);
         void Matrix3DScaleInPlace(float[,,] matrix, float scale);
 
         public float MatrixSquaredNorm3D(float[,,] matrix);

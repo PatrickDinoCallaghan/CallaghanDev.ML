@@ -18,7 +18,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private float[] _keyTimes;
 
         private bool _isTraining;
+        private bool _useDecayNetwork = true;
         private Random _dropoutRng;
+        public bool UseDecayNetworkForCrossAttention => _useDecayNetwork;
 
         public TacamtBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random,  float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8) : base(embeddingDim, numHeads, accel)
         {
@@ -89,7 +91,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return ApplyResidualNorm(x, cross, LnCrossGamma, LnCrossBeta);
         }
-
         private float[,] ContentAwareCrossAttention(float[,] x)
         {
             var Q = ComputeProjection(x, CrossAttention.WQ, CrossAttention.BiasQ, Accel);
@@ -99,28 +100,59 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             RotaryPositionEmbedding.ApplyInPlace(Q, K, NumHeads);
 
             float scale = 1.0f / MathF.Sqrt(HeadDim);
+            float[,,] attentionBias = null;
+            bool[] hasValidKey = ComputeHasValidCrossAttentionKey(_timeDiffs, x.GetLength(0), _context.GetLength(0));
 
-            var (decayBias, _) = Accel.ContentAwareDecayForward(
-                x,
-                _context,
-                _timeDiffs,
-                _keyTimes,
-                DecayNetwork,
-                _isTraining,
-                _dropoutRng
-            );
+            if (_timeDiffs != null && _useDecayNetwork && DecayNetwork != null)
+            {
+                var (decayBias, _) = Accel.ContentAwareDecayForward(
+                    x,
+                    _context,
+                    _timeDiffs,
+                    _keyTimes,
+                    DecayNetwork,
+                    _isTraining,
+                    _dropoutRng);
+
+                attentionBias = decayBias;
+            }
+            else if (_timeDiffs != null)
+            {
+                int queryLen = _timeDiffs.GetLength(0);
+                int keyLen = _timeDiffs.GetLength(1);
+
+                attentionBias = new float[queryLen, keyLen, NumHeads];
+
+                for (int q = 0; q < queryLen; q++)
+                {
+                    for (int s = 0; s < keyLen; s++)
+                    {
+                        float value = _timeDiffs[q, s] < 0f
+                            ? float.NegativeInfinity
+                            : 0f;
+
+                        for (int h = 0; h < NumHeads; h++)
+                            attentionBias[q, s, h] = value;
+                    }
+                }
+            }
 
             var attnOutput = Accel.ContentAwareCrossAttentionForward(
-                Q, K, V,
+                Q,
+                K,
+                V,
                 NumHeads,
                 scale,
-                decayBias,
+                attentionBias,
                 out _,
                 out _);
 
-            // FIX: apply output projection (WO) before returning, matching the cache path
-            // which does: cp = ComputeProjection(cao, CrossAttention.WO, CrossAttention.BiasO)
-            return ComputeProjection(attnOutput, CrossAttention.WO, CrossAttention.BiasO, Accel);
+            return ComputeProjectionWithOptionalRows(
+                attnOutput,
+                CrossAttention.WO,
+                CrossAttention.BiasO,
+                hasValidKey,
+                Accel);
         }
         private float[] InitGamma(int size)
         {
@@ -128,7 +160,61 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             for (int i = 0; i < size; i++) g[i] = 1f;
             return g;
         }
+        public void SetTimeData(float[,] timeDiffs, float[] keyTimes, bool useDecayNetwork = true)
+        {
+            _timeDiffs = timeDiffs;
+            _keyTimes = keyTimes;
+            _useDecayNetwork = useDecayNetwork;
+        }
+        private float[,] ComputeProjectionWithOptionalRows(
+    float[,] input,
+    float[,] weight,
+    float[] bias,
+    bool[] includeRows,
+    IAccelerationManager accel)
+        {
+            var projected = accel.BatchDotProduct(weight, input);
+            int rows = projected.GetLength(0);
+            int cols = projected.GetLength(1);
+            var result = new float[rows, cols];
 
+            for (int i = 0; i < rows; i++)
+            {
+                if (includeRows != null && !includeRows[i])
+                    continue;
+
+                for (int j = 0; j < cols; j++)
+                    result[i, j] = projected[i, j] + bias[j];
+            }
+
+            return result;
+        }
+        private static bool[] ComputeHasValidCrossAttentionKey(float[,] timeDiffs, int queryLen, int keyLen)
+        {
+            var hasValidKey = new bool[queryLen];
+
+            if (timeDiffs == null)
+            {
+                for (int q = 0; q < queryLen; q++)
+                    hasValidKey[q] = keyLen > 0;
+
+                return hasValidKey;
+            }
+
+            for (int q = 0; q < queryLen; q++)
+            {
+                for (int s = 0; s < keyLen; s++)
+                {
+                    if (timeDiffs[q, s] >= 0f)
+                    {
+                        hasValidKey[q] = true;
+                        break;
+                    }
+                }
+            }
+
+            return hasValidKey;
+        }
 
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias, IAccelerationManager accel)
         {

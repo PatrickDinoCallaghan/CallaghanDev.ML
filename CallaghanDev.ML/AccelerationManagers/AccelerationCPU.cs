@@ -378,10 +378,19 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #region Transformer core
 
+        // Replace Softmax and MultiHeadAttentionBackward inside AccelerationCPU.
+        // Add the bool[,] overload to IAccelerationManager too, or keep the bool wrapper for existing callers.
+
         public float[,] Softmax(float[,] matrix, bool[,] mask = null)
         {
+            if (matrix == null) throw new ArgumentNullException(nameof(matrix));
+
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
+
+            if (mask != null && (mask.GetLength(0) != rows || mask.GetLength(1) != cols))
+                throw new ArgumentException($"Mask shape must be [{rows},{cols}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));
+
             var result = new float[rows, cols];
 
             for (int i = 0; i < rows; i++)
@@ -390,11 +399,19 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                 for (int j = 0; j < cols; j++)
                 {
-                    if (mask == null || mask[i, j])
-                    {
-                        max = Math.Max(max, matrix[i, j]);
-                    }
+                    if (mask != null && !mask[i, j])
+                        continue;
+
+                    float value = matrix[i, j];
+                    if (float.IsNaN(value))
+                        throw new InvalidOperationException($"Softmax input contains NaN at [{i},{j}].");
+
+                    if (value > max)
+                        max = value;
                 }
+
+                if (float.IsNegativeInfinity(max))
+                    continue; // Entire row is masked. Return zeros for that row.
 
                 float sum = 0.0f;
                 for (int j = 0; j < cols; j++)
@@ -402,23 +419,198 @@ namespace CallaghanDev.ML.AccelerationManagers
                     if (mask != null && !mask[i, j])
                     {
                         result[i, j] = 0.0f;
+                        continue;
                     }
-                    else
+
+                    float exp = MathF.Exp(matrix[i, j] - max);
+                    result[i, j] = exp;
+                    sum += exp;
+                }
+
+                if (sum <= 0f || float.IsNaN(sum) || float.IsInfinity(sum))
+                    continue;
+
+                float invSum = 1.0f / sum;
+                for (int j = 0; j < cols; j++)
+                    result[i, j] *= invSum;
+            }
+
+            return result;
+        }
+
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(
+            float[,] Q,
+            float[,] K,
+            float[,] V,
+            float[,] dConcatenated,
+            int numHeads,
+            float scale,
+            bool useDecoderMask = false)
+        {
+            bool[,] mask = null;
+
+            if (useDecoderMask)
+            {
+                int seqLenQ = Q.GetLength(0);
+                int seqLenK = K.GetLength(0);
+                mask = new bool[seqLenQ, seqLenK];
+
+                for (int i = 0; i < seqLenQ; i++)
+                    for (int j = 0; j < seqLenK; j++)
+                        mask[i, j] = j <= i;
+            }
+
+            return MultiHeadAttentionBackward(Q, K, V, dConcatenated, numHeads, scale, mask);
+        }
+
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask)
+        {
+            if (Q == null) throw new ArgumentNullException(nameof(Q));
+            if (K == null) throw new ArgumentNullException(nameof(K));
+            if (V == null) throw new ArgumentNullException(nameof(V));
+            if (dConcatenated == null) throw new ArgumentNullException(nameof(dConcatenated));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);
+            int embeddingDim = Q.GetLength(1);
+
+            if (K.GetLength(1) != embeddingDim || V.GetLength(1) != embeddingDim)
+                throw new ArgumentException("Q, K and V must have the same embedding dimension.");
+            if (V.GetLength(0) != seqLenK)
+                throw new ArgumentException("K and V must have the same sequence length.");
+            if (dConcatenated.GetLength(0) != seqLenQ || dConcatenated.GetLength(1) != embeddingDim)
+                throw new ArgumentException("dConcatenated shape must match Q shape.", nameof(dConcatenated));
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads.", nameof(numHeads));
+            if (mask != null && (mask.GetLength(0) != seqLenQ || mask.GetLength(1) != seqLenK))
+                throw new ArgumentException($"Mask shape must be [{seqLenQ},{seqLenK}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));
+
+            int headDim = embeddingDim / numHeads;
+            var dQFull = new float[seqLenQ, embeddingDim];
+            var dKFull = new float[seqLenK, embeddingDim];
+            var dVFull = new float[seqLenK, embeddingDim];
+
+            for (int head = 0; head < numHeads; head++)
+            {
+                int offset = head * headDim;
+
+                var attnWeights = new float[seqLenQ, seqLenK];
+
+                for (int i = 0; i < seqLenQ; i++)
+                {
+                    float maxScore = float.NegativeInfinity;
+                    var scaledScores = new float[seqLenK];
+
+                    for (int j = 0; j < seqLenK; j++)
                     {
-                        result[i, j] = MathF.Exp(matrix[i, j] - max);
-                        sum += result[i, j];
+                        if (mask != null && !mask[i, j])
+                        {
+                            scaledScores[j] = float.NegativeInfinity;
+                            continue;
+                        }
+
+                        float dot = 0f;
+                        for (int k = 0; k < headDim; k++)
+                            dot += Q[i, offset + k] * K[j, offset + k];
+
+                        float score = dot * scale;
+                        scaledScores[j] = score;
+                        if (score > maxScore) maxScore = score;
+                    }
+
+                    if (float.IsNegativeInfinity(maxScore))
+                        continue;
+
+                    float sumExp = 0f;
+                    for (int j = 0; j < seqLenK; j++)
+                    {
+                        if (float.IsNegativeInfinity(scaledScores[j]))
+                        {
+                            attnWeights[i, j] = 0f;
+                            continue;
+                        }
+
+                        float w = MathF.Exp(scaledScores[j] - maxScore);
+                        attnWeights[i, j] = w;
+                        sumExp += w;
+                    }
+
+                    if (sumExp > 0f)
+                    {
+                        float inv = 1f / sumExp;
+                        for (int j = 0; j < seqLenK; j++)
+                            attnWeights[i, j] *= inv;
                     }
                 }
-                if (sum > 0f)
-                {
-                    for (int j = 0; j < cols; j++)
-                    {
 
-                        result[i, j] = result[i, j] / sum;
+                var dAttnWeights = new float[seqLenQ, seqLenK];
+                for (int i = 0; i < seqLenQ; i++)
+                {
+                    for (int j = 0; j < seqLenK; j++)
+                    {
+                        float sum = 0f;
+                        for (int k = 0; k < headDim; k++)
+                            sum += dConcatenated[i, offset + k] * V[j, offset + k];
+                        dAttnWeights[i, j] = sum;
+                    }
+                }
+
+                for (int j = 0; j < seqLenK; j++)
+                {
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        float sum = 0f;
+                        for (int i = 0; i < seqLenQ; i++)
+                            sum += attnWeights[i, j] * dConcatenated[i, offset + k];
+                        dVFull[j, offset + k] += sum;
+                    }
+                }
+
+                var dDot = new float[seqLenQ, seqLenK];
+                for (int i = 0; i < seqLenQ; i++)
+                {
+                    float rowDot = 0f;
+                    for (int j = 0; j < seqLenK; j++)
+                        rowDot += attnWeights[i, j] * dAttnWeights[i, j];
+
+                    for (int j = 0; j < seqLenK; j++)
+                    {
+                        if (mask != null && !mask[i, j])
+                        {
+                            dDot[i, j] = 0f;
+                            continue;
+                        }
+
+                        float dScaledScore = attnWeights[i, j] * (dAttnWeights[i, j] - rowDot);
+                        dDot[i, j] = dScaledScore * scale;
+                    }
+                }
+
+                for (int i = 0; i < seqLenQ; i++)
+                {
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        float sum = 0f;
+                        for (int j = 0; j < seqLenK; j++)
+                            sum += dDot[i, j] * K[j, offset + k];
+                        dQFull[i, offset + k] += sum;
+                    }
+                }
+
+                for (int j = 0; j < seqLenK; j++)
+                {
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        float sum = 0f;
+                        for (int i = 0; i < seqLenQ; i++)
+                            sum += dDot[i, j] * Q[i, offset + k];
+                        dKFull[j, offset + k] += sum;
                     }
                 }
             }
-            return result;
+
+            return (dQFull, dKFull, dVFull);
         }
 
         public float[,] LayerNorm(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
@@ -609,7 +801,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return concatenated;
         }
-
+        /*
         public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {
             int seqLenQ = Q.GetLength(0);
@@ -800,7 +992,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return (dQ_full, dK_full, dV_full);
         }
-
+        */
         public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
         {
             var result = new float[seqLen, outputDim];
@@ -1138,7 +1330,14 @@ namespace CallaghanDev.ML.AccelerationManagers
             return pred;
         }
 
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
+           float[,] queryEmbeddings,
+           float[,] keyEmbeddings,
+           float[,] timeDiffs,
+           float[] keyTimesFromRef,
+           ContentAwareDecayNetwork network,
+           bool isTraining = false,
+           Random dropoutRng = null)
         {
             if (queryEmbeddings == null) throw new ArgumentNullException(nameof(queryEmbeddings));
             if (keyEmbeddings == null) throw new ArgumentNullException(nameof(keyEmbeddings));
@@ -1205,18 +1404,16 @@ namespace CallaghanDev.ML.AccelerationManagers
             if (useMemAttnDrop)
             {
                 if (network.MemoryAttentionDropout >= 1f)
-                {
                     throw new ArgumentOutOfRangeException(nameof(network.MemoryAttentionDropout), "MemoryAttentionDropout must be < 1.");
-                }
+
                 cache.MemAttnDropoutMask = new float[numHeads, keyLen, keyLen];
             }
 
             if (useMLPDrop)
             {
                 if (network.MLPDropout >= 1f)
-                {
                     throw new ArgumentOutOfRangeException(nameof(network.MLPDropout), "MLPDropout must be < 1.");
-                }
+
                 cache.MLPDropoutMask = new float[queryLen, keyLen, numHeads, hiddenDim];
             }
 
@@ -1230,9 +1427,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.QueryProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
-                        {
                             val += network.QueryProjection[h, p, d] * queryEmbeddings[q, d];
-                        }
+
                         cache.QueryProj[h, q, p] = val;
                     }
                 }
@@ -1243,9 +1439,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.KeyProjectionBias[h, p];
                         for (int d = 0; d < contentDim; d++)
-                        {
                             val += network.KeyProjection[h, p, d] * keyEmbeddings[s, d];
-                        }
+
                         cache.KeyProj[h, s, p] = val;
                     }
                 }
@@ -1266,9 +1461,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.TimeProjBias[h, p];
                         for (int r = 0; r < rawDim; r++)
-                        {
                             val += network.TimeProj[h, p, r] * cache.TimeRawFeatures[h, s, r];
-                        }
+
                         cache.TimeEncoding[h, s, p] = val;
                     }
                 }
@@ -1285,29 +1479,46 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
 
+                bool useMemAttentionTemporalMask = keyTimesFromRef != null;
+
                 for (int i = 0; i < keyLen; i++)
                 {
                     float maxScore = float.NegativeInfinity;
                     var scores = new float[keyLen];
-
+                    float queryKeyTime = useMemAttentionTemporalMask ? keyTimesFromRef[i] : 0f;
                     for (int j = 0; j < keyLen; j++)
                     {
-                        float dot = 0f;
-                        for (int p = 0; p < projDim; p++)
+                        bool valid =
+                            keyTimesFromRef == null ||
+                            keyTimesFromRef[j] <= keyTimesFromRef[i];
+
+                        if (!valid)
                         {
-                            dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+                            scores[j] = float.NegativeInfinity;
+                            continue;
                         }
 
+                        float dot = 0f;
+                        for (int p = 0; p < projDim; p++)
+                            dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
+
                         scores[j] = dot * memScale;
-                        if (scores[j] > maxScore) 
-                        { 
+
+                        if (scores[j] > maxScore)
                             maxScore = scores[j];
-                        }
                     }
+                    if (float.IsNegativeInfinity(maxScore))
+                        continue;
 
                     float sumExp = 0f;
                     for (int j = 0; j < keyLen; j++)
                     {
+                        if (float.IsNegativeInfinity(scores[j]))
+                        {
+                            cache.MemAttnWeights[h, i, j] = 0f;
+                            continue;
+                        }
+
                         float w = MathF.Exp(scores[j] - maxScore);
                         cache.MemAttnWeights[h, i, j] = w;
                         sumExp += w;
@@ -1327,6 +1538,12 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                         for (int j = 0; j < keyLen; j++)
                         {
+                            if (cache.MemAttnWeights[h, i, j] == 0f)
+                            {
+                                cache.MemAttnDropoutMask[h, i, j] = 0f;
+                                continue;
+                            }
+
                             float mask = dropoutRng.NextSingle() < keepProb ? scaleDrop : 0f;
                             cache.MemAttnDropoutMask[h, i, j] = mask;
                             cache.MemAttnWeights[h, i, j] *= mask;
@@ -1337,9 +1554,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = 0f;
                         for (int j = 0; j < keyLen; j++)
-                        {
                             val += cache.MemAttnWeights[h, i, j] * cache.KeyProj[h, j, p];
-                        }
+
                         cache.MemAttnOutput[h, i, p] = val;
                     }
                 }
@@ -1350,9 +1566,8 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         float val = network.MemAttnOutputB[h, p];
                         for (int q = 0; q < projDim; q++)
-                        {
                             val += network.MemAttnOutputW[h, p, q] * cache.MemAttnOutput[h, s, q];
-                        }
+
                         cache.RefinedKey[h, s, p] = val + cache.KeyProj[h, s, p];
                     }
                 }
@@ -1376,17 +1591,14 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                         int idx = 0;
                         for (int p = 0; p < projDim; p++)
-                        {
                             cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p];
-                        }
+
                         for (int p = 0; p < projDim; p++)
-                        {
                             cache.MLPInput[qi, si, h, idx++] = cache.RefinedKey[h, si, p];
-                        }
+
                         for (int p = 0; p < projDim; p++)
-                        {
                             cache.MLPInput[qi, si, h, idx++] = cache.QueryProj[h, qi, p] * cache.RefinedKey[h, si, p];
-                        }
+
                         cache.MLPInput[qi, si, h, idx++] = normTd;
                         cache.MLPInput[qi, si, h, idx++] = logTd;
 
@@ -1510,20 +1722,27 @@ namespace CallaghanDev.ML.AccelerationManagers
             return output;
         }
         public float[,] ContentAwareCrossAttentionWithCache(
-    float[,] Q,
-    float[,] K,
-    float[,] V,
-    float[,] timeDiffs,
-    float[] keyTimesFromRef,
-    float[,] queryEmbeddings,
-    float[,] keyEmbeddings,
-    TacamtBlock block,
-    BlockCache bc,
-    int PriceEmbeddingDim,
-    int PriceNumHeads,
-    bool isTraining = false,
-    Random dropoutRng = null)
+        float[,] Q,
+        float[,] K,
+        float[,] V,
+        float[,] timeDiffs,
+        float[] keyTimesFromRef,
+        float[,] queryEmbeddings,
+        float[,] keyEmbeddings,
+        TacamtBlock block,
+        BlockCache bc,
+        int PriceEmbeddingDim,
+        int PriceNumHeads,
+        bool enableDecayBias = true,
+        bool isTraining = false,
+        Random dropoutRng = null)
         {
+            if (Q == null) throw new ArgumentNullException(nameof(Q));
+            if (K == null) throw new ArgumentNullException(nameof(K));
+            if (V == null) throw new ArgumentNullException(nameof(V));
+            if (block == null) throw new ArgumentNullException(nameof(block));
+            if (bc == null) throw new ArgumentNullException(nameof(bc));
+
             int queryLen = Q.GetLength(0);
             int keyLen = K.GetLength(0);
             int ed = PriceEmbeddingDim;
@@ -1533,7 +1752,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             float[,,] decayBias = null;
 
-            if (timeDiffs != null)
+            if (enableDecayBias && timeDiffs != null)
             {
                 var (bias, decayCache) = ContentAwareDecayForward(
                     queryEmbeddings,
@@ -1549,6 +1768,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             else
             {
+                decayBias = null;
                 bc.DecayCache = null;
             }
 
@@ -1568,6 +1788,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                     for (int s = 0; s < keyLen; s++)
                     {
+                        // timeDiffs is a causal visibility mask even when Decay.Enabled=false.
                         bool valid = timeDiffs == null || timeDiffs[q, s] >= 0f;
 
                         if (!valid)
@@ -1618,6 +1839,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                         float val = 0f;
                         for (int s = 0; s < keyLen; s++)
                             val += weights[q, s] * V[s, offset + d];
+
                         output[q, offset + d] = val;
                     }
                 }
@@ -1708,6 +1930,10 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
         public void Dispose() { }
+
+
+
+
     }
 
 }

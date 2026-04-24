@@ -24,18 +24,19 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         public float[,] OutputProjection { get; set; }
         public float[] OutputBias { get; set; }
 
+
         public LanguageModel(TransformerConfig config, Random random = null)
         {
-            _config = config;
-            _random = random ?? new Random();
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _config.Validate();
 
+            _random = random ?? new Random();
             _accel = AccelerationFactory.Create(_config.Runtime);
 
             InitInputLayer();
             InitBlocks();
             InitOutputLayer();
         }
-
         private void InitInputLayer()
         {
             if (_config.Data.UsesDiscreteTokens)
@@ -108,31 +109,32 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             return MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
         }
 
+
         public float[,] Forward(int[] tokenIds)
         {
             if (!_config.Data.UsesDiscreteTokens)
-            {
                 throw new InvalidOperationException("Use Forward(float[,]) for continuous input data types.");
-            }
+
+            ValidateTokenSequence(tokenIds);
 
             int seqLen = tokenIds.Length;
             var embedded = EmbedTokens(tokenIds, seqLen);
-
             return ForwardFromEmbedding(embedded, seqLen);
         }
 
         public float[,] Forward(float[,] inputSequence)
         {
             if (_config.Data.UsesDiscreteTokens)
-            {
                 throw new InvalidOperationException("Use Forward(int[]) for discrete token data types.");
-            }
+
+            ValidateContinuousSequence(inputSequence);
 
             int seqLen = inputSequence.GetLength(0);
             var embedded = EmbedContinuous(inputSequence);
-
             return ForwardFromEmbedding(embedded, seqLen);
         }
+
+
         private float[,] EmbedTokens(int[] tokenIds, int seqLen)
         {
             var embedded = new float[seqLen, _config.EmbeddingDim];
@@ -140,15 +142,15 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             for (int i = 0; i < seqLen; i++)
             {
                 int tokenId = tokenIds[i];
-
                 for (int j = 0; j < _config.EmbeddingDim; j++)
-                {
                     embedded[i, j] = TokenEmbedding[tokenId, j];
-                }
             }
 
             return embedded;
         }
+
+
+
 
         private float[,] EmbedContinuous(float[,] inputSequence)
         {
@@ -178,49 +180,125 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             if (!_config.Data.UsesDiscreteTokens)
                 throw new InvalidOperationException("Generate is only supported for discrete token data types.");
 
+            ValidateTokenSequence(promptTokens);
+
+            if (maxNewTokens < 0)
+                throw new ArgumentOutOfRangeException(nameof(maxNewTokens), "maxNewTokens must be non-negative.");
+            if (float.IsNaN(temperature) || float.IsInfinity(temperature) || temperature <= 0f)
+                throw new ArgumentOutOfRangeException(nameof(temperature), "temperature must be finite and greater than zero.");
+
             var tokens = new List<int>(promptTokens);
-            for (int i = 0; i < maxNewTokens; i++)
+            if (tokens.Count >= _config.MaxSequenceLength || maxNewTokens == 0)
+                return tokens.Take(_config.MaxSequenceLength).ToArray();
+
+            for (int i = 0; i < maxNewTokens && tokens.Count < _config.MaxSequenceLength; i++)
             {
                 var logits = Forward(tokens.ToArray());
-                var lastLogits = new float[_config.VocabSize];
                 int lastPos = logits.GetLength(0) - 1;
+                var lastLogits = new float[_config.VocabSize];
+
                 for (int j = 0; j < _config.VocabSize; j++)
                     lastLogits[j] = logits[lastPos, j] / temperature;
+
                 tokens.Add(SampleFromLogits(lastLogits));
-                if (tokens.Count >= _config.MaxSequenceLength) break;
             }
+
             return tokens.ToArray();
         }
+
+
 
         public float[] PredictNext(float[,] inputSequence)
         {
             if (_config.Data.UsesDiscreteTokens)
                 throw new InvalidOperationException("Must use Generate() for discrete token data types.");
 
+            ValidateContinuousSequence(inputSequence);
+
             var output = Forward(inputSequence);
             int lastPos = output.GetLength(0) - 1;
             int outputDim = _config.EffectiveOutputDim;
             var result = new float[outputDim];
+
             for (int j = 0; j < outputDim; j++)
                 result[j] = output[lastPos, j];
+
             return result;
         }
-
         private int SampleFromLogits(float[] logits)
         {
-            float max = logits.Max();
-            var exp = logits.Select(x => MathF.Exp(x - max)).ToArray();
-            float sum = exp.Sum();
-            var probs = exp.Select(x => x / sum).ToArray();
-            float r = _random.NextSingle(), cumulative = 0;
-            for (int i = 0; i < probs.Length; i++)
+            if (logits == null) throw new ArgumentNullException(nameof(logits));
+            if (logits.Length == 0) throw new ArgumentException("Logits cannot be empty.", nameof(logits));
+
+            float max = float.NegativeInfinity;
+            for (int i = 0; i < logits.Length; i++)
             {
-                cumulative += probs[i];
-                if (r < cumulative) return i;
+                if (float.IsNaN(logits[i]) || float.IsInfinity(logits[i]))
+                    throw new InvalidOperationException($"Logit at index {i} is not finite: {logits[i]}.");
+                if (logits[i] > max) max = logits[i];
             }
-            return probs.Length - 1;
+
+            var exp = new float[logits.Length];
+            float sum = 0f;
+            for (int i = 0; i < logits.Length; i++)
+            {
+                exp[i] = MathF.Exp(logits[i] - max);
+                sum += exp[i];
+            }
+
+            if (sum <= 0f || float.IsNaN(sum) || float.IsInfinity(sum))
+                throw new InvalidOperationException("Cannot sample because softmax normalization is invalid.");
+
+            float r = _random.NextSingle();
+            float cumulative = 0f;
+            float invSum = 1.0f / sum;
+
+            for (int i = 0; i < exp.Length; i++)
+            {
+                cumulative += exp[i] * invSum;
+                if (r < cumulative)
+                    return i;
+            }
+
+            return exp.Length - 1;
+        }
+        private void ValidateTokenSequence(int[] tokenIds)
+        {
+            if (tokenIds == null)
+                throw new ArgumentNullException(nameof(tokenIds));
+            if (tokenIds.Length == 0)
+                throw new ArgumentException("Token sequence must contain at least one token.", nameof(tokenIds));
+            if (tokenIds.Length > _config.MaxSequenceLength)
+                throw new ArgumentException($"Token sequence length {tokenIds.Length} exceeds MaxSequenceLength {_config.MaxSequenceLength}.", nameof(tokenIds));
+
+            for (int i = 0; i < tokenIds.Length; i++)
+            {
+                int token = tokenIds[i];
+                if ((uint)token >= (uint)_config.VocabSize)
+                    throw new ArgumentOutOfRangeException(nameof(tokenIds), $"Token id {token} at position {i} is outside [0, {_config.VocabSize}).");
+            }
         }
 
+        private void ValidateContinuousSequence(float[,] inputSequence)
+        {
+            if (inputSequence == null)
+                throw new ArgumentNullException(nameof(inputSequence));
+
+            int seqLen = inputSequence.GetLength(0);
+            int featureDim = inputSequence.GetLength(1);
+
+            if (seqLen <= 0)
+                throw new ArgumentException("Input sequence must contain at least one row.", nameof(inputSequence));
+            if (seqLen > _config.MaxSequenceLength)
+                throw new ArgumentException($"Input sequence length {seqLen} exceeds MaxSequenceLength {_config.MaxSequenceLength}.", nameof(inputSequence));
+            if (featureDim != _config.InputFeatureDim)
+                throw new ArgumentException($"Input feature dimension must be {_config.InputFeatureDim}, got {featureDim}.", nameof(inputSequence));
+
+            for (int i = 0; i < seqLen; i++)
+                for (int j = 0; j < featureDim; j++)
+                    if (float.IsNaN(inputSequence[i, j]) || float.IsInfinity(inputSequence[i, j]))
+                        throw new ArgumentException($"Input value at [{i},{j}] is not finite: {inputSequence[i, j]}.", nameof(inputSequence));
+        }
         #region Save / Load
 
         public void SaveFeedForwardNetworks(string directory)

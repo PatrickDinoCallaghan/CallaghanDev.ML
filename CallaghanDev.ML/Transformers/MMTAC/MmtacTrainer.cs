@@ -385,56 +385,92 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // TrainBatch
         // 
 
-        private float TrainBatch(int[] batchIndices, MultimodalInput[] allInputs, ModelTarget[][] allTargets, float[][] allConf, float lr)
+        private float TrainBatch(
+      int[] batchIndices,
+      MultimodalInput[] allInputs,
+      ModelTarget[][] allTargets,
+      float[][] allConf,
+      float lr)
         {
             ZeroAllGradients();
 
+            if (batchIndices == null || batchIndices.Length == 0)
+                return 0f;
+
             float tl = 0f;
             int vc = 0;
+            bool discardBatch = false;
             int minSplit = _config.PriceContext.MinHistoryLength + _config.PriceContext.MinCurrentLength + 1;
 
             foreach (int idx in batchIndices)
             {
-                int sl = allInputs[idx].PriceSequence.GetLength(0);
-                if (sl < 2)
-                {
+                var input = allInputs[idx];
+                var target = allTargets[idx];
+
+                if (input?.PriceSequence == null)
                     continue;
+
+                if (target == null)
+                {
+                    discardBatch = true;
+                    if (_trainConfig.Verbose)
+                        Console.WriteLine($"  WARNING: targets[{idx}] is null; discarding batch gradients.");
+                    break;
                 }
+
+                int sl = input.PriceSequence.GetLength(0);
+                if (sl < 2)
+                    continue;
 
                 try
                 {
-                    float loss = (_config.PriceContext.Enabled && sl >= minSplit) ? TrainWithPriceContext(idx, allInputs, allTargets, allConf) : TrainSimple(idx, allInputs, allTargets, allConf);
+                    float loss = (_config.PriceContext.Enabled && sl >= minSplit)
+                        ? TrainWithPriceContext(idx, allInputs, allTargets, allConf)
+                        : TrainSimple(idx, allInputs, allTargets, allConf);
 
-                    if (!float.IsNaN(loss) && !float.IsInfinity(loss))
+                    if (!float.IsFinite(loss))
                     {
-                        tl += loss;
-                        vc++;
+                        discardBatch = true;
+                        if (_trainConfig.Verbose)
+                            Console.WriteLine($"  WARNING: non-finite sample loss at index {idx}: {loss}; discarding batch gradients.");
+                        break;
                     }
+
+                    float gradNorm = ComputeGradientNorm();
+                    if (!float.IsFinite(gradNorm))
+                    {
+                        discardBatch = true;
+                        if (_trainConfig.Verbose)
+                            Console.WriteLine($"  WARNING: non-finite gradient norm after index {idx}: {gradNorm}; discarding batch gradients.");
+                        break;
+                    }
+
+                    tl += loss;
+                    vc++;
                 }
                 catch (Exception ex)
                 {
+                    discardBatch = true;
                     if (_trainConfig.Verbose)
-                    {
-                        Console.WriteLine($"  WARNING: {ex.Message}");
-                    }
+                        Console.WriteLine($"  WARNING: {ex.Message}; discarding batch gradients.");
+                    break;
                 }
             }
 
-            if (vc == 0)
+            if (discardBatch || vc == 0)
             {
+                ZeroAllGradients();
                 return 0f;
             }
 
             ScaleAllGradients(1.0f / vc);
+
             if (_trainConfig.UseGradientClipping)
-            {
                 ClipGradients(_trainConfig.GradientClipThreshold);
-            }
 
             UpdateAllParameters(lr);
             return tl / vc;
         }
-
         private float TrainSimple(int idx, MultimodalInput[] allInputs, ModelTarget[][] allTargets, float[][] allConf)
         {
             var inp = allInputs[idx];
@@ -506,25 +542,60 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Backward pass
         // 
 
-        private float BackwardPass(float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf, float[,] tgtReg, float[,] tgtRange, float[,] tgtQuality, float[,] tgtDir, float[,] tgtMid, float[] prevClose, float[] confTgt, MmtacForwardCache cache)
+        private float BackwardPass(
+            float[,] reg,
+            float[,] range,
+            float[,] quality,
+            float[,] dir,
+            float[,] midDir,
+            float[,] conf,
+            float[,] tgtReg,
+            float[,] tgtRange,
+            float[,] tgtQuality,
+            float[,] tgtDir,
+            float[,] tgtMid,
+            float[] prevClose,
+            float[] confTgt,
+            MmtacForwardCache cache)
         {
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+            if (cache.PriceFinalHidden == null)
+                throw new ArgumentException("cache.PriceFinalHidden is required for backward pass.", nameof(cache));
+            if (cache.RegressionLogits == null)
+                throw new ArgumentException("cache.RegressionLogits is required. Call ProjectToOutputs(..., cache) before BackwardPass.", nameof(cache));
+            if (cache.RangeLogits == null)
+                throw new ArgumentException("cache.RangeLogits is required. Call ProjectToOutputs(..., cache) before BackwardPass.", nameof(cache));
+
             int sl = reg.GetLength(0);
             int rDim = MmtacOutputConfig.RegressionOutputCount;
             int ed = _config.Price.EmbeddingDim;
 
             float mseLoss = 0f;
-            var dReg = new float[sl, rDim];
+
+            var dHigh = new float[sl];
+            var dLow = new float[sl];
+            var dClose = new float[sl];
+
+            // Missing variable that caused your compile error.
+            var dRangeOutput = new float[sl];
+
+            float invRegCount = 1.0f / (sl * rDim);
 
             for (int t = 0; t < sl; t++)
             {
-                for (int j = 0; j < rDim; j++)
-                {
-                    float diff = reg[t, j] - tgtReg[t, j];
-                    mseLoss += diff * diff;
-                    dReg[t, j] = 2f * diff / sl;
-                }
+                float diffHigh = reg[t, 0] - tgtReg[t, 0];
+                float diffLow = reg[t, 1] - tgtReg[t, 1];
+                float diffClose = reg[t, 2] - tgtReg[t, 2];
+
+                mseLoss += diffHigh * diffHigh + diffLow * diffLow + diffClose * diffClose;
+
+                dHigh[t] = 2f * diffHigh * invRegCount;
+                dLow[t] = 2f * diffLow * invRegCount;
+                dClose[t] = 2f * diffClose * invRegCount;
             }
-            mseLoss /= sl;
+
+            mseLoss *= invRegCount;
 
             float closeDirConsistencyLoss = 0f;
             float closeDirWeight = _config.Output.CloseDirectionConsistencyWeight;
@@ -538,19 +609,14 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     float z = sign * (reg[t, 2] - prevClose[t] - sign * closeDirMargin);
 
                     if (z > 20f)
-                    {
                         closeDirConsistencyLoss += MathF.Exp(-z);
-                    }
                     else if (z < -20f)
-                    {
                         closeDirConsistencyLoss += -z;
-                    }
                     else
-                    {
                         closeDirConsistencyLoss += MathF.Log(1f + MathF.Exp(-z));
-                    }
 
                     float sigmoidNegZ;
+
                     if (z >= 0f)
                     {
                         float ez = MathF.Exp(-z);
@@ -562,14 +628,84 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         sigmoidNegZ = 1f / (1f + ez);
                     }
 
-                    dReg[t, 2] += -sign * sigmoidNegZ * closeDirWeight / sl;
+                    dClose[t] += -sign * sigmoidNegZ * closeDirWeight / sl;
                 }
 
                 closeDirConsistencyLoss /= sl;
             }
 
-            var dHidden = _accel.BackpropOutputProjection(
-                dReg,
+            float rangeLoss = 0f;
+
+            for (int t = 0; t < sl; t++)
+            {
+                float diff = range[t, 0] - tgtRange[t, 0];
+                rangeLoss += diff * diff;
+
+                dRangeOutput[t] = 2f * diff / sl * _config.Output.RangeLossWeight;
+            }
+
+            rangeLoss /= sl;
+
+            var dRawRegression = new float[sl, rDim];
+            var dHidden = new float[sl, ed];
+
+            for (int t = 0; t < sl; t++)
+            {
+                float upLogit = cache.RegressionLogits[t, 0];
+                float downLogit = cache.RegressionLogits[t, 1];
+                float rangeLogit = cache.RangeLogits[t];
+
+                float upBase = Softplus(upLogit);
+                float downBase = Softplus(downLogit);
+                float den = upBase + downBase;
+
+                float upShare = den > 1e-6f ? upBase / den : 0.5f;
+                float downShare = 1f - upShare;
+                float rangeValue = Softplus(rangeLogit);
+
+                float gHigh = dHigh[t];
+                float gLow = dLow[t];
+                float gClose = dClose[t];
+                float gRange = dRangeOutput[t];
+
+                float dCloseRaw = gHigh + gLow + gClose;
+
+                // High = Close + Range * upShare
+                // Low  = Close - Range * downShare
+                // Range head also has its own supervised loss.
+                float dRangeValue = gHigh * upShare - gLow * downShare + gRange;
+
+                // upShare changes High positively and Low negatively via downShare = 1 - upShare.
+                float dShare = rangeValue * (gHigh + gLow);
+
+                float dUpBase = 0f;
+                float dDownBase = 0f;
+
+                if (den > 1e-6f)
+                {
+                    float invDenSq = 1f / (den * den);
+
+                    dUpBase = dShare * downBase * invDenSq;
+                    dDownBase = -dShare * upBase * invDenSq;
+                }
+
+                dRawRegression[t, 0] = dUpBase * SoftplusDerivative(upLogit);
+                dRawRegression[t, 1] = dDownBase * SoftplusDerivative(downLogit);
+                dRawRegression[t, 2] = dCloseRaw;
+
+                float dRangeLogit = dRangeValue * SoftplusDerivative(rangeLogit);
+
+                _gradients.RangeBiasGrad[0] += dRangeLogit;
+
+                for (int k = 0; k < ed; k++)
+                {
+                    _gradients.RangeProjectionGrad[0, k] += dRangeLogit * cache.PriceFinalHidden[t, k];
+                    dHidden[t, k] += dRangeLogit * _model.RangeProjection[0, k];
+                }
+            }
+
+            var dHiddenFromRegression = _accel.BackpropOutputProjection(
+                dRawRegression,
                 cache.PriceFinalHidden,
                 _model.RegressionProjection,
                 _gradients.RegressionProjectionGrad,
@@ -578,36 +714,20 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 rDim,
                 ed);
 
-            float rangeLoss = 0f;
-            for (int t = 0; t < sl; t++)
-            {
-                float diff = range[t, 0] - tgtRange[t, 0];
-                rangeLoss += diff * diff;
-
-                float dOutput = 2f * diff / sl * _config.Output.RangeLossWeight;
-                float logit = cache.RangeLogits[t];
-                float sigLogit = logit >= 0f ? 1f / (1f + MathF.Exp(-logit)) : MathF.Exp(logit) / (1f + MathF.Exp(logit));
-
-                float dLogit = dOutput * sigLogit;
-                _gradients.RangeBiasGrad[0] += dLogit;
-
-                for (int k = 0; k < ed; k++)
-                {
-                    _gradients.RangeProjectionGrad[0, k] += dLogit * cache.PriceFinalHidden[t, k];
-                    dHidden[t, k] += dLogit * _model.RangeProjection[0, k];
-                }
-            }
-            rangeLoss /= sl;
+            _accel.MatrixAddInPlace(dHidden, dHiddenFromRegression);
 
             float qualityLoss = 0f;
+
             for (int t = 0; t < sl; t++)
             {
                 float p = quality[t, 0];
                 float diff = p - tgtQuality[t, 0];
+
                 qualityLoss += diff * diff;
 
                 float dOutput = 2f * diff / sl * _config.Output.QualityLossWeight;
                 float dLogit = dOutput * p * (1f - p);
+
                 _gradients.QualityBiasGrad[0] += dLogit;
 
                 for (int k = 0; k < ed; k++)
@@ -616,17 +736,21 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     dHidden[t, k] += dLogit * _model.QualityProjection[0, k];
                 }
             }
+
             qualityLoss /= sl;
 
             float dirLoss = 0f;
+
             for (int t = 0; t < sl; t++)
             {
                 float p = dir[t, 0];
                 float y = tgtDir[t, 0];
                 float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
+
                 dirLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
 
                 float dLogit = (p - y) * _config.Output.DirectionLossWeight / sl;
+
                 _gradients.DirectionBiasGrad[0] += dLogit;
 
                 for (int k = 0; k < ed; k++)
@@ -635,17 +759,21 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     dHidden[t, k] += dLogit * _model.DirectionProjection[0, k];
                 }
             }
+
             dirLoss /= sl;
 
             float midDirLoss = 0f;
+
             for (int t = 0; t < sl; t++)
             {
                 float p = midDir[t, 0];
                 float y = tgtMid[t, 0];
                 float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
+
                 midDirLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
 
                 float dLogit = (p - y) * _config.Output.MidDirectionLossWeight / sl;
+
                 _gradients.MidDirectionBiasGrad[0] += dLogit;
 
                 for (int k = 0; k < ed; k++)
@@ -654,16 +782,23 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     dHidden[t, k] += dLogit * _model.MidDirectionProjection[0, k];
                 }
             }
+
             midDirLoss /= sl;
 
             float confLoss = 0f;
-            float confWeight = _config.Output.UseConfidenceHead ? MathF.Max(0f, _trainConfig.ConfidenceLossWeight) : 0f;
+            float confWeight = _config.Output.UseConfidenceHead
+                ? MathF.Max(0f, _trainConfig.ConfidenceLossWeight)
+                : 0f;
 
             if (_config.Output.UseConfidenceHead && conf != null && confWeight > 0f)
             {
+                if (confTgt != null && confTgt.Length < sl)
+                    throw new ArgumentException("confTgt length must be at least the sequence length.", nameof(confTgt));
+
                 for (int t = 0; t < sl; t++)
                 {
                     float p = conf[t, 0];
+
                     float y = confTgt != null
                         ? confTgt[t]
                         : MathF.Exp(-5f * MathF.Sqrt(Enumerable.Range(0, rDim).Sum(j =>
@@ -673,9 +808,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         }) / rDim));
 
                     float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
+
                     confLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
 
                     float dLogit = (p - y) * confWeight / sl;
+
                     _gradients.ConfidenceBiasGrad[0] += dLogit;
 
                     for (int k = 0; k < ed; k++)
@@ -684,10 +821,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         dHidden[t, k] += dLogit * _model.ConfidenceProjection[0, k];
                     }
                 }
+
                 confLoss /= sl;
             }
-
-            //Tuple (dNewsHidden, dGlobalHidden) = BackpropPriceDecoder(dHidden, cache);
 
             (float[,] dNewsHidden, float[] dGlobalHidden) = BackpropPriceDecoder(dHidden, cache);
 
@@ -701,9 +837,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 && _gradients.GlobalFeatureProjectionGrad != null)
             {
                 int gd = _config.Global.GlobalFeatureDim;
+
                 for (int d = 0; d < ed; d++)
                 {
                     float gToken = dGlobalHidden[d];
+
                     _gradients.GlobalFeatureBiasGrad[d] += gToken;
 
                     for (int g = 0; g < gd; g++)
@@ -711,7 +849,13 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
             }
 
-            return mseLoss + closeDirWeight * closeDirConsistencyLoss + _config.Output.RangeLossWeight * rangeLoss + _config.Output.QualityLossWeight * qualityLoss + _config.Output.DirectionLossWeight * dirLoss + _config.Output.MidDirectionLossWeight * midDirLoss + confWeight * confLoss;
+            return mseLoss
+                + closeDirWeight * closeDirConsistencyLoss
+                + _config.Output.RangeLossWeight * rangeLoss
+                + _config.Output.QualityLossWeight * qualityLoss
+                + _config.Output.DirectionLossWeight * dirLoss
+                + _config.Output.MidDirectionLossWeight * midDirLoss
+                + confWeight * confLoss;
         }
         private (float[,] dLiveNewsHidden, float[] dGlobalHidden) BackpropPriceDecoder(float[,] dOut, MmtacForwardCache cache)
         {
@@ -735,7 +879,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 numLiveNews = totalContext;
             }
 
-            int liveNewsOffset = numGlobal + numStoredNews;
             int priceOffset = numGlobal + numNews;
 
             float[,] dLiveNewsHidden = numLiveNews > 0 ? new float[numLiveNews, ed] : null;
@@ -810,7 +953,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         bc.CrossAttentionWeights,
                         bc.TimeDiffs,
                         block);
-                    RotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, nh);
+
+                    // Do not apply RoPE backward to cross-attention Q/K. Forward no longer
+                    // applies RoPE to heterogeneous context rows.
 
                     if (bc.DecayCache != null && dDecayBias != null)
                     {
@@ -993,8 +1138,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             return (dLiveNewsHidden, dGlobalHidden);
         }
-       
-
 
         private (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttn(float[,] Q, float[,] K, float[,] V, float[,] dOutput, float[][,] attnW, float[,] timeDiffs, TacamtBlock block)
         {
@@ -1786,7 +1929,28 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         #endregion
 
         #region Helpers
+        private static float TrainerSigmoid(float x)
+        {
+            if (x >= 0f)
+            {
+                float ex = MathF.Exp(-x);
+                return 1f / (1f + ex);
+            }
+            else
+            {
+                float ex = MathF.Exp(x);
+                return ex / (1f + ex);
+            }
+        }
 
+        private static float Softplus(float x)
+        {
+            if (x > 20f) return x;
+            if (x < -20f) return MathF.Exp(x);
+            return MathF.Log(1f + MathF.Exp(x));
+        }
+
+        private static float SoftplusDerivative(float x) => TrainerSigmoid(x);
         private float ComputeLR(int epoch)
         {
             float baseLR = _trainConfig.LearningRate;
@@ -2500,7 +2664,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 midDirLoss += BinaryCrossEntropy(midDir[t, 0], tgtMid[t, 0]);
             }
 
-            mseLoss /= sl;
+            mseLoss /= sl * rDim;
             rangeLoss /= sl;
             qualityLoss /= sl;
             dirLoss /= sl;
@@ -2533,23 +2697,33 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 mseLoss += diff * diff;
             }
 
+            // True MSE over the three regression outputs: High, Low, Close.
+            mseLoss /= 3f;
+
             float rangeLoss = (pred.Range - tgt.Range) * (pred.Range - tgt.Range);
             float qualityLoss = (pred.Quality - tgt.Quality) * (pred.Quality - tgt.Quality);
             float dirLoss = BinaryCrossEntropy(pred.DirectionProb, tgt.Direction);
             float midDirLoss = BinaryCrossEntropy(pred.MidWindowDirectionProb, tgt.MidWindowDirection);
 
             float closeDirConsistencyLoss = 0f;
+
             if (_config.Output.CloseDirectionConsistencyWeight > 0f)
             {
                 float sign = tgt.Direction >= 0.5f ? 1f : -1f;
                 float z = sign * (pred.Close - prevClose - sign * _config.Output.CloseDirectionConsistencyMargin);
 
                 if (z > 20f)
+                {
                     closeDirConsistencyLoss = MathF.Exp(-z);
+                }
                 else if (z < -20f)
+                {
                     closeDirConsistencyLoss = -z;
+                }
                 else
+                {
                     closeDirConsistencyLoss = MathF.Log(1f + MathF.Exp(-z));
+                }
             }
 
             return mseLoss
@@ -2562,5 +2736,101 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         #endregion
         #endregion
+
+        public void TrainSequentialFromWindowEndTimestamps(
+    MultimodalInput[] inputs,
+    ModelTarget[][] targets,
+    double[] windowEndTimestamps,
+    double timeUnitsPerPosition = 1.0,
+    int maxNewsMemory = 100,
+    int maxPriceMemory = 200,
+    float[][] confTargets = null)
+        {
+            var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(
+                inputs,
+                windowEndTimestamps,
+                timeUnitsPerPosition);
+
+            TrainSequential(
+                inputs,
+                targets,
+                windowStartTimestamps,
+                timeUnitsPerPosition,
+                maxNewsMemory,
+                maxPriceMemory,
+                confTargets);
+        }
+
+        public float ValidateSequentialFromWindowEndTimestamps(
+            MultimodalInput[] inputs,
+            ModelTarget[][] targets,
+            double[] windowEndTimestamps,
+            double timeUnitsPerPosition = 1.0,
+            int maxNewsMemory = 100,
+            int maxPriceMemory = 200)
+        {
+            var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(
+                inputs,
+                windowEndTimestamps,
+                timeUnitsPerPosition);
+
+            return ValidateSequential(
+                inputs,
+                targets,
+                windowStartTimestamps,
+                timeUnitsPerPosition,
+                maxNewsMemory,
+                maxPriceMemory);
+        }
+
+        public float ValidateSequentialAlignedFromWindowEndTimestamps(
+            MultimodalInput[] inputs,
+            ModelTarget[][] targets,
+            double[] windowEndTimestamps,
+            double timeUnitsPerPosition = 1.0,
+            int maxNewsMemory = 100,
+            int maxPriceMemory = 200)
+        {
+            var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(
+                inputs,
+                windowEndTimestamps,
+                timeUnitsPerPosition);
+
+            return ValidateSequentialAligned(
+                inputs,
+                targets,
+                windowStartTimestamps,
+                timeUnitsPerPosition,
+                maxNewsMemory,
+                maxPriceMemory);
+        }
+
+        private static double[] ConvertWindowEndTimestampsToWindowStart(
+            MultimodalInput[] inputs,
+            double[] windowEndTimestamps,
+            double timeUnitsPerPosition)
+        {
+            if (inputs == null)
+                throw new ArgumentNullException(nameof(inputs));
+            if (windowEndTimestamps == null)
+                throw new ArgumentNullException(nameof(windowEndTimestamps));
+            if (inputs.Length != windowEndTimestamps.Length)
+                throw new ArgumentException("inputs and windowEndTimestamps must have the same length.");
+            if (timeUnitsPerPosition == 0.0)
+                throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition), "Must be non-zero.");
+
+            var converted = new double[windowEndTimestamps.Length];
+
+            for (int i = 0; i < converted.Length; i++)
+            {
+                int seqLen = inputs[i]?.PriceSequence?.GetLength(0) ?? 1;
+                converted[i] = MmtacModel.WindowStartTimestampFromWindowEnd(
+                    windowEndTimestamps[i],
+                    seqLen,
+                    timeUnitsPerPosition);
+            }
+
+            return converted;
+        }
     }
 }

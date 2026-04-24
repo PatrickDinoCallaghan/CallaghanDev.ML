@@ -45,6 +45,14 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public float[] QualityLogits { get; set; }
         public int NumStoredNewsContext { get; set; } = 0;
         public int NumLiveNewsContext { get; set; } = 0;
+
+        /// <summary>
+        /// Raw pre-constraint regression logits [seqLen,3].
+        /// Row columns are interpreted as [UpShapeLogit, DownShapeLogit, CloseRaw].
+        /// ProjectToOutputs converts them into coherent [High, Low, Close].
+        /// </summary>
+        public float[,] RegressionLogits { get; set; }
+
         public MmtacForwardCache(int textNumLayers, int priceNumLayers)
         {
             TextLayerInputs = new List<float[,]>();
@@ -76,8 +84,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             TextFinalHidden = null;
             GlobalTokenEmbedded = null;
             GlobalRawInput = null;
+
+            RegressionLogits = null;
             RangeLogits = null;
             QualityLogits = null;
+
 
             TextLayerInputs.Clear();
             TextFFNOutputs.Clear();

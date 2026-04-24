@@ -2241,5 +2241,15 @@ namespace CallaghanDev.ML.AccelerationManagers
 
 
         public void Dispose() { }
+
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask)
+        {
+            throw new NotImplementedException();
+        }
+
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

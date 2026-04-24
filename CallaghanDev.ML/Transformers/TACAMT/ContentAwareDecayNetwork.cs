@@ -448,6 +448,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 {
                     for (int si = 0; si < keyLen; si++)
                     {
+                        if (cache.TimeDiffs[qi, si] < 0f)
+                            continue;
+
                         float dBias = dDecayBias[qi, si, h];
                         float gate = cache.Gates[qi, si, h];
                         float normTd = cache.NormalizedTimeDiffs[qi, si];
@@ -538,8 +541,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         float dOut = dMemAttnOutput[i, p];
                         for (int j = 0; j < keyLen; j++)
                         {
-                            // cache.MemAttnWeights is the weight actually used in the forward output
-                            // after dropout, so it is correct for the value path.
                             dKeyProj[h, j, p] += cache.MemAttnWeights[h, i, j] * dOut;
                             dMemWeights[i, j] += dOut * cache.KeyProj[h, j, p];
                         }
@@ -553,18 +554,29 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                             dMemWeights[i, j] *= cache.MemAttnDropoutMask[h, i, j];
                 }
 
-                // Recompute the pre-dropout softmax weights. The forward cache stores post-dropout
-                // weights, which are not valid for the softmax Jacobian.
                 var rawWeights = new float[keyLen, keyLen];
                 float memScale = 1.0f / MathF.Sqrt(projDim);
+                bool useMemAttentionTemporalMask = cache.KeyTimesFromRef != null;
 
                 for (int i = 0; i < keyLen; i++)
                 {
                     var scores = new float[keyLen];
                     float maxScore = float.NegativeInfinity;
+                    float queryKeyTime = useMemAttentionTemporalMask ? cache.KeyTimesFromRef[i] : 0f;
 
                     for (int j = 0; j < keyLen; j++)
                     {
+                        bool visible =
+                            !useMemAttentionTemporalMask ||
+                            cache.KeyTimesFromRef[j] <= queryKeyTime + 1e-6f;
+
+                        if (!visible)
+                        {
+                            scores[j] = float.NegativeInfinity;
+                            rawWeights[i, j] = 0f;
+                            continue;
+                        }
+
                         float dot = 0f;
                         for (int p = 0; p < projDim; p++)
                             dot += cache.MemAttnQInput[h, i, p] * cache.MemAttnKInput[h, j, p];
@@ -575,9 +587,18 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                             maxScore = score;
                     }
 
+                    if (float.IsNegativeInfinity(maxScore))
+                        continue;
+
                     float sumExp = 0f;
                     for (int j = 0; j < keyLen; j++)
                     {
+                        if (float.IsNegativeInfinity(scores[j]))
+                        {
+                            rawWeights[i, j] = 0f;
+                            continue;
+                        }
+
                         float w = MathF.Exp(scores[j] - maxScore);
                         rawWeights[i, j] = w;
                         sumExp += w;
@@ -798,5 +819,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
         }
+
     }
 }

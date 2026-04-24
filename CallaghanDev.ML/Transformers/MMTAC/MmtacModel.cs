@@ -268,7 +268,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             float[,] contextHidden;
             float[] contextTimes;
             BuildContext(storyHidden, storyTimes, null, globalToken, cache, out contextHidden, out contextTimes);
+            if (contextTimes != null && rowStart != 0)
+            {
+                int numGlobalRows = globalToken != null ? 1 : 0;
+                var shiftedTimes = new float[contextTimes.Length];
 
+                for (int i = 0; i < contextTimes.Length; i++)
+                    shiftedTimes[i] = i < numGlobalRows ? contextTimes[i] : contextTimes[i] - rowStart;
+
+                contextTimes = shiftedTimes;
+            }
             int numGlobal = globalToken != null ? 1 : 0;
             int numLiveNews = storyHidden != null ? storyHidden.GetLength(0) : 0;
 
@@ -533,6 +542,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         {
             ClearNewsMemory();
             ClearPriceMemory();
+            LastPriceTimestamp = 0.0;
         }
 
         // 
@@ -620,7 +630,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Price decoder forward (no cache)
         // 
 
-        private float[,] ForwardPriceDecoder(float[,] priceSequence, float[,] contextHidden, float[] contextTimes, int globalBypassCount = 0)
+        private float[,] ForwardPriceDecoder(
+      float[,] priceSequence,
+      float[,] contextHidden,
+      float[] contextTimes,
+      int globalBypassCount = 0)
         {
             if (priceSequence == null)
                 throw new ArgumentNullException(nameof(priceSequence));
@@ -638,41 +652,37 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     throw new ArgumentException("contextTimes length must match contextHidden row count.", nameof(contextTimes));
             }
 
-            var x = EmbedPriceSequence(priceSequence, 0, seqLen);
-            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
-
-            float[,] timeDiffs = null;
-            float[] keyTimes = null;
-
-            if (_config.Decay.Enabled && contextHidden != null && contextTimes != null)
+            // Use the cache-aware implementation for inference too. This keeps causal context
+            // masking active even when decay is disabled and avoids relying on TacamtBlock.Forward
+            // to infer whether timeDiffs are a mask, a decay input, or both.
+            var cache = new MmtacForwardCache(_config.Text.NumLayers, _config.Price.NumLayers)
             {
-                timeDiffs = _accel.ComputeTimeDiffMatrix(seqLen, contextTimes);
-                keyTimes = contextTimes;
+                NumGlobalContext = Math.Max(0, globalBypassCount)
+            };
 
-                if (_config.Global.BypassDecay && globalBypassCount > 0)
-                {
-                    int bypass = Math.Min(globalBypassCount, contextTimes.Length);
-                    for (int qi = 0; qi < seqLen; qi++)
-                        for (int gi = 0; gi < bypass; gi++)
-                            timeDiffs[qi, gi] = 0f;
-                }
-            }
-
-            foreach (var block in PriceBlocks)
-            {
-                block.SetContext(contextHidden);
-                block.SetTimeData(timeDiffs, keyTimes);
-                block.SetTraining(false);
-                x = block.Forward(x, mask);
-            }
-
-            return x;
+            return ForwardPriceDecoderWithCache(
+                priceSequence,
+                0,
+                seqLen,
+                contextHidden,
+                contextTimes,
+                cache,
+                isTraining: false,
+                dropoutRng: null);
         }
         // 
         // Price decoder forward (with cache)
         // 
 
-        public float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] contextHidden, float[] contextTimes, MmtacForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+        public float[,] ForwardPriceDecoderWithCache(
+            float[,] priceSequence,
+            int rowStart,
+            int rowCount,
+            float[,] contextHidden,
+            float[] contextTimes,
+            MmtacForwardCache cache,
+            bool isTraining = true,
+            Random dropoutRng = null)
         {
             if (priceSequence == null)
                 throw new ArgumentNullException(nameof(priceSequence));
@@ -696,7 +706,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     throw new ArgumentException("contextTimes length must match contextHidden row count.", nameof(contextTimes));
             }
 
-            // Store the exact slice used for the projection. BackpropInputProjection indexes from zero.
             var priceInputSlice = new float[seqLen, featureDim];
             for (int i = 0; i < seqLen; i++)
                 for (int f = 0; f < featureDim; f++)
@@ -748,7 +757,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     bc.KeyTimesFromRef = null;
                     bc.DecayCache = null;
 
-                    if (_config.Decay.Enabled && contextTimes != null)
+                    // Compute timeDiffs whenever contextTimes exist. timeDiffs is a causal
+                    // visibility mask independently of whether decay bias is enabled.
+                    if (contextTimes != null)
                     {
                         timeDiffs = _accel.ComputeTimeDiffMatrix(seqLen, contextTimes);
                         keyTimes = contextTimes;
@@ -756,12 +767,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         if (_config.Global.BypassDecay && cache.NumGlobalContext > 0)
                         {
                             int bypass = Math.Min(cache.NumGlobalContext, contextTimes.Length);
-
                             for (int qi = 0; qi < seqLen; qi++)
-                            {
                                 for (int gi = 0; gi < bypass; gi++)
                                     timeDiffs[qi, gi] = 0f;
-                            }
                         }
 
                         bc.TimeDiffs = timeDiffs;
@@ -771,7 +779,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     var crossQ = ComputeProjection(normedSelf, block.CrossAttention.WQ, block.CrossAttention.BiasQ);
                     var crossK = ComputeProjection(contextHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
                     var crossV = ComputeProjection(contextHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
-                    RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, nh);
+
+                    // Do not apply RoPE to cross-attention context keys. Context rows are a
+                    // heterogeneous memory set, not a stable positional sequence.
                     bc.CrossQ = crossQ;
                     bc.CrossK = crossK;
                     bc.CrossV = crossV;
@@ -852,7 +862,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             return x;
         }
-
         // 
         // Price-context training forward
         // 
@@ -988,57 +997,77 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         internal (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence) ProjectToOutputs(float[,] hidden)
             => ProjectToOutputs(hidden, null);
 
-        internal (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence) ProjectToOutputs(float[,] hidden, MmtacForwardCache cache)
+        internal (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence) ProjectToOutputs(
+            float[,] hidden,
+            MmtacForwardCache cache)
         {
             int sl = hidden.GetLength(0);
             int ed = _config.Price.EmbeddingDim;
-            int rDim = MmtacOutputConfig.RegressionOutputCount; // 3
+            int rDim = MmtacOutputConfig.RegressionOutputCount;
 
-            //  Regression: High, Low, Close - linear 
-            var regression = _accel.ProjectOutputBatch(hidden, RegressionProjection, RegressionBias, sl, rDim);
+            // Raw regression logits are not direct High/Low/Close anymore.
+            // Columns: [up-shape logit, down-shape logit, close].
+            var rawRegression = _accel.ProjectOutputBatch(hidden, RegressionProjection, RegressionBias, sl, rDim);
 
-            //  Range - softplus: log(1 + exp(x)) 
+            var regression = new float[sl, rDim];
             var range = new float[sl, 1];
             var rangeLogits = new float[sl];
+
             for (int t = 0; t < sl; t++)
             {
+                float upBase = Softplus(rawRegression[t, 0]);
+                float downBase = Softplus(rawRegression[t, 1]);
+
                 float l = RangeBias[0];
-                for (int k = 0; k < ed; k++) l += RangeProjection[0, k] * hidden[t, k];
+                for (int k = 0; k < ed; k++)
+                    l += RangeProjection[0, k] * hidden[t, k];
+
                 rangeLogits[t] = l;
-                // Numerically stable softplus: for x > 20, softplus(x) ≈ x
-                range[t, 0] = l > 20f ? l : MathF.Log(1f + MathF.Exp(l));
+                float rangeValue = Softplus(l);
+
+                float den = upBase + downBase;
+                float upShare = den > 1e-6f ? upBase / den : 0.5f;
+                float downShare = 1f - upShare;
+                float close = rawRegression[t, 2];
+
+                regression[t, 0] = close + rangeValue * upShare;
+                regression[t, 1] = close - rangeValue * downShare;
+                regression[t, 2] = close;
+                range[t, 0] = rangeValue;
             }
 
-            //  Quality - sigmoid 
             var quality = new float[sl, 1];
             var qualityLogits = new float[sl];
             for (int t = 0; t < sl; t++)
             {
                 float l = QualityBias[0];
-                for (int k = 0; k < ed; k++) l += QualityProjection[0, k] * hidden[t, k];
+                for (int k = 0; k < ed; k++)
+                    l += QualityProjection[0, k] * hidden[t, k];
+
                 qualityLogits[t] = l;
                 quality[t, 0] = Sigmoid(l);
             }
 
-            //  Direction - sigmoid 
             var direction = new float[sl, 1];
             for (int t = 0; t < sl; t++)
             {
                 float l = DirectionBias[0];
-                for (int k = 0; k < ed; k++) l += DirectionProjection[0, k] * hidden[t, k];
+                for (int k = 0; k < ed; k++)
+                    l += DirectionProjection[0, k] * hidden[t, k];
+
                 direction[t, 0] = Sigmoid(l);
             }
 
-            //  MidWindowDirection - sigmoid 
             var midDirection = new float[sl, 1];
             for (int t = 0; t < sl; t++)
             {
                 float l = MidDirectionBias[0];
-                for (int k = 0; k < ed; k++) l += MidDirectionProjection[0, k] * hidden[t, k];
+                for (int k = 0; k < ed; k++)
+                    l += MidDirectionProjection[0, k] * hidden[t, k];
+
                 midDirection[t, 0] = Sigmoid(l);
             }
 
-            //  Confidence - sigmoid (optional) 
             float[,] confidence = null;
             if (_config.Output.UseConfidenceHead)
             {
@@ -1046,21 +1075,22 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 for (int t = 0; t < sl; t++)
                 {
                     float l = ConfidenceBias[0];
-                    for (int k = 0; k < ed; k++) l += ConfidenceProjection[0, k] * hidden[t, k];
+                    for (int k = 0; k < ed; k++)
+                        l += ConfidenceProjection[0, k] * hidden[t, k];
+
                     confidence[t, 0] = Sigmoid(l);
                 }
             }
 
-            // Store pre-activation logits in cache for backward pass
             if (cache != null)
             {
+                cache.RegressionLogits = rawRegression;
                 cache.RangeLogits = rangeLogits;
                 cache.QualityLogits = qualityLogits;
             }
 
             return (regression, range, quality, direction, midDirection, confidence);
         }
-
         // 
         // Memory management
         // 
@@ -1568,9 +1598,35 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         {
             return ForwardPriceDecoder(priceSequence, contextHidden, contextTimes, globalBypassCount);
         }
-        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, bool isTraining, Random dropoutRng, int globalBypassCount)
+        private float[,] ContentAwareCrossAttentionWithCache(
+         float[,] Q,
+         float[,] K,
+         float[,] V,
+         float[,] timeDiffs,
+         float[] keyTimesFromRef,
+         float[,] queryEmbeddings,
+         float[,] keyEmbeddings,
+         TacamtBlock block,
+         BlockCache bc,
+         bool isTraining,
+         Random dropoutRng,
+         int globalBypassCount)
         {
-            return _accel.ContentAwareCrossAttentionWithCache(Q, K, V, timeDiffs, keyTimesFromRef, queryEmbeddings, keyEmbeddings, block, bc, _config.Price.EmbeddingDim, _config.Price.NumHeads, isTraining, dropoutRng);
+            return _accel.ContentAwareCrossAttentionWithCache(
+                Q,
+                K,
+                V,
+                timeDiffs,
+                keyTimesFromRef,
+                queryEmbeddings,
+                keyEmbeddings,
+                block,
+                bc,
+                _config.Price.EmbeddingDim,
+                _config.Price.NumHeads,
+                enableDecayBias: _config.Decay.Enabled,
+                isTraining: isTraining,
+                dropoutRng: dropoutRng);
         }
 
         // 
@@ -1649,7 +1705,52 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             if (x >= 0) { float ex = MathF.Exp(-x); return 1f / (1f + ex); }
             else { float ex = MathF.Exp(x); return ex / (1f + ex); }
         }
+        public static double WindowStartTimestampFromWindowEnd(
+    double windowEndAbsoluteTimestamp,
+    int sequenceLength,
+    double timeUnitsPerPosition)
+        {
+            if (sequenceLength <= 0)
+                throw new ArgumentOutOfRangeException(nameof(sequenceLength), "sequenceLength must be positive.");
+            if (timeUnitsPerPosition == 0.0)
+                throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition), "Must be non-zero.");
 
+            return windowEndAbsoluteTimestamp - Math.Max(0, sequenceLength - 1) * timeUnitsPerPosition;
+        }
+
+        public ModelPrediction PredictWithMemoryAtWindowEnd(
+            MultimodalInput input,
+            double windowEndAbsoluteTimestamp,
+            double timeUnitsPerPosition = 1.0,
+            int maxNewsMemorySize = 100,
+            int maxPriceMemorySize = 200)
+        {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+
+            double windowStartTimestamp = WindowStartTimestampFromWindowEnd(
+                windowEndAbsoluteTimestamp,
+                input.PriceSequence.GetLength(0),
+                timeUnitsPerPosition);
+
+            return PredictWithMemory(
+                input,
+                windowStartTimestamp,
+                timeUnitsPerPosition,
+                maxNewsMemorySize,
+                maxPriceMemorySize);
+        }
+
+        private static float Softplus(float x)
+        {
+            if (x > 20f) return x;
+            if (x < -20f) return MathF.Exp(x);
+            return MathF.Log(1f + MathF.Exp(x));
+        }
+
+        private static float SoftplusDerivative(float x) => Sigmoid(x);
         private float[,] InitWeights(int rows, int cols, float std)
         {
             var w = new float[rows, cols];

@@ -59,22 +59,47 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         }
 
         //  Validation 
-
         public override void Validate()
         {
+            if (Data == null) throw new ArgumentNullException(nameof(Data));
+            if (Runtime == null) throw new ArgumentNullException(nameof(Runtime));
+            if (Regularization == null) throw new ArgumentNullException(nameof(Regularization));
+
             base.Validate();
+
             RequirePositive(VocabSize, nameof(VocabSize));
             RequirePositive(MaxSequenceLength, nameof(MaxSequenceLength));
             RequirePositive(InputFeatureDim, nameof(InputFeatureDim));
             RequirePositive(OutputDim, nameof(OutputDim));
 
-            if (Data == null) throw new ArgumentNullException(nameof(Data));
-            if (Runtime == null) throw new ArgumentNullException(nameof(Runtime));
-            if (Regularization == null) throw new ArgumentNullException(nameof(Regularization));
-
             Data.Validate();
             Runtime.Validate();
             Regularization.Validate();
+
+            if (NumHeads <= 0)
+                throw new ArgumentOutOfRangeException(nameof(NumHeads), "NumHeads must be positive.");
+
+            if (EmbeddingDim % NumHeads != 0)
+                throw new ArgumentException($"EmbeddingDim ({EmbeddingDim}) must be divisible by NumHeads ({NumHeads}).", nameof(EmbeddingDim));
+
+            int headDim = EmbeddingDim / NumHeads;
+            if ((headDim & 1) != 0)
+                throw new ArgumentException($"RoPE requires an even per-head dimension. EmbeddingDim / NumHeads = {headDim}.", nameof(EmbeddingDim));
+
+            if (Data.UsesDiscreteTokens)
+            {
+                if (VocabSize < 2)
+                    throw new ArgumentException("Discrete token models require VocabSize >= 2.", nameof(VocabSize));
+            }
+            else
+            {
+                if (InputFeatureDim < 1)
+                    throw new ArgumentException("Continuous models require InputFeatureDim >= 1.", nameof(InputFeatureDim));
+
+                if (Data.DataType == TransformerDataType.TimeSeriesClassification && OutputDim < 2)
+                    throw new ArgumentException("TimeSeriesClassification requires OutputDim >= 2 classes.", nameof(OutputDim));
+            }
         }
+
     }
 }

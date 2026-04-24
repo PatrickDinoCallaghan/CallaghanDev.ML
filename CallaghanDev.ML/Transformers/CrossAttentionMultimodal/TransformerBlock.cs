@@ -22,36 +22,53 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private readonly int _embeddingDim;
 
         private readonly int _numHeads;
-        public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random, AccelerationType accelType = AccelerationType.CPU, int accelDeviceId = 0, float l2Lambda = 0.01f)
+        public TransformerBlock(
+       int embeddingDim,
+       int numHeads,
+       int feedForwardDim,
+       ActivationType ffnActivation,
+       IAccelerationManager accel,
+       Random random,
+       AccelerationType accelType = AccelerationType.CPU,
+       int accelDeviceId = 0,
+       float l2Lambda = 0.01f)
         {
+            if (embeddingDim <= 0)
+                throw new ArgumentOutOfRangeException(nameof(embeddingDim));
+            if (numHeads <= 0)
+                throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (feedForwardDim <= 0)
+                throw new ArgumentOutOfRangeException(nameof(feedForwardDim));
+            if (accel == null)
+                throw new ArgumentNullException(nameof(accel));
+
             if (embeddingDim % numHeads != 0)
-            {
                 throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
-            }
+
+            random ??= new Random();
+
             _numHeads = numHeads;
             _embeddingDim = embeddingDim;
 
-            //Self attention
             SelfAttention = new MultiHeadAttention(embeddingDim, _numHeads, accel, random);
             LNSelfGamma = new float[embeddingDim];
             LNSelfBeta = new float[embeddingDim];
 
-            //Cross attention
-            // Uses the SAME MultiHeadAttention structure, but during forward:
-            //   Q comes from price hidden states
-            //   K, V come from text encoder output
             CrossAttention = new MultiHeadAttention(embeddingDim, _numHeads, accel, random);
             LNCrossGamma = new float[embeddingDim];
             LNCrossBeta = new float[embeddingDim];
 
-
             var parameters = new Parameters
             {
                 AccelerationType = accelType,
+                AccelerationDeviceId = accelDeviceId,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { embeddingDim, feedForwardDim, embeddingDim },
-                LayerActivations = new List<ActivationType> { ffnActivation, ffnActivation, ffnActivation },
+
+                // Keep the FFN output projection linear. The previous code used ffnActivation
+                // for the output layer too, which is especially harmful with Relu.
+                LayerActivations = new List<ActivationType> { ffnActivation, ffnActivation, ActivationType.None },
                 L2RegulationLamda = l2Lambda
             };
 
@@ -60,7 +77,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             LNFFNGamma = new float[embeddingDim];
             LNFFNBeta = new float[embeddingDim];
 
-            // Initialize all LayerNorm gammas to 1
             for (int i = 0; i < embeddingDim; i++)
             {
                 LNSelfGamma[i] = 1.0f;

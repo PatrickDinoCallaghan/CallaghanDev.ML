@@ -143,7 +143,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             if (timestamps == null)
                 throw new ArgumentNullException(nameof(timestamps));
 
-            if (timeUnitsPerPosition == 0.0)
+            if (timeUnitsPerPosition <= 0.0)
                 throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition));
 
             int n = stories.Length;
@@ -333,7 +333,21 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         UpdateAllParameters(lr);
 
                         if (combinedHidden != null)
-                            _model.UpdateMemoryAttentionScores(cache.PriceFinalHidden, combinedHidden, combinedHidden.GetLength(0));
+                        {
+                            bool updatedFromActualAttention = _model.UpdateMemoryAttentionScoresFromCache(
+                                cache,
+                                newsMemCount,
+                                priceMemCount);
+
+                            if (!updatedFromActualAttention)
+                            {
+                                _model.UpdateMemoryAttentionScores(
+                                    cache.PriceFinalHidden,
+                                    combinedHidden,
+                                    newsMemCount,
+                                    priceMemCount);
+                            }
+                        }
 
                         epochLoss += loss;
                         validCount++;
@@ -593,7 +607,6 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     .ToArray();
             }
 
-            var priceCtxHidden = _model.EncodePriceHistory(historyPrices);
             var priceCtxTimes = new float[historyLen];
 
             for (int t = 0; t < historyLen; t++)
@@ -615,10 +628,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             var cache = new MultimodalForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
 
-            var (pred, conf) = _model.ForwardWithPriceContextAndCache(
+            var (pred, conf) = _model.ForwardWithPriceHistoryContextAndCache(
                 adjustedStories,
                 currentInput,
-                priceCtxHidden,
+                historyPrices,
                 priceCtxTimes,
                 cache,
                 isTraining: true,
@@ -860,16 +873,21 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             bool hasContext = (cache.TextFinalHidden != null);
 
-            float[,] dSharedHidden = BackpropPriceDecoder(dHidden, cache, hasContext);
+            var (dSharedHidden, dPriceContextHidden) = BackpropPriceDecoder(dHidden, cache, hasContext);
 
             if (!_config.Text.Freeze && hasContext && dSharedHidden != null && cache.StoryCaches != null)
             {
                 BackpropMultiStoryTextEncoder(dSharedHidden, cache);
             }
 
+            if (dPriceContextHidden != null && cache.PriceContextEncoderCache != null)
+            {
+                BackpropPriceContextEncoder(dPriceContextHidden, cache.PriceContextEncoderCache);
+            }
+
             return mse + (_trainConfig.ConfidenceLossWeight * confidenceLoss);
         }
-        private float[,] BackpropPriceDecoder(float[,] dOut, MultimodalForwardCache cache, bool hasContext)
+        private (float[,] dNewsHidden, float[,] dPriceContextHidden) BackpropPriceDecoder(float[,] dOut, MultimodalForwardCache cache, bool hasContext)
         {
             int embeddingDim = _config.Price.EmbeddingDim;
             int numHeads = _config.Price.NumHeads;
@@ -896,10 +914,22 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 numNewsContext = totalContext;
             }
 
+            if (totalContext > 0 && numNewsContext + numPriceContext > totalContext)
+            {
+                numNewsContext = Math.Clamp(numNewsContext, 0, totalContext);
+                numPriceContext = Math.Clamp(numPriceContext, 0, totalContext - numNewsContext);
+            }
+
             float[,] dNewsHidden = null;
             if (numNewsContext > 0)
             {
                 dNewsHidden = new float[numNewsContext, embeddingDim];
+            }
+
+            float[,] dPriceContextHidden = null;
+            if (numPriceContext > 0)
+            {
+                dPriceContextHidden = new float[numPriceContext, embeddingDim];
             }
 
             float[,] dX = dOut;
@@ -954,6 +984,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                     var dCrossCombined = new float[sequenceLength, embeddingDim];
                     _accel.BackpropLinearProjection(blockCache.CrossAttnOutput, dCrossResidual, block.CrossAttention.WO, crossAttnGrads.WO_Grad, crossAttnGrads.BiasO_Grad, dCrossCombined);
+                    BackpropLinearProjectionWithOptionalRows(
+                        blockCache.CrossAttnOutput,
+                        dCrossResidual,
+                        block.CrossAttention.WO,
+                        crossAttnGrads.WO_Grad,
+                        crossAttnGrads.BiasO_Grad,
+                        dCrossCombined,
+                        blockCache.CrossAttentionHasValidKey);
 
                     var (dQ, dK, dV, dDecayBias) = BackpropTimeDecayedAttn(blockCache.CrossQ, blockCache.CrossK, blockCache.CrossV, dCrossCombined, blockCache.CrossAttentionWeights, blockCache.TimeDiffs, block);
                     RotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, numHeads);
@@ -974,17 +1012,17 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                             }
                         }
 
-                        // Route decay gradients for price-context keys into ContextTypeEmbeddingGrad[1].
-                        // dKeyEmb rows [numNewsContext .. numNewsContext+numPriceContext-1] correspond to
-                        // price memory entries; these were previously dropped, causing the price type
-                        // embedding gradient to be systematically underestimated.
-                        if (numPriceContext > 0)
+                        if (dPriceContextHidden != null)
                         {
                             for (int i = 0; i < numPriceContext; i++)
                             {
+                                int sourceRow = numNewsContext + i;
+
                                 for (int j = 0; j < embeddingDim; j++)
                                 {
-                                    _gradients.ContextTypeEmbeddingGrad[1, j] += dKeyEmb[numNewsContext + i, j];
+                                    float grad = dKeyEmb[sourceRow, j];
+                                    dPriceContextHidden[i, j] += grad;
+                                    _gradients.ContextTypeEmbeddingGrad[1, j] += grad;
                                 }
                             }
                         }
@@ -1020,13 +1058,17 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         }
                     }
 
-                    if (numPriceContext > 0)
+                    if (dPriceContextHidden != null)
                     {
                         for (int i = 0; i < numPriceContext; i++)
                         {
+                            int sourceRow = numNewsContext + i;
+
                             for (int j = 0; j < embeddingDim; j++)
                             {
-                                _gradients.ContextTypeEmbeddingGrad[1, j] += dCtxFromK[numNewsContext + i, j] + dCtxFromV[numNewsContext + i, j];
+                                float grad = dCtxFromK[sourceRow, j] + dCtxFromV[sourceRow, j];
+                                dPriceContextHidden[i, j] += grad;
+                                _gradients.ContextTypeEmbeddingGrad[1, j] += grad;
                             }
                         }
                     }
@@ -1080,7 +1122,15 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 }
             }
 
-            return dNewsHidden;
+            return (dNewsHidden, dPriceContextHidden);
+        }
+
+        private void BackpropPriceContextEncoder(float[,] dPriceContextHidden, MultimodalForwardCache encoderCache)
+        {
+            if (dPriceContextHidden == null || encoderCache == null || encoderCache.PriceFinalHidden == null)
+                return;
+
+            BackpropPriceDecoder(dPriceContextHidden, encoderCache, hasContext: false);
         }
 
         private (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttn(float[,] Q, float[,] K, float[,] V, float[,] dOutput, float[][,] attnW, float[,] timeDiffs, TacamtBlock block)
@@ -1747,6 +1797,50 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
 
             return (weights, biases);
+        }
+        private void BackpropLinearProjectionWithOptionalRows(
+    float[,] input,
+    float[,] dOutput,
+    float[,] weights,
+    float[,] dWeights,
+    float[] dBias,
+    float[,] dInput,
+    bool[] includeRows)
+        {
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+            int outputDim = dOutput.GetLength(1);
+
+            if (dOutput.GetLength(0) != rows)
+                throw new ArgumentException("dOutput row count must match input row count.", nameof(dOutput));
+            if (weights.GetLength(0) != outputDim || weights.GetLength(1) != inputDim)
+                throw new ArgumentException("weights shape must be [outputDim, inputDim].", nameof(weights));
+            if (dWeights.GetLength(0) != outputDim || dWeights.GetLength(1) != inputDim)
+                throw new ArgumentException("dWeights shape must be [outputDim, inputDim].", nameof(dWeights));
+            if (dBias.Length != outputDim)
+                throw new ArgumentException("dBias length must match outputDim.", nameof(dBias));
+            if (dInput.GetLength(0) != rows || dInput.GetLength(1) != inputDim)
+                throw new ArgumentException("dInput shape must match input shape.", nameof(dInput));
+            if (includeRows != null && includeRows.Length != rows)
+                throw new ArgumentException("includeRows length must match row count.", nameof(includeRows));
+
+            for (int i = 0; i < rows; i++)
+            {
+                if (includeRows != null && !includeRows[i])
+                    continue;
+
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float grad = dOutput[i, o];
+                    dBias[o] += grad;
+
+                    for (int k = 0; k < inputDim; k++)
+                    {
+                        dWeights[o, k] += grad * input[i, k];
+                        dInput[i, k] += grad * weights[o, k];
+                    }
+                }
+            }
         }
 
         private void AccumulateLiveGradientsInto(

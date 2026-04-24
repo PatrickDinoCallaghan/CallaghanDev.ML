@@ -25,6 +25,13 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public float[,] CrossResidualInput { get; set; }
         public LayerNormCache LNCrossCache { get; set; }
         public float[,] NormedCross { get; set; }
+        // One value per query row.
+        // true  = this query row had at least one temporally valid context key.
+        // false = all context keys were masked for this query row.
+        //
+        // This is needed so the forward/backward paths can suppress cross-attention
+        // projection bias and projection gradients on rows where every context key is future-masked.
+        public bool[] CrossAttentionHasValidKey { get; set; }
 
         // Time decay
         public float[,] TimeDiffs { get; set; }
@@ -130,7 +137,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public List<LayerNormCache> TextLN1Caches { get; set; }
         public List<LayerNormCache> TextLN2Caches { get; set; }
         public List<float[,]> TextFFNOutputs { get; set; }
-       public List<float[,]> TextFFNInputs { get; set; }
+        public List<float[,]> TextFFNInputs { get; set; }
         public float[,] TextFinalHidden { get; set; }
 
         // Multi-story
@@ -148,6 +155,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public int NumNewsContext { get; set; } = 0;
         public int NumPriceContext { get; set; } = 0;
         public float[,] PriceContextHidden { get; set; }
+        public MultimodalForwardCache PriceContextEncoderCache { get; set; }
         public void Reset()
         {
             // Text tensors
@@ -184,6 +192,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             PriceContinuousInput = null;
             PriceFinalHidden = null;
             PriceContextHidden = null;
+
+            PriceContextEncoderCache?.Reset();
+            PriceContextEncoderCache = null;
 
             NumNewsContext = 0;
             NumPriceContext = 0;

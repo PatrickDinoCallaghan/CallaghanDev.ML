@@ -54,24 +54,26 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         public void Train(int[][] textSequences, float[][,] priceInputs, float[][,] priceTargets, float[][] confidenceTargets = null)
         {
-            int totalSamples = textSequences.Length;
+            int totalSamples = ValidateDatasetAndGetCount(textSequences, priceInputs, priceTargets, confidenceTargets);
 
-            if (priceInputs.Length != totalSamples || priceTargets.Length != totalSamples)
-            {
-                throw new ArgumentException("All input arrays must have the same number of samples.");
-            }
+            if (textSequences == null)
+                textSequences = new int[totalSamples][];
+
+            if (_trainConfig.BatchSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(_trainConfig.BatchSize), "BatchSize must be greater than zero.");
+
+            if (_trainConfig.Epochs <= 0 || totalSamples == 0)
+                return;
 
             float currentLR = _trainConfig.LearningRate;
 
             for (int epoch = 0; epoch < _trainConfig.Epochs; epoch++)
             {
                 if (_trainConfig.Verbose)
-                {
                     Console.WriteLine($"\n=== Epoch {epoch + 1}/{_trainConfig.Epochs} ===");
-                }
 
                 var shuffled = Enumerable.Range(0, totalSamples).OrderBy(_ => _random.Next()).ToArray();
-                float epochLoss = 0;
+                float epochLoss = 0f;
                 int numBatches = 0;
 
                 for (int i = 0; i < shuffled.Length; i += _trainConfig.BatchSize)
@@ -84,38 +86,43 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     numBatches++;
 
                     if (_trainConfig.Verbose && numBatches % 10 == 0)
-                    {
                         Console.WriteLine($"  Batch {numBatches}: Loss = {batchLoss:F6}");
-                    }
                 }
 
-                float avgLoss = numBatches > 0 ? epochLoss / numBatches : 0;
                 if (_trainConfig.Verbose)
                 {
+                    float avgLoss = numBatches > 0 ? epochLoss / numBatches : 0f;
                     Console.WriteLine($"  Epoch {epoch + 1} Average Loss: {avgLoss:F6}");
                 }
 
                 if (_trainConfig.UseLearningRateDecay)
                 {
                     currentLR *= _trainConfig.LearningRateDecay;
+
                     if (_trainConfig.Verbose)
-                    {
                         Console.WriteLine($"  Learning rate: {currentLR:F8}");
-                    }
                 }
             }
         }
-
         public float Validate(int[][] textSequences, float[][,] priceInputs, float[][,] priceTargets, float[][] confidenceTargets = null)
         {
-            float totalLoss = 0;
-            int count = 0;
+            int totalSamples = ValidateDatasetAndGetCount(textSequences, priceInputs, priceTargets, confidenceTargets);
 
-            for (int idx = 0; idx < textSequences.Length; idx++)
+            if (textSequences == null)
+                textSequences = new int[totalSamples][];
+
+            float totalMse = 0f;
+            int timestepCount = 0;
+
+            float totalConfidenceLoss = 0f;
+            int confidenceCount = 0;
+
+            for (int idx = 0; idx < totalSamples; idx++)
             {
                 var priceSeq = priceInputs[idx];
                 int seqLen = priceSeq.GetLength(0);
-                if (seqLen < 2) continue;
+                if (seqLen < 2)
+                    continue;
 
                 var inputSlice = SliceRows(priceSeq, 0, seqLen - 1);
                 var targetSlice = SliceRows(priceTargets[idx], 1, seqLen);
@@ -128,37 +135,63 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     for (int j = 0; j < _config.Output.OutputDim; j++)
                     {
                         float diff = predictions[t, j] - targetSlice[t, j];
-                        totalLoss += diff * diff;
+                        totalMse += diff * diff;
                     }
-                    count++;
+
+                    timestepCount++;
+                }
+
+                // Only include confidence validation when explicit confidence labels are provided.
+                if (_config.Output.UseConfidenceHead && confidenceTargets != null && confidenceTargets[idx] != null && confidence != null)
+                {
+                    for (int t = 0; t < effectiveLen; t++)
+                    {
+                        float target = Math.Clamp(confidenceTargets[idx][t + 1], 0f, 1f);
+                        float pred = Math.Clamp(confidence[t, 0], 1e-7f, 1.0f - 1e-7f);
+                        totalConfidenceLoss -= target * MathF.Log(pred) + (1f - target) * MathF.Log(1f - pred);
+                        confidenceCount++;
+                    }
                 }
             }
 
-            return count > 0 ? totalLoss / (count * _config.Output.OutputDim) : 0;
-        }
+            if (timestepCount == 0)
+                return 0f;
 
-        private float TrainBatch(int[] batchIndices, int[][] allText, float[][,] allPriceInputs, float[][,] allPriceTargets, float[][] allConfTargets, float learningRate)
+            float mse = totalMse / (timestepCount * _config.Output.OutputDim);
+
+            if (confidenceCount > 0)
+                mse += _trainConfig.ConfidenceLossWeight * (totalConfidenceLoss / confidenceCount);
+
+            return mse;
+        }
+        private float TrainBatch(
+       int[] batchIndices,
+       int[][] allText,
+       float[][,] allPriceInputs,
+       float[][,] allPriceTargets,
+       float[][] allConfTargets,
+       float learningRate)
         {
             ZeroAllGradients();
-            float totalLoss = 0;
+
+            float totalLoss = 0f;
             int validCount = 0;
 
             foreach (int idx in batchIndices)
             {
-                var textTokens = allText[idx];
+                var textTokens = allText == null ? null : allText[idx];
                 var priceSeq = allPriceInputs[idx];
                 int seqLen = priceSeq.GetLength(0);
-                if (seqLen < 2) continue;
 
-                // Slice: input[0..N-2], target[1..N-1]
+                if (seqLen < 2)
+                    continue;
+
                 var inputSlice = SliceRows(priceSeq, 0, seqLen - 1);
                 var targetSlice = SliceRows(allPriceTargets[idx], 1, seqLen);
 
                 float[] confTargetSlice = null;
                 if (allConfTargets != null && allConfTargets[idx] != null)
-                {
-                    confTargetSlice = allConfTargets[idx].Skip(1).Take(seqLen - 1).ToArray();
-                }
+                    confTargetSlice = SliceConfidenceTargets(allConfTargets[idx], 1, seqLen);
 
                 try
                 {
@@ -166,44 +199,36 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     var (predictions, confidence) = _model.ForwardWithCache(textTokens, inputSlice, cache);
 
                     if (!IsFinite(predictions) || (confidence != null && !IsFinite(confidence)))
-                    {
-                        continue;
-                    }
+                        throw new InvalidOperationException($"Non-finite forward output for sample {idx}.");
 
                     float loss = BackwardPass(predictions, confidence, targetSlice, confTargetSlice, cache);
 
-                    if (float.IsNaN(loss) || float.IsInfinity(loss))
-                    {
-                        continue;
-                    }
                     if (!float.IsFinite(loss))
-                    {
-                        ZeroAllGradients();
-                        return 0f;
-                    }
+                        throw new InvalidOperationException($"Non-finite loss for sample {idx}: {loss}.");
 
                     totalLoss += loss;
-
                     validCount++;
                 }
                 catch (Exception ex)
                 {
                     ZeroAllGradients();
-                    if (_trainConfig.Verbose)
-                    {
-                        Console.WriteLine($"  WARNING: Training error on sample {idx}: {ex.Message}");
-                    }
-                    //Dont train this batch at all
-                    return 0f; 
+                    throw new InvalidOperationException($"Training failed on sample index {idx}.", ex);
                 }
             }
 
-            if (validCount == 0) return 0f;
+            if (validCount == 0)
+                return 0f;
 
-            float invCount = 1.0f / validCount;
-            ScaleAllGradients(invCount);
+            ScaleAllGradients(1.0f / validCount);
 
-            if (_trainConfig.UseGradientClipping)
+            float gradNorm = ComputeGradientNorm();
+            if (!float.IsFinite(gradNorm))
+            {
+                ZeroAllGradients();
+                throw new InvalidOperationException($"Non-finite gradient norm before update: {gradNorm}.");
+            }
+
+            if (_trainConfig.UseGradientClipping && _trainConfig.GradientClipThreshold > 0f)
                 ClipGradients(_trainConfig.GradientClipThreshold);
 
             UpdateAllParameters(learningRate);
@@ -230,13 +255,25 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private float BackwardPass(float[,] predictions, float[,] confidence, float[,] targets, float[] confTargets, MultimodalForwardCache cache)
         {
+            if (predictions == null)
+                throw new ArgumentNullException(nameof(predictions));
+            if (targets == null)
+                throw new ArgumentNullException(nameof(targets));
+            if (cache == null)
+                throw new ArgumentNullException(nameof(cache));
+
             int seqLen = predictions.GetLength(0);
             int outputDim = _config.Output.OutputDim;
             int embDim = _config.Price.EmbeddingDim;
 
-            // Compute MSE loss and gradient.
-            float mseLoss = 0;
+            if (targets.GetLength(0) < seqLen)
+                throw new ArgumentException($"Targets have {targets.GetLength(0)} rows but predictions have {seqLen} rows.", nameof(targets));
+            if (targets.GetLength(1) < outputDim)
+                throw new ArgumentException($"Targets have {targets.GetLength(1)} columns but output dim is {outputDim}.", nameof(targets));
+
+            float mseLoss = 0f;
             var dPredictions = new float[seqLen, outputDim];
+            float mseGradScale = 2.0f / (seqLen * outputDim);
 
             for (int t = 0; t < seqLen; t++)
             {
@@ -244,72 +281,86 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 {
                     float diff = predictions[t, j] - targets[t, j];
                     mseLoss += diff * diff;
-                    dPredictions[t, j] = 2.0f * diff;// / (seqLen * outputDim);
+                    dPredictions[t, j] = diff * mseGradScale;
                 }
             }
+
             mseLoss /= (seqLen * outputDim);
 
-            // Compute confidence loss (BCE) and gradient
-            float confLoss = 0;
+            var dHidden = _accel.BackpropOutputProjection(
+                dPredictions,
+                cache.PriceFinalHidden,
+                _model.OutputProjection,
+                _gradients.OutputProjectionGrad,
+                _gradients.OutputBiasGrad,
+                seqLen,
+                outputDim,
+                embDim);
 
-            // Backprop through output projection: dHidden += dPredictions at OutputProjection
-            var dHidden = _accel.BackpropOutputProjection(dPredictions, cache.PriceFinalHidden, _model.OutputProjection, _gradients.OutputProjectionGrad, _gradients.OutputBiasGrad, seqLen, outputDim, embDim);
+            float confLoss = 0f;
 
-            if (_config.Output.UseConfidenceHead)
+            if (_config.Output.UseConfidenceHead && _trainConfig.ConfidenceLossWeight > 0f)
             {
+                if (confidence == null)
+                    throw new InvalidOperationException("Confidence head is enabled but confidence output is null.");
+                if (confidence.GetLength(0) < seqLen)
+                    throw new ArgumentException($"Confidence has {confidence.GetLength(0)} rows but predictions have {seqLen} rows.", nameof(confidence));
+                if (confTargets != null && confTargets.Length < seqLen)
+                    throw new ArgumentException($"Confidence targets length {confTargets.Length} is shorter than sequence length {seqLen}.", nameof(confTargets));
+
+                float confidenceGradScale = _trainConfig.ConfidenceLossWeight / seqLen;
+
                 for (int t = 0; t < seqLen; t++)
                 {
-                    float pred = confidence[t, 0];
+                    float rawPred = confidence[t, 0];
+                    float clampedPred = Math.Clamp(rawPred, 1e-7f, 1.0f - 1e-7f);
                     float target;
 
                     if (confTargets != null)
                     {
-                        target = confTargets[t];
+                        target = Math.Clamp(confTargets[t], 0f, 1f);
                     }
                     else
                     {
-                        // Auto-generate confidence target: low error => high confidence
-                        float errMag = 0;
+                        float errMag = 0f;
                         for (int j = 0; j < outputDim; j++)
                         {
                             float diff = predictions[t, j] - targets[t, j];
                             errMag += diff * diff;
                         }
+
                         errMag = MathF.Sqrt(errMag / outputDim);
-                        target = MathF.Exp(-errMag * 5.0f); // exponential decay
+                        target = MathF.Exp(-errMag * 5.0f);
                     }
 
-                    // BCE loss: -[y*log(p) + (1-y)*log(1-p)]
-                    float clampedPred = Math.Clamp(pred, 1e-7f, 1.0f - 1e-7f);
-                    confLoss -= target * MathF.Log(clampedPred) + (1 - target) * MathF.Log(1 - clampedPred);
+                    confLoss -= target * MathF.Log(clampedPred) + (1f - target) * MathF.Log(1f - clampedPred);
 
-                    // BCE gradient through sigmoid: dL/dlogit = pred - target
-                   // float dLogit = (pred - target) * _trainConfig.ConfidenceLossWeight / seqLen;
-                    float dLogit = (pred - target) / seqLen;
+                    // BCE-with-sigmoid derivative: sigmoid(logit) - target.
+                    // Critical fix: multiply by ConfidenceLossWeight, since totalLoss does.
+                    float dLogit = (rawPred - target) * confidenceGradScale;
+
                     for (int e = 0; e < embDim; e++)
                     {
                         _gradients.ConfidenceProjectionGrad[0, e] += dLogit * cache.PriceFinalHidden[t, e];
                         dHidden[t, e] += dLogit * _model.ConfidenceProjection[0, e];
                     }
+
                     _gradients.ConfidenceBiasGrad[0] += dLogit;
                 }
+
                 confLoss /= seqLen;
             }
 
-            float totalLoss = mseLoss + _trainConfig.ConfidenceLossWeight * confLoss;
+            float totalLoss = mseLoss + (_config.Output.UseConfidenceHead ? _trainConfig.ConfidenceLossWeight * confLoss : 0f);
 
             bool hasText = cache.TextFinalHidden != null;
             var dTextHidden = BackpropPriceDecoder(dHidden, cache, hasText);
 
-            // ---- Backprop through text encoder (unless frozen or no text) ----
             if (!_config.Text.Freeze && hasText && dTextHidden != null)
-            {
                 BackpropTextEncoder(dTextHidden, cache);
-            }
 
             return totalLoss;
         }
-
         private float[,] BackpropPriceDecoder(float[,] dOut, MultimodalForwardCache cache, bool hasText)
         {
             int embDim = _config.Price.EmbeddingDim;
@@ -816,5 +867,124 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             return _accel.SliceRows(matrix, startRow, endRow);
         }
 
+
+        private int ValidateDatasetAndGetCount(
+    int[][] textSequences,
+    float[][,] priceInputs,
+    float[][,] priceTargets,
+    float[][] confidenceTargets)
+        {
+            if (priceInputs == null)
+                throw new ArgumentNullException(nameof(priceInputs));
+            if (priceTargets == null)
+                throw new ArgumentNullException(nameof(priceTargets));
+
+            int totalSamples = priceInputs.Length;
+
+            if (priceTargets.Length != totalSamples)
+                throw new ArgumentException("priceInputs and priceTargets must contain the same number of samples.", nameof(priceTargets));
+
+            if (textSequences != null && textSequences.Length != totalSamples)
+                throw new ArgumentException("textSequences must be null or contain the same number of samples as priceInputs.", nameof(textSequences));
+
+            if (confidenceTargets != null && confidenceTargets.Length != totalSamples)
+                throw new ArgumentException("confidenceTargets must be null or contain the same number of samples as priceInputs.", nameof(confidenceTargets));
+
+            for (int i = 0; i < totalSamples; i++)
+            {
+                ValidateSampleOrThrow(
+                    i,
+                    textSequences == null ? null : textSequences[i],
+                    priceInputs[i],
+                    priceTargets[i],
+                    confidenceTargets == null ? null : confidenceTargets[i]);
+            }
+
+            return totalSamples;
+        }
+
+        private void ValidateSampleOrThrow(int sampleIndex, int[] textTokens, float[,] priceInput, float[,] priceTarget, float[] confidenceTarget)
+        {
+            if (priceInput == null)
+                throw new ArgumentNullException(nameof(priceInput), $"priceInputs[{sampleIndex}] is null.");
+            if (priceTarget == null)
+                throw new ArgumentNullException(nameof(priceTarget), $"priceTargets[{sampleIndex}] is null.");
+
+            int priceRows = priceInput.GetLength(0);
+            int priceFeatures = priceInput.GetLength(1);
+
+            if (priceFeatures != _config.Price.InputFeatureDim)
+            {
+                throw new ArgumentException(
+                    $"priceInputs[{sampleIndex}] has feature dim {priceFeatures}; expected {_config.Price.InputFeatureDim}.",
+                    nameof(priceInput));
+            }
+
+            // Training slices price input to [0..N-2], so the actual model input length is N - 1.
+            if (priceRows > 1 && priceRows - 1 > _config.Price.MaxSequenceLength)
+            {
+                throw new ArgumentException(
+                    $"priceInputs[{sampleIndex}] produces model input length {priceRows - 1}; max is {_config.Price.MaxSequenceLength}.",
+                    nameof(priceInput));
+            }
+
+            if (priceTarget.GetLength(0) < priceRows)
+            {
+                throw new ArgumentException(
+                    $"priceTargets[{sampleIndex}] must have at least {priceRows} rows for next-step slicing.",
+                    nameof(priceTarget));
+            }
+
+            if (priceTarget.GetLength(1) < _config.Output.OutputDim)
+            {
+                throw new ArgumentException(
+                    $"priceTargets[{sampleIndex}] has output dim {priceTarget.GetLength(1)}; expected at least {_config.Output.OutputDim}.",
+                    nameof(priceTarget));
+            }
+
+            if (confidenceTarget != null && confidenceTarget.Length < priceRows)
+            {
+                throw new ArgumentException(
+                    $"confidenceTargets[{sampleIndex}] must have at least {priceRows} values for next-step slicing.",
+                    nameof(confidenceTarget));
+            }
+
+            if (textTokens != null)
+            {
+                if (textTokens.Length > _config.Text.MaxSequenceLength)
+                {
+                    throw new ArgumentException(
+                        $"textSequences[{sampleIndex}] length {textTokens.Length} exceeds max {_config.Text.MaxSequenceLength}.",
+                        nameof(textTokens));
+                }
+
+                for (int i = 0; i < textTokens.Length; i++)
+                {
+                    int tokenId = textTokens[i];
+                    if ((uint)tokenId >= (uint)_config.Text.VocabSize)
+                    {
+                        throw new ArgumentOutOfRangeException(
+                            nameof(textTokens),
+                            $"textSequences[{sampleIndex}][{i}] token id {tokenId} is outside vocab size {_config.Text.VocabSize}.");
+                    }
+                }
+            }
+        }
+
+        private static float[] SliceConfidenceTargets(float[] source, int startRow, int endRow)
+        {
+            if (source == null)
+                return null;
+
+            int count = endRow - startRow;
+            if (count < 0)
+                throw new ArgumentException("endRow must be greater than or equal to startRow.");
+            if (startRow < 0 || endRow > source.Length)
+                throw new ArgumentOutOfRangeException(nameof(source), $"Cannot slice confidence targets [{startRow}, {endRow}) from length {source.Length}.");
+
+            var result = new float[count];
+            Array.Copy(source, startRow, result, 0, count);
+            return result;
+        }
     }
 }

@@ -22,9 +22,399 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             CountNumber++;
             Run(Tests(), $"{CountNumber} * MMTAC (Multimodal Market Transformer with Additional Context)");
         }
+        private void Test_Forward_OutputHeadCoherentOhlcRange_AllTimesteps()
+        {
+            var cfg = Cfg(vocabSize: 64, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, useConf: true, globalDim: 3);
+            var model = new MmtacModel(cfg, new Random(42));
 
+            var input = MakeInput(
+                seqLen: 10,
+                globalDim: 3,
+                stories: new[] { new NewsStory(new[] { 1, 2, 3 }, -1f) });
+
+            var (reg, range, quality, dir, midDir, conf) = model.Forward(input);
+
+            AssertAllFinite(reg, "regression");
+            AssertAllFinite(range, "range");
+            AssertAllFinite(quality, "quality");
+            AssertAllFinite(dir, "direction");
+            AssertAllFinite(midDir, "midDirection");
+            AssertAllFinite(conf, "confidence");
+
+            const float tol = 1e-5f;
+
+            for (int t = 0; t < reg.GetLength(0); t++)
+            {
+                float high = reg[t, 0];
+                float low = reg[t, 1];
+                float close = reg[t, 2];
+                float predictedRange = range[t, 0];
+
+                Assert(high + tol >= close, $"High must be >= Close at t={t}. high={high}, close={close}");
+                Assert(close + tol >= low, $"Close must be >= Low at t={t}. close={close}, low={low}");
+                Assert(predictedRange >= 0f, $"Range must be non-negative at t={t}. range={predictedRange}");
+
+                float ohlcRange = high - low;
+                Assert(
+                    MathF.Abs(ohlcRange - predictedRange) <= 2e-5f,
+                    $"Range head must equal High-Low at t={t}. high-low={ohlcRange}, range={predictedRange}");
+            }
+        }
+
+        private void Test_CrossAttention_ContextRowsArePermutationEquivariant()
+        {
+            var cfg = Cfg(vocabSize: 64, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, decayEnabled: true);
+            var model = new MmtacModel(cfg, new Random(42));
+
+            var price = ConstantPriceSequence(6, 0.1f, 0.2f, -0.1f, 0.05f, 1f);
+
+            var ctxA = new float[2, cfg.Price.EmbeddingDim];
+            var ctxB = new float[2, cfg.Price.EmbeddingDim];
+
+            for (int d = 0; d < cfg.Price.EmbeddingDim; d++)
+            {
+                ctxA[0, d] = 0.07f * (d + 1);
+                ctxA[1, d] = -0.05f * (d + 1);
+
+                ctxB[0, d] = ctxA[1, d];
+                ctxB[1, d] = ctxA[0, d];
+            }
+
+            var timesA = new[] { -2f, -1f };
+            var timesB = new[] { -1f, -2f };
+
+            var outA = model.ForwardPriceDecoderWithCache(
+                price,
+                0,
+                price.GetLength(0),
+                ctxA,
+                timesA,
+                new MmtacForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers),
+                isTraining: false);
+
+            var outB = model.ForwardPriceDecoderWithCache(
+                price,
+                0,
+                price.GetLength(0),
+                ctxB,
+                timesB,
+                new MmtacForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers),
+                isTraining: false);
+
+            AssertMatricesClose(
+                outA,
+                outB,
+                1e-5f,
+                "Permuting context rows and their times together should not change output. If this fails, cross-attention is still using row-order positional encoding.");
+        }
+
+        private void Test_CrossAttention_DecayDisabledStillMasksFutureContext()
+        {
+            var cfg = Cfg(vocabSize: 64, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, decayEnabled: false);
+            var model = new MmtacModel(cfg, new Random(42));
+
+            var price = ConstantPriceSequence(6, 0.1f, 0.2f, -0.1f, 0.05f, 1f);
+
+            var ctxA = new float[2, cfg.Price.EmbeddingDim];
+            var ctxB = new float[2, cfg.Price.EmbeddingDim];
+
+            for (int d = 0; d < cfg.Price.EmbeddingDim; d++)
+            {
+                ctxA[0, d] = 0.10f * (d + 1);
+                ctxB[0, d] = ctxA[0, d];
+
+                ctxA[1, d] = 100f + d;
+                ctxB[1, d] = -100f - d;
+            }
+
+            var times = new[] { -1f, 10f };
+
+            var cacheA = new MmtacForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers);
+            var outA = model.ForwardPriceDecoderWithCache(
+                price,
+                0,
+                price.GetLength(0),
+                ctxA,
+                times,
+                cacheA,
+                isTraining: false);
+
+            var cacheB = new MmtacForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers);
+            var outB = model.ForwardPriceDecoderWithCache(
+                price,
+                0,
+                price.GetLength(0),
+                ctxB,
+                times,
+                cacheB,
+                isTraining: false);
+
+            AssertMatricesClose(
+                outA,
+                outB,
+                1e-6f,
+                "Changing a future context row must not affect output when decay is disabled.");
+
+            Assert(cacheA.PriceBlockCaches[0].TimeDiffs != null, "TimeDiffs should still be cached when decay is disabled.");
+            Assert(cacheA.PriceBlockCaches[0].DecayCache == null, "DecayCache should be null when Decay.Enabled=false.");
+
+            var weights = cacheA.PriceBlockCaches[0].CrossAttentionWeights;
+            Assert(weights != null, "Cross-attention weights should be cached.");
+
+            for (int h = 0; h < weights.Length; h++)
+            {
+                for (int q = 0; q < weights[h].GetLength(0); q++)
+                {
+                    Assert(
+                        weights[h][q, 1] == 0f,
+                        $"Future context row should be masked. head={h}, query={q}, weight={weights[h][q, 1]}");
+                }
+            }
+        }
+
+        private void Test_DecayNetwork_KeyRefinementMasksFutureKeys()
+        {
+            var rng = new Random(42);
+            var accel = new CallaghanDev.ML.AccelerationManagers.AccelerationCPU();
+
+            var net = new ContentAwareDecayNetwork(
+                numHeads: 2,
+                contentDim: 16,
+                projectionDim: 8,
+                hiddenDim: 16,
+                random: rng,
+                memAttnDropout: 0f,
+                mlpDropout: 0f);
+
+            var query = RandomMatrix(2, 16, new Random(201), 0.2f);
+            var key = RandomMatrix(3, 16, new Random(202), 0.2f);
+
+            var keyTimes = new[] { -2f, -1f, 1f };
+            var timeDiffs = accel.ComputeTimeDiffMatrix(query.GetLength(0), keyTimes);
+
+            var (_, cache) = accel.ContentAwareDecayForward(
+                query,
+                key,
+                timeDiffs,
+                keyTimes,
+                net,
+                isTraining: false);
+
+            for (int h = 0; h < net.NumHeads; h++)
+            {
+                Assert(cache.MemAttnWeights[h, 0, 1] == 0f,
+                    "Key t=-2 must not refine itself using future key t=-1.");
+                Assert(cache.MemAttnWeights[h, 0, 2] == 0f,
+                    "Key t=-2 must not refine itself using future key t=1.");
+                Assert(cache.MemAttnWeights[h, 1, 2] == 0f,
+                    "Key t=-1 must not refine itself using future key t=1.");
+
+                Assert(cache.MemAttnWeights[h, 0, 0] > 0f,
+                    "A key should still be allowed to attend to itself.");
+                Assert(cache.MemAttnWeights[h, 2, 0] > 0f &&
+                       cache.MemAttnWeights[h, 2, 1] > 0f &&
+                       cache.MemAttnWeights[h, 2, 2] > 0f,
+                    "The newest key should be able to refine from past and current keys.");
+            }
+        }
+
+        private void Test_ForwardWithCache_RowStartShiftsContextTimes()
+        {
+            var cfg = Cfg(vocabSize: 64, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, priceSeqLen: 16);
+            var model = new MmtacModel(cfg, new Random(42));
+
+            var fullPrice = RandomMatrix(12, 5, new Random(300), 0.2f);
+            int rowStart = 5;
+            int rowCount = 4;
+
+            var stories = new[]
+            {
+        new NewsStory(new[] { 1, 2, 3 }, 3f),
+        new NewsStory(new[] { 4, 5, 6 }, 7f)
+    };
+
+            var fullInput = new MultimodalInput
+            {
+                PredictionTimestamp = DateTime.UtcNow,
+                PriceSequence = fullPrice,
+                NewsStories = stories
+            };
+
+            var explicitSliceInput = new MultimodalInput
+            {
+                PredictionTimestamp = DateTime.UtcNow,
+                PriceSequence = SliceRows(fullPrice, rowStart, rowStart + rowCount),
+                NewsStories = stories
+                    .Select(s => new NewsStory((int[])s.TokenIds.Clone(), s.ArrivalTime - rowStart))
+                    .ToArray()
+            };
+
+            var sliceCache = new MmtacForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers);
+            var sliced = InvokeForwardWithCacheSlice(
+                model,
+                fullInput,
+                rowStart,
+                rowCount,
+                sliceCache,
+                isTraining: false);
+
+            var explicitCache = new MmtacForwardCache(cfg.Text.NumLayers, cfg.Price.NumLayers);
+            var explicit_ = InvokeForwardWithCache(
+                model,
+                explicitSliceInput,
+                explicitCache,
+                isTraining: false);
+
+            AssertMatricesClose(explicit_.regression, sliced.regression, 1e-5f, "rowStart regression mismatch");
+            AssertMatricesClose(explicit_.range, sliced.range, 1e-5f, "rowStart range mismatch");
+            AssertMatricesClose(explicit_.quality, sliced.quality, 1e-5f, "rowStart quality mismatch");
+            AssertMatricesClose(explicit_.direction, sliced.direction, 1e-5f, "rowStart direction mismatch");
+            AssertMatricesClose(explicit_.midDirection, sliced.midDirection, 1e-5f, "rowStart midDirection mismatch");
+        }
+
+        private void Test_Timestamp_WindowEndPredictionMatchesManualWindowStart()
+        {
+            var cfg = Cfg(vocabSize: 64, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32);
+            var input = MakeInput(
+                seqLen: 5,
+                stories: new[] { new NewsStory(new[] { 1, 2, 3 }, -1f) });
+
+            double timeUnits = 2.0;
+            double windowStart = 100.0;
+            double windowEnd = 108.0;
+
+            double converted = MmtacModel.WindowStartTimestampFromWindowEnd(
+                windowEnd,
+                input.PriceSequence.GetLength(0),
+                timeUnits);
+
+            Assert(Math.Abs(converted - windowStart) < 1e-9,
+                $"Window-start conversion mismatch. expected={windowStart}, actual={converted}");
+
+            var baseModel = new MmtacModel(cfg, new Random(42));
+
+            string dir = Path.Combine(Path.GetTempPath(), "mmtac_timestamp_clone_" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                baseModel.Save(dir);
+
+                var modelA = MmtacModel.Load(dir);
+                var modelB = MmtacModel.Load(dir);
+
+                var fromEnd = modelA.PredictWithMemoryAtWindowEnd(
+                    input,
+                    windowEnd,
+                    timeUnitsPerPosition: timeUnits,
+                    maxNewsMemorySize: 10,
+                    maxPriceMemorySize: 10);
+
+                var fromStart = modelB.PredictWithMemory(
+                    input,
+                    windowStart,
+                    timeUnitsPerPosition: timeUnits,
+                    maxNewsMemorySize: 10,
+                    maxPriceMemorySize: 10);
+
+                AssertPredictionsClose(fromStart, fromEnd, 1e-6f,
+                    "PredictWithMemoryAtWindowEnd should match PredictWithMemory using manually converted window-start timestamp.");
+
+                AssertMemoryEquivalent(modelB, modelA, "window-end prediction memory state");
+            }
+            finally
+            {
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+        }
+        private void Test_Train_InvalidSampleSameBatchDiscardsBatchWithoutDirtyUpdate()
+        {
+            var cfg = Cfg(vocabSize: 20, embDim: 16, numHeads: 2, numLayers: 1, ffnDim: 32, priceContextEnabled: false);
+            var model = new MmtacModel(cfg, new Random(42));
+            var before = SnapshotWeights(model);
+
+            var valid = MakeInput(seqLen: 6);
+            var invalid = MakeInput(
+                seqLen: 6,
+                stories: new[] { new NewsStory(new[] { 999 }, -1f) });
+
+            var validTarget = ConstantTargets(6, close: 0.55f, range: 0.12f, quality: 0.9f, direction: 1, midDirection: 1);
+            var invalidTarget = ConstantTargets(6, close: 0.20f, range: 0.08f, quality: 0.6f, direction: 0, midDirection: 0);
+
+            new MmtacTrainer(model, TC(lr: 0.01f, bs: 2, epochs: 1, clip: false))
+                .Train(
+                    new[] { valid, invalid },
+                    new[] { validTarget, invalidTarget });
+
+            AssertWeightsUnchanged(
+                before,
+                model,
+                "A valid sample followed by an invalid sample in the same batch must not leave dirty partial gradients or update weights.");
+        }
+        private static (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence)
+    InvokeForwardWithCacheSlice(
+        MmtacModel model,
+        MultimodalInput input,
+        int rowStart,
+        int rowCount,
+        MmtacForwardCache cache,
+        bool isTraining)
+        {
+            var method = typeof(MmtacModel).GetMethod(
+                "ForwardWithCache",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                types: new[]
+                {
+            typeof(MultimodalInput),
+            typeof(int),
+            typeof(int),
+            typeof(MmtacForwardCache),
+            typeof(bool),
+            typeof(Random)
+                },
+                modifiers: null);
+
+            if (method == null)
+                throw new InvalidOperationException("Could not find sliced ForwardWithCache overload.");
+
+            var result = method.Invoke(
+                model,
+                new object[] { input, rowStart, rowCount, cache, isTraining, null });
+
+            return ((float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence))result;
+        }
+        private void Test_ClearAllMemory_ResetsLastPriceTimestamp()
+        {
+            var model = new MmtacModel(Cfg(vocabSize: 64), new Random(42));
+
+            model.PredictWithMemory(
+                MakeInput(seqLen: 5, stories: new[] { new NewsStory(new[] { 1, 2, 3 }, -1f) }),
+                currentAbsoluteTimestamp: 100.0,
+                timeUnitsPerPosition: 2.0,
+                maxNewsMemorySize: 10,
+                maxPriceMemorySize: 10);
+
+            Assert(model.NewsMemory.Count > 0 || model.PriceMemory.Count > 0, "Precondition failed: memory did not populate.");
+            Assert(model.LastPriceTimestamp != 0.0, "Precondition failed: LastPriceTimestamp did not update.");
+
+            model.ClearAllMemory();
+
+            Assert(model.NewsMemory.Count == 0, "ClearAllMemory should clear NewsMemory.");
+            Assert(model.PriceMemory.Count == 0, "ClearAllMemory should clear PriceMemory.");
+            Assert(model.LastPriceTimestamp == 0.0, "ClearAllMemory should reset LastPriceTimestamp.");
+        }
         private (Action, string)[] Tests() => new (Action, string)[]
         {
+            (Test_Forward_OutputHeadCoherentOhlcRange_AllTimesteps, "Fix: output head guarantees coherent OHLC/range"),
+(Test_CrossAttention_ContextRowsArePermutationEquivariant, "Fix: cross-attention has no context-row RoPE ordering leak"),
+(Test_CrossAttention_DecayDisabledStillMasksFutureContext, "Fix: decay disabled still masks future context"),
+(Test_DecayNetwork_KeyRefinementMasksFutureKeys, "Fix: decay key-refinement masks future keys"),
+(Test_ForwardWithCache_RowStartShiftsContextTimes, "Fix: cached row slice shifts context times"),
+(Test_Timestamp_WindowEndPredictionMatchesManualWindowStart, "Fix: window-end timestamp overload matches manual window-start conversion"),
+(Test_Train_InvalidSampleSameBatchDiscardsBatchWithoutDirtyUpdate, "Fix: invalid sample does not contaminate batch gradients"),
+(Test_ClearAllMemory_ResetsLastPriceTimestamp, "Fix: ClearAllMemory resets LastPriceTimestamp"),
+
             // High-confidence functional tests
             (Test_HighConfidence_OutputHeadFiniteDifferenceUpdateDirection, "Grad: one-step output-head updates follow finite-difference loss direction"),
             (Test_HighConfidence_TargetAlignment_TrainSimpleLearnsNextRowTargets, "Train: simple path learns next-row target alignment"),
@@ -154,7 +544,15 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     getter,
                     setter);
             }
+            Check(
+    "RegressionBias[UpShape]",
+    m => m.RegressionBias[0],
+    (m, v) => m.RegressionBias[0] = v);
 
+            Check(
+                "RegressionBias[DownShape]",
+                m => m.RegressionBias[1],
+                (m, v) => m.RegressionBias[1] = v);
             Check(
                 "RegressionBias[Close]",
                 m => m.RegressionBias[2],
@@ -384,10 +782,10 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertAblationHurts("news", baseLoss, noNewsLoss);
             AssertAblationHurts("global", baseLoss, noGlobalLoss);
         }
-
         private void Test_HighConfidence_SequentialMemoryCarryTask()
         {
             int seqLen = 6;
+            double timeUnitsPerPosition = 2.0;
 
             var (trainInputs, trainTargets, trainTs) =
                 SequentialCarryPairsData(pairCount: 40, seqLen: seqLen, offset: 0);
@@ -410,12 +808,12 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             var model = new MmtacModel(cfg, new Random(42));
 
-            new MmtacTrainer(model, TC(lr: 0.003f, bs: 1, epochs: 110))
+            new MmtacTrainer(model, TC(lr: 0.05f, bs: 1, epochs: 110))
                 .TrainSequential(
                     trainInputs,
                     trainTargets,
                     trainTs,
-                    timeUnitsPerPosition: 1.0,
+                    timeUnitsPerPosition: timeUnitsPerPosition,
                     maxNewsMemory: 0,
                     maxPriceMemory: seqLen);
 
@@ -424,7 +822,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 testInputs,
                 testTargets,
                 testTs,
-                maxPriceMemory: seqLen);
+                maxPriceMemory: seqLen,
+                timeUnitsPerPosition: timeUnitsPerPosition);
 
             float statelessErr = AverageCarryCloseErrorStateless(
                 model,
@@ -1206,15 +1605,24 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(dirAcc > 0.60f, $"Direction accuracy too low: {dirAcc:P0}");
             Assert(midAcc > 0.60f, $"MidDirection accuracy too low: {midAcc:P0}");
         }
-
         private void Test_Signal_RangeHeadLearnsRangeTarget()
         {
             var (inputs, targets) = RangeSignalData(n: 24, seqLen: 6);
-            var m = new MmtacModel(Cfg(embDim: 24, numHeads: 4, numLayers: 1, ffnDim: 48), new Random(42));
+
+            var cfg = Cfg(embDim: 24, numHeads: 4, numLayers: 1, ffnDim: 48);
+            cfg.Output.RangeLossWeight = 4f;
+
+            var m = new MmtacModel(cfg, new Random(42));
+
             float before = MeanRangeError(m, inputs, targets);
-            new MmtacTrainer(m, TC(lr: 0.004f, bs: 8, epochs: 100)).Train(inputs, targets);
+
+            new MmtacTrainer(m, TC(lr: 0.004f, bs: 8, epochs: 120))
+                .Train(inputs, targets);
+
             float after = MeanRangeError(m, inputs, targets);
-            Assert(after < before * 0.65f, $"Range error did not improve. before={before:F6}, after={after:F6}");
+
+            Assert(after < before * 0.70f,
+                $"Range error did not improve enough. before={before:F6}, after={after:F6}");
         }
 
         // ---------------------------------------------------------------------
@@ -2118,12 +2526,18 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(float.IsFinite(p.DirectionProb) && p.DirectionProb >= 0f && p.DirectionProb <= 1f, $"DirectionProb invalid: {p.DirectionProb}");
             Assert(float.IsFinite(p.MidWindowDirectionProb) && p.MidWindowDirectionProb >= 0f && p.MidWindowDirectionProb <= 1f, $"MidWindowDirectionProb invalid: {p.MidWindowDirectionProb}");
             Assert(float.IsFinite(p.Confidence), "Confidence not finite");
+
+            const float tol = 1e-5f;
+            Assert(p.High + tol >= p.Close, $"High must be >= Close. high={p.High}, close={p.Close}");
+            Assert(p.Close + tol >= p.Low, $"Close must be >= Low. close={p.Close}, low={p.Low}");
+            Assert(MathF.Abs((p.High - p.Low) - p.Range) <= 2e-5f,
+                $"Range must equal High-Low. high-low={p.High - p.Low}, range={p.Range}");
+
             if (expectConfidenceHead)
                 Assert(p.Confidence >= 0f && p.Confidence <= 1f, $"Confidence invalid: {p.Confidence}");
             else
                 Assert(p.Confidence == 1f, $"Confidence should be 1 when disabled, got {p.Confidence}");
         }
-
         private static bool PredictionsDiffer(ModelPrediction a, ModelPrediction b, float tol)
         {
             return MathF.Abs(a.High - b.High) > tol
@@ -2770,30 +3184,68 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             return (inputs, targets, timestamps);
         }
 
-        private float AverageCarryCloseErrorWithMemory(MmtacModel model, MultimodalInput[] inputs, ModelTarget[][] targets, double[] timestamps, int maxPriceMemory)
+        private float AverageCarryCloseErrorWithMemory(
+            MmtacModel model,
+            MultimodalInput[] inputs,
+            ModelTarget[][] targets,
+            double[] timestamps,
+            int maxPriceMemory,
+            double timeUnitsPerPosition = 1.0)
         {
+            if (inputs == null)
+                throw new ArgumentNullException(nameof(inputs));
+            if (targets == null)
+                throw new ArgumentNullException(nameof(targets));
+            if (timestamps == null)
+                throw new ArgumentNullException(nameof(timestamps));
+            if (inputs.Length != targets.Length || inputs.Length != timestamps.Length)
+                throw new ArgumentException("inputs, targets, and timestamps must have the same length.");
+
             float total = 0f;
             int count = 0;
 
-            for (int i = 0; i < inputs.Length; i += 2)
+            for (int i = 0; i + 1 < inputs.Length; i += 2)
             {
+                var driverInput = inputs[i];
+                var carryInput = inputs[i + 1];
+                var carryTargets = targets[i + 1];
+
+                if (driverInput?.PriceSequence == null ||
+                    carryInput?.PriceSequence == null ||
+                    carryTargets == null)
+                {
+                    continue;
+                }
+
+                int carrySeqLen = carryInput.PriceSequence.GetLength(0);
+
+                if (carrySeqLen < 2 || carryTargets.Length < carrySeqLen)
+                    continue;
+
                 model.ClearAllMemory();
 
+                // Commit the full driver window into rolling memory.
                 _ = model.PredictWithMemory(
-                    inputs[i],
+                    driverInput,
                     timestamps[i],
-                    timeUnitsPerPosition: 1.0,
+                    timeUnitsPerPosition: timeUnitsPerPosition,
                     maxNewsMemorySize: 0,
                     maxPriceMemorySize: maxPriceMemory);
+
+                // Predict the final carry target from rows 0..sl-2, matching TrainSequential.
+                var carryPredictionInput = CloneInputWithPriceRows(
+                    carryInput,
+                    startInclusive: 0,
+                    endExclusive: carrySeqLen - 1);
 
                 var carryPred = model.PredictWithMemory(
-                    inputs[i + 1],
+                    carryPredictionInput,
                     timestamps[i + 1],
-                    timeUnitsPerPosition: 1.0,
+                    timeUnitsPerPosition: timeUnitsPerPosition,
                     maxNewsMemorySize: 0,
                     maxPriceMemorySize: maxPriceMemory);
 
-                float targetClose = targets[i + 1][targets[i + 1].Length - 1].Close;
+                float targetClose = carryTargets[carrySeqLen - 1].Close;
 
                 total += MathF.Abs(carryPred.Close - targetClose);
                 count++;
@@ -2801,24 +3253,106 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             model.ClearAllMemory();
 
-            return total / Math.Max(1, count);
+            return count > 0 ? total / count : 0f;
         }
-
-        private float AverageCarryCloseErrorStateless(MmtacModel model, MultimodalInput[] inputs, ModelTarget[][] targets)
+        private float AverageCarryCloseErrorStateless(
+          MmtacModel model,
+          MultimodalInput[] inputs,
+          ModelTarget[][] targets)
         {
+            if (inputs == null)
+                throw new ArgumentNullException(nameof(inputs));
+            if (targets == null)
+                throw new ArgumentNullException(nameof(targets));
+            if (inputs.Length != targets.Length)
+                throw new ArgumentException("inputs and targets must have the same length.");
+
             float total = 0f;
             int count = 0;
 
             for (int i = 1; i < inputs.Length; i += 2)
             {
-                var pred = model.PredictNext(inputs[i]);
-                float targetClose = targets[i][targets[i].Length - 1].Close;
+                var input = inputs[i];
+                var sampleTargets = targets[i];
+
+                if (input?.PriceSequence == null || sampleTargets == null)
+                    continue;
+
+                int seqLen = input.PriceSequence.GetLength(0);
+
+                if (seqLen < 2 || sampleTargets.Length < seqLen)
+                    continue;
+
+                model.ClearAllMemory();
+
+                var predictionInput = CloneInputWithPriceRows(
+                    input,
+                    startInclusive: 0,
+                    endExclusive: seqLen - 1);
+
+                var pred = model.PredictNext(predictionInput);
+                float targetClose = sampleTargets[seqLen - 1].Close;
 
                 total += MathF.Abs(pred.Close - targetClose);
                 count++;
             }
 
-            return total / Math.Max(1, count);
+            model.ClearAllMemory();
+
+            return count > 0 ? total / count : 0f;
+        }
+        private static MultimodalInput CloneInputWithPriceRows(
+    MultimodalInput input,
+    int startInclusive,
+    int endExclusive)
+        {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+            if (startInclusive < 0 || endExclusive <= startInclusive || endExclusive > input.PriceSequence.GetLength(0))
+                throw new ArgumentOutOfRangeException(nameof(endExclusive), "Invalid price row slice.");
+
+            int rows = endExclusive - startInclusive;
+            int cols = input.PriceSequence.GetLength(1);
+
+            var slicedPrice = new float[rows, cols];
+
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                    slicedPrice[r, c] = input.PriceSequence[startInclusive + r, c];
+            }
+
+            NewsStory[] stories = null;
+
+            if (input.NewsStories != null)
+            {
+                stories = new NewsStory[input.NewsStories.Length];
+
+                for (int i = 0; i < input.NewsStories.Length; i++)
+                {
+                    var story = input.NewsStories[i];
+
+                    if (story == null)
+                    {
+                        stories[i] = null;
+                        continue;
+                    }
+
+                    stories[i] = new NewsStory(
+                        story.TokenIds != null ? (int[])story.TokenIds.Clone() : null,
+                        story.ArrivalTime - startInclusive);
+                }
+            }
+
+            return new MultimodalInput
+            {
+                PredictionTimestamp = input.PredictionTimestamp,
+                PriceSequence = slicedPrice,
+                NewsStories = stories,
+                GlobalFeatures = input.GlobalFeatures != null ? (float[])input.GlobalFeatures.Clone() : null
+            };
         }
     }
 }

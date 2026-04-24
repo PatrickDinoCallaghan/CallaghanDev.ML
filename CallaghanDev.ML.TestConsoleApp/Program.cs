@@ -20,8 +20,8 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             new MmtacTests().RunAllTests();
             new TacmatTests().RunAllTests();
-            new MultiTypeTransformerTests().RunAllTests();
             new CrossAttentionMultimodalTests().RunAllTests();
+            new MultiTypeTransformerTests().RunAllTests();
 
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;
