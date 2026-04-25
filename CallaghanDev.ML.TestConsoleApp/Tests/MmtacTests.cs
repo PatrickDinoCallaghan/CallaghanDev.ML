@@ -3255,17 +3255,16 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             return count > 0 ? total / count : 0f;
         }
-        private float AverageCarryCloseErrorStateless(
-          MmtacModel model,
-          MultimodalInput[] inputs,
-          ModelTarget[][] targets)
+        private float AverageCarryCloseErrorStateless(MmtacModel model, MultimodalInput[] inputs, ModelTarget[][] targets)
         {
             if (inputs == null)
                 throw new ArgumentNullException(nameof(inputs));
             if (targets == null)
                 throw new ArgumentNullException(nameof(targets));
             if (inputs.Length != targets.Length)
+            {
                 throw new ArgumentException("inputs and targets must have the same length.");
+            }
 
             float total = 0f;
             int count = 0;
@@ -3285,10 +3284,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
                 model.ClearAllMemory();
 
-                var predictionInput = CloneInputWithPriceRows(
-                    input,
-                    startInclusive: 0,
-                    endExclusive: seqLen - 1);
+                var predictionInput = CloneInputWithPriceRows(input, startInclusive: 0, endExclusive: seqLen - 1);
 
                 var pred = model.PredictNext(predictionInput);
                 float targetClose = sampleTargets[seqLen - 1].Close;
@@ -3301,10 +3297,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             return count > 0 ? total / count : 0f;
         }
-        private static MultimodalInput CloneInputWithPriceRows(
-    MultimodalInput input,
-    int startInclusive,
-    int endExclusive)
+        private static MultimodalInput CloneInputWithPriceRows(MultimodalInput input, int startInclusive, int endExclusive)
         {
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
@@ -3340,9 +3333,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                         continue;
                     }
 
-                    stories[i] = new NewsStory(
-                        story.TokenIds != null ? (int[])story.TokenIds.Clone() : null,
-                        story.ArrivalTime - startInclusive);
+                    stories[i] = new NewsStory(story.TokenIds != null ? (int[])story.TokenIds.Clone() : null, story.ArrivalTime - startInclusive);
                 }
             }
 

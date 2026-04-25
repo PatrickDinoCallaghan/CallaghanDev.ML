@@ -8,18 +8,31 @@ namespace CallaghanDev.ML.Transformers
 
         public static void ApplyInPlace(float[,] q, float[,] k, int numHeads)
         {
-            if (q == null) throw new ArgumentNullException(nameof(q));
-            if (k == null) throw new ArgumentNullException(nameof(k));
+            if (q == null)
+            {
+                throw new ArgumentNullException(nameof(q));
+            }
+            if (k == null)
+            {
+                throw new ArgumentNullException(nameof(k));
+            }
 
             int embeddingDim = q.GetLength(1);
+
             if (k.GetLength(1) != embeddingDim)
+            {
                 throw new ArgumentException("Q and K must have the same embedding dimension.");
+            }
 
             int headDim = embeddingDim / numHeads;
             if (embeddingDim % numHeads != 0)
+            {
                 throw new ArgumentException("Embedding dimension must be divisible by number of heads.");
+            }
             if ((headDim & 1) != 0)
+            {
                 throw new ArgumentException("RoPE requires an even per-head dimension.");
+            }
 
             ApplyInPlace(q, numHeads);
             ApplyInPlace(k, numHeads);
@@ -33,9 +46,13 @@ namespace CallaghanDev.ML.Transformers
             int headDim = embeddingDim / numHeads;
 
             if (embeddingDim % numHeads != 0)
+            {
                 throw new ArgumentException("Embedding dimension must be divisible by number of heads.");
+            }
             if ((headDim & 1) != 0)
+            {
                 throw new ArgumentException("RoPE requires an even per-head dimension.");
+            }
 
             for (int head = 0; head < numHeads; head++)
             {
@@ -46,18 +63,31 @@ namespace CallaghanDev.ML.Transformers
 
         public static void ApplyBackwardInPlace(float[,] dQ, float[,] dK, int numHeads)
         {
-            if (dQ == null) throw new ArgumentNullException(nameof(dQ));
-            if (dK == null) throw new ArgumentNullException(nameof(dK));
+            if (dQ == null)
+            {
+                throw new ArgumentNullException(nameof(dQ));
+            }
+            if (dK == null)
+            {
+                throw new ArgumentNullException(nameof(dK));
+            }
 
             int embeddingDim = dQ.GetLength(1);
             if (dK.GetLength(1) != embeddingDim)
+            {
                 throw new ArgumentException("dQ and dK must have the same embedding dimension.");
+            }
 
             int headDim = embeddingDim / numHeads;
+
             if (embeddingDim % numHeads != 0)
+            {
                 throw new ArgumentException("Embedding dimension must be divisible by number of heads.");
+            }
             if ((headDim & 1) != 0)
+            {
                 throw new ArgumentException("RoPE requires an even per-head dimension.");
+            }
 
             ApplyBackwardInPlace(dQ, numHeads);
             ApplyBackwardInPlace(dK, numHeads);
@@ -65,15 +95,22 @@ namespace CallaghanDev.ML.Transformers
 
         public static void ApplyBackwardInPlace(float[,] dX, int numHeads)
         {
-            if (dX == null) throw new ArgumentNullException(nameof(dX));
+            if (dX == null)
+            {
+                throw new ArgumentNullException(nameof(dX));
+            }
 
             int embeddingDim = dX.GetLength(1);
             int headDim = embeddingDim / numHeads;
 
             if (embeddingDim % numHeads != 0)
+            {
                 throw new ArgumentException("Embedding dimension must be divisible by number of heads.");
+            }
             if ((headDim & 1) != 0)
+            {
                 throw new ArgumentException("RoPE requires an even per-head dimension.");
+            }
 
             for (int head = 0; head < numHeads; head++)
             {
@@ -99,7 +136,9 @@ namespace CallaghanDev.ML.Transformers
                     float sin = MathF.Sin(theta);
 
                     if (inverse)
+                    {
                         sin = -sin;
+                    }
 
                     float x0 = matrix[pos, evenCol];
                     float x1 = matrix[pos, oddCol];

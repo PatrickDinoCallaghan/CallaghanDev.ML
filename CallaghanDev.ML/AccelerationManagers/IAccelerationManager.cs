@@ -225,30 +225,56 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax);
 
-        float[,] ContentAwareCrossAttentionWithCache(
-         float[,] Q,
-         float[,] K,
-         float[,] V,
-         float[,] timeDiffs,
-         float[] keyTimesFromRef,
-         float[,] queryEmbeddings,
-         float[,] keyEmbeddings,
-         TacamtBlock block,
-         BlockCache bc,
-         int PriceEmbeddingDim,
-         int PriceNumHeads,
-         bool enableDecayBias = true,
-         bool isTraining = false,
-         Random dropoutRng = null);
+        float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null);
+
         void Matrix3DScaleInPlace(float[,,] matrix, float scale);
 
         public float MatrixSquaredNorm3D(float[,,] matrix);
 
+        #region MMTAC
+
+        float[] ProjectGlobalFeatures(float[] globalFeatures, float[,] projection, float[] bias);
+
+        float[,] EmbedTokenIds(int[] tokenIds, float[,] embedding, int embeddingDim);
+
+        float[] MeanPoolRows(float[,] matrix);
+
+        (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews) BuildMmtacContext(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] contextTypeEmbedding);
+
+        (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence, float[,] regressionLogits, float[] rangeLogits, float[] qualityLogits) ProjectMmtacOutputHeads(float[,] hidden, float[,] regressionProjection, float[] regressionBias, float[,] rangeProjection, float[] rangeBias, float[,] qualityProjection, float[] qualityBias, float[,] directionProjection, float[] directionBias, float[,] midDirectionProjection, float[] midDirectionBias, float[,] confidenceProjection, float[] confidenceBias, bool useConfidenceHead);
+
+        float[] SoftmaxVector(float[] scores);
+
+        (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttention(float[,] q, float[,] k, float[,] v, float[,] dOutput, float[][,] attentionWeights, float[,] timeDiffs, int embeddingDim, int numHeads);
+
         #endregion
 
+        #endregion
 
+        #region Tokenizer Acceleration
+
+        string[] PreTokenize(string text);
+
+        Dictionary<string, int> GetWordFrequencies(string[] texts, bool lowerCase);
+
+        HashSet<string> BuildCharacterVocabulary(Dictionary<string, int> wordFreqs);
+
+        List<string> ApplyMerge(List<string> word, string left, string right);
+
+        List<int> EncodeWord(string word, Dictionary<(string, string), int> mergePriority, Dictionary<string, int> vocabToId, int unkTokenId);
+
+        Dictionary<(string left, string right), int> CountPairFrequencies(Dictionary<List<string>, int> words);
+
+        ((string left, string right) pair, int frequency) SelectBestPair(Dictionary<(string left, string right), int> pairCounts, int minFrequency);
+
+        Dictionary<List<string>, int> ApplyMergeToVocabulary(Dictionary<List<string>, int> words, string left, string right);
+
+        string DecodeTokens(int[] tokenIds, Dictionary<int, string> idToVocab, string unkToken, bool skipSpecialTokens);
+
+        int[] PadOrTruncate(int[] tokenIds, int maxLength, bool addSpecialTokens, int padTokenId, int endTokenId);
+
+        #endregion
         void SigmoidInPlace(float[,] matrix);
-
         void Dispose();
     }
 }

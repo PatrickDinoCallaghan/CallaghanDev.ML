@@ -1,7 +1,9 @@
 ﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.TACAMT;
 using ILGPU.Algorithms;
 using MathNet.Numerics;
+using System.Text;
 using static CallaghanDev.ML.Functions;
 
 namespace CallaghanDev.ML.AccelerationManagers
@@ -438,14 +440,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(
-            float[,] Q,
-            float[,] K,
-            float[,] V,
-            float[,] dConcatenated,
-            int numHeads,
-            float scale,
-            bool useDecoderMask = false)
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {
             bool[,] mask = null;
 
@@ -1330,14 +1325,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return pred;
         }
 
-        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(
-           float[,] queryEmbeddings,
-           float[,] keyEmbeddings,
-           float[,] timeDiffs,
-           float[] keyTimesFromRef,
-           ContentAwareDecayNetwork network,
-           bool isTraining = false,
-           Random dropoutRng = null)
+        public (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null)
         {
             if (queryEmbeddings == null) throw new ArgumentNullException(nameof(queryEmbeddings));
             if (keyEmbeddings == null) throw new ArgumentNullException(nameof(keyEmbeddings));
@@ -1638,15 +1626,8 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return (decayBias, cache);
         }
-        public float[,] ContentAwareCrossAttentionForward(
-        float[,] Q,
-        float[,] K,
-        float[,] V,
-        int numHeads,
-        float scale,
-        float[,,] decayBias,
-        out float[][,] attentionWeights,
-        out float[][,] scoresPreSoftmax)
+        
+        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
         {
             int queryLen = Q.GetLength(0);
             int keyLen = K.GetLength(0);
@@ -1721,21 +1702,8 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return output;
         }
-        public float[,] ContentAwareCrossAttentionWithCache(
-        float[,] Q,
-        float[,] K,
-        float[,] V,
-        float[,] timeDiffs,
-        float[] keyTimesFromRef,
-        float[,] queryEmbeddings,
-        float[,] keyEmbeddings,
-        TacamtBlock block,
-        BlockCache bc,
-        int PriceEmbeddingDim,
-        int PriceNumHeads,
-        bool enableDecayBias = true,
-        bool isTraining = false,
-        Random dropoutRng = null)
+        
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null)
         {
             if (Q == null) throw new ArgumentNullException(nameof(Q));
             if (K == null) throw new ArgumentNullException(nameof(K));
@@ -1852,6 +1820,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
             return output;
         }
+
         public void Matrix3DScaleInPlace(float[,,] matrix, float scale)
         {
             int d0 = matrix.GetLength(0);
@@ -1890,6 +1859,707 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             return sum;
         }
+
+
+
+        #region MMTAC
+
+        public float[] ProjectGlobalFeatures(float[] globalFeatures, float[,] projection, float[] bias)
+        {
+            if (globalFeatures == null)
+            {
+                throw new ArgumentNullException(nameof(globalFeatures));
+            }
+
+            if (projection == null)
+            {
+                throw new ArgumentNullException(nameof(projection));
+            }
+            if (bias == null)
+            {
+                throw new ArgumentNullException(nameof(bias));
+            } 
+
+            int ed = projection.GetLength(0);
+            int gd = projection.GetLength(1);
+
+            if (globalFeatures.Length != gd)
+            {
+                throw new ArgumentException($"Expected global feature length {gd}, got {globalFeatures.Length}.");
+            }
+            if (bias.Length != ed)
+            {
+                throw new ArgumentException($"Expected bias length {ed}, got {bias.Length}.");
+            }
+
+            var output = new float[ed];
+
+            for (int d = 0; d < ed; d++)
+            {
+                float sum = bias[d];
+
+                for (int g = 0; g < gd; g++)
+                {
+                    sum += projection[d, g] * globalFeatures[g];
+                }
+
+                output[d] = sum;
+            }
+
+            return output;
+        }
+
+        public float[,] EmbedTokenIds(int[] tokenIds, float[,] embedding, int embeddingDim)
+        {
+            if (tokenIds == null || tokenIds.Length == 0)
+            {
+                return new float[0, embeddingDim];
+            }
+            if (embedding == null)
+            {
+                throw new ArgumentNullException(nameof(embedding));
+            }
+
+            int vocabSize = embedding.GetLength(0);
+
+            if (embedding.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("Embedding dimension mismatch.", nameof(embedding));
+            }
+
+            var output = new float[tokenIds.Length, embeddingDim];
+
+            for (int i = 0; i < tokenIds.Length; i++)
+            {
+                int tokenId = tokenIds[i];
+
+                if ((uint)tokenId >= (uint)vocabSize)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(tokenIds), $"Token out of range: {tokenId}");
+                }
+
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    output[i, d] = embedding[tokenId, d];
+                }
+            }
+
+            return output;
+        }
+
+        public float[] MeanPoolRows(float[,] matrix)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            var output = new float[cols];
+
+            if (rows == 0)
+            {
+                return output;
+            }
+
+            float inv = 1.0f / rows;
+
+            for (int d = 0; d < cols; d++)
+            {
+                float sum = 0f;
+
+                for (int r = 0; r < rows; r++)
+                {
+                    sum += matrix[r, d];
+                }
+
+                output[d] = sum * inv;
+            }
+
+            return output;
+        }
+
+        public (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews) BuildMmtacContext(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] contextTypeEmbedding)
+        {
+            if (contextTypeEmbedding == null)
+            {
+                throw new ArgumentNullException(nameof(contextTypeEmbedding));
+            }
+
+            int ed = contextTypeEmbedding.GetLength(1);
+            int numGlobal = globalToken != null ? 1 : 0;
+            int numNews = newsHidden != null ? newsHidden.GetLength(0) : 0;
+            int total = numGlobal + numNews;
+
+            if (total == 0)
+            {
+                return (null, null, 0, 0);
+            }
+
+            if (globalToken != null && globalToken.Length != ed)
+            {
+                throw new ArgumentException("globalToken length must match embedding dimension.", nameof(globalToken));
+            }
+
+            if (newsHidden != null && newsHidden.GetLength(1) != ed)
+            {
+                throw new ArgumentException("newsHidden embedding dimension mismatch.", nameof(newsHidden));
+            }
+
+            if (newsTimes != null && newsTimes.Length != numNews)
+            {
+                throw new ArgumentException("newsTimes length must match newsHidden row count.", nameof(newsTimes));
+            }
+
+            var contextHidden = new float[total, ed];
+            var contextTimes = new float[total];
+
+            int row = 0;
+
+            if (globalToken != null)
+            {
+                for (int d = 0; d < ed; d++)
+                {
+                    contextHidden[row, d] = globalToken[d] + contextTypeEmbedding[2, d];
+                }
+
+                contextTimes[row] = 0f;
+                row++;
+            }
+
+            for (int i = 0; i < numNews; i++)
+            {
+                for (int d = 0; d < ed; d++)
+                {
+                    contextHidden[row, d] = newsHidden[i, d] + contextTypeEmbedding[0, d];
+                }
+
+                contextTimes[row] = newsTimes != null ? newsTimes[i] : 0f;
+                row++;
+            }
+
+            return (contextHidden, contextTimes, numGlobal, numNews);
+        }
+
+        public (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence, float[,] regressionLogits, float[] rangeLogits, float[] qualityLogits) ProjectMmtacOutputHeads(float[,] hidden, float[,] regressionProjection, float[] regressionBias, float[,] rangeProjection, float[] rangeBias, float[,] qualityProjection, float[] qualityBias, float[,] directionProjection, float[] directionBias, float[,] midDirectionProjection, float[] midDirectionBias, float[,] confidenceProjection, float[] confidenceBias, bool useConfidenceHead)
+        {
+            if (hidden == null)
+            {
+                throw new ArgumentNullException(nameof(hidden));
+            }
+
+            int sl = hidden.GetLength(0);
+            int ed = hidden.GetLength(1);
+            const int rDim = 3;
+
+            var rawRegression = ProjectOutputBatch(hidden, regressionProjection, regressionBias, sl, rDim);
+
+            var regression = new float[sl, rDim];
+            var range = new float[sl, 1];
+            var rangeLogits = new float[sl];
+
+            for (int t = 0; t < sl; t++)
+            {
+                float upBase = Softplus(rawRegression[t, 0]);
+                float downBase = Softplus(rawRegression[t, 1]);
+
+                float l = rangeBias[0];
+
+                for (int k = 0; k < ed; k++)
+                    l += rangeProjection[0, k] * hidden[t, k];
+
+                rangeLogits[t] = l;
+
+                float rangeValue = Softplus(l);
+                float den = upBase + downBase;
+                float upShare = den > 1e-6f ? upBase / den : 0.5f;
+                float downShare = 1f - upShare;
+                float close = rawRegression[t, 2];
+
+                regression[t, 0] = close + rangeValue * upShare;
+                regression[t, 1] = close - rangeValue * downShare;
+                regression[t, 2] = close;
+                range[t, 0] = rangeValue;
+            }
+
+            var quality = new float[sl, 1];
+            var qualityLogits = new float[sl];
+
+            for (int t = 0; t < sl; t++)
+            {
+                float l = qualityBias[0];
+
+                for (int k = 0; k < ed; k++)
+                    l += qualityProjection[0, k] * hidden[t, k];
+
+                qualityLogits[t] = l;
+                quality[t, 0] = StableSigmoid(l);
+            }
+
+            var direction = new float[sl, 1];
+
+            for (int t = 0; t < sl; t++)
+            {
+                float l = directionBias[0];
+
+                for (int k = 0; k < ed; k++)
+                    l += directionProjection[0, k] * hidden[t, k];
+
+                direction[t, 0] = StableSigmoid(l);
+            }
+
+            var midDirection = new float[sl, 1];
+
+            for (int t = 0; t < sl; t++)
+            {
+                float l = midDirectionBias[0];
+
+                for (int k = 0; k < ed; k++)
+                    l += midDirectionProjection[0, k] * hidden[t, k];
+
+                midDirection[t, 0] = StableSigmoid(l);
+            }
+
+            float[,] confidence = null;
+
+            if (useConfidenceHead)
+            {
+                confidence = new float[sl, 1];
+
+                for (int t = 0; t < sl; t++)
+                {
+                    float l = confidenceBias[0];
+
+                    for (int k = 0; k < ed; k++)
+                        l += confidenceProjection[0, k] * hidden[t, k];
+
+                    confidence[t, 0] = StableSigmoid(l);
+                }
+            }
+
+            return (regression, range, quality, direction, midDirection, confidence, rawRegression, rangeLogits, qualityLogits);
+        }
+
+        public float[] SoftmaxVector(float[] scores)
+        {
+            if (scores == null)
+            {
+                throw new ArgumentNullException(nameof(scores));
+            }
+
+            var output = new float[scores.Length];
+
+            if (scores.Length == 0)
+            {
+                return output;
+            }
+
+            float max = float.NegativeInfinity;
+
+            for (int i = 0; i < scores.Length; i++)
+            {
+                if (scores[i] > max)
+                {
+                    max = scores[i];
+                }
+            }
+
+            float sum = 0f;
+
+            for (int i = 0; i < scores.Length; i++)
+            {
+                output[i] = MathF.Exp(scores[i] - max);
+                sum += output[i];
+            }
+
+            if (sum <= 0f)
+            {
+                return output;
+            }
+
+            float inv = 1f / sum;
+
+            for (int i = 0; i < output.Length; i++)
+            {
+                output[i] *= inv;
+            }
+
+            return output;
+        }
+
+        public (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttention(float[,] q, float[,] k, float[,] v, float[,] dOutput, float[][,] attentionWeights, float[,] timeDiffs, int embeddingDim, int numHeads)
+        {
+            if (q == null) throw new ArgumentNullException(nameof(q));
+            if (k == null) throw new ArgumentNullException(nameof(k));
+            if (v == null) throw new ArgumentNullException(nameof(v));
+            if (dOutput == null) throw new ArgumentNullException(nameof(dOutput));
+            if (attentionWeights == null) throw new ArgumentNullException(nameof(attentionWeights));
+
+            int queryLen = q.GetLength(0);
+            int keyLen = k.GetLength(0);
+            int headDim = embeddingDim / numHeads;
+            float scale = 1.0f / MathF.Sqrt(headDim);
+
+            var dQ = new float[queryLen, embeddingDim];
+            var dK = new float[keyLen, embeddingDim];
+            var dV = new float[keyLen, embeddingDim];
+
+            float[,,] dDecayBias = timeDiffs != null
+                ? new float[queryLen, keyLen, numHeads]
+                : null;
+
+            for (int h = 0; h < numHeads; h++)
+            {
+                int offset = h * headDim;
+                var weights = attentionWeights[h];
+
+                for (int p = 0; p < queryLen; p++)
+                {
+                    var dWeights = new float[keyLen];
+
+                    for (int s = 0; s < keyLen; s++)
+                    {
+                        float dot = 0f;
+
+                        for (int d = 0; d < headDim; d++)
+                        {
+                            int di = offset + d;
+
+                            dV[s, di] += weights[p, s] * dOutput[p, di];
+                            dot += dOutput[p, di] * v[s, di];
+                        }
+
+                        dWeights[s] = dot;
+                    }
+
+                    float dotWeightGrad = 0f;
+
+                    for (int s = 0; s < keyLen; s++)
+                        dotWeightGrad += weights[p, s] * dWeights[s];
+
+                    for (int s = 0; s < keyLen; s++)
+                    {
+                        float dScore = weights[p, s] * (dWeights[s] - dotWeightGrad);
+
+                        for (int d = 0; d < headDim; d++)
+                        {
+                            int di = offset + d;
+
+                            dQ[p, di] += dScore * scale * k[s, di];
+                            dK[s, di] += dScore * scale * q[p, di];
+                        }
+
+                        if (dDecayBias != null)
+                            dDecayBias[p, s, h] += dScore;
+                    }
+                }
+            }
+
+            return (dQ, dK, dV, dDecayBias);
+        }
+
+        #endregion
+
+        #endregion
+
+        #region Tokenizer Acceleration
+
+        public string[] PreTokenize(string text)
+        {
+            var tokens = new List<string>();
+            var currentToken = new StringBuilder();
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+
+                if (char.IsLetterOrDigit(c))
+                {
+                    currentToken.Append(c);
+                }
+                else
+                {
+                    if (currentToken.Length > 0)
+                    {
+                        tokens.Add(currentToken.ToString());
+                        currentToken.Clear();
+                    }
+
+                    if (!char.IsWhiteSpace(c))
+                    {
+                        tokens.Add(c.ToString());
+                    }
+                }
+            }
+
+            if (currentToken.Length > 0)
+            {
+                tokens.Add(currentToken.ToString());
+            }
+
+            return tokens.ToArray();
+        }
+
+        public Dictionary<string, int> GetWordFrequencies(string[] texts, bool lowerCase)
+        {
+            var wordFreqs = new Dictionary<string, int>();
+
+            foreach (var text in texts)
+            {
+                var processedText = lowerCase ? text.ToLowerInvariant() : text;
+
+                var words = PreTokenize(processedText);
+
+                foreach (var word in words)
+                {
+                    if (string.IsNullOrWhiteSpace(word))
+                    {
+                        continue;
+                    }
+                    var charSeq = string.Join(" ", word.Select(c => c.ToString()));
+
+                    if (wordFreqs.ContainsKey(charSeq))
+                    {
+                        wordFreqs[charSeq]++;
+                    }
+                    else
+                    {
+                        wordFreqs[charSeq] = 1;
+                    }
+                }
+            }
+
+            return wordFreqs;
+        }
+
+        public HashSet<string> BuildCharacterVocabulary(Dictionary<string, int> wordFreqs)
+        {
+            var chars = new HashSet<string>();
+
+            foreach (var word in wordFreqs.Keys)
+            {
+                foreach (var ch in word.Split(' '))
+                {
+                    if (!string.IsNullOrEmpty(ch))
+                    {
+                        chars.Add(ch);
+                    }
+                }
+            }
+
+            return chars;
+        }
+
+        public List<string> ApplyMerge(List<string> word, string left, string right)
+        {
+            var result = new List<string>();
+            int i = 0;
+
+            while (i < word.Count)
+            {
+                if (i < word.Count - 1 && word[i] == left && word[i + 1] == right)
+                {
+                    result.Add(left + right);
+                    i += 2;
+                }
+                else
+                {
+                    result.Add(word[i]);
+                    i++;
+                }
+            }
+
+            return result;
+        }
+
+        public List<int> EncodeWord(string word, Dictionary<(string, string), int> mergePriority, Dictionary<string, int> vocabToId, int unkTokenId)
+        {
+            var parts = word.Select(c => c.ToString()).ToList();
+
+            while (parts.Count > 1)
+            {
+                (string, string)? bestMerge = null;
+                int bestPriority = int.MaxValue;
+                int bestPos = -1;
+
+                for (int i = 0; i < parts.Count - 1; i++)
+                {
+                    var pair = (parts[i], parts[i + 1]);
+
+                    if (mergePriority.TryGetValue(pair, out int priority))
+                    {
+                        if (priority < bestPriority)
+                        {
+                            bestMerge = pair;
+                            bestPriority = priority;
+                            bestPos = i;
+                        }
+                    }
+                }
+
+                if (bestMerge == null)
+                {
+                    break;
+                }
+
+                var (left, right) = bestMerge.Value;
+                parts[bestPos] = left + right;
+                parts.RemoveAt(bestPos + 1);
+            }
+
+            var tokenIds = new List<int>();
+
+            foreach (var part in parts)
+            {
+                if (vocabToId.TryGetValue(part, out int id))
+                {
+                    tokenIds.Add(id);
+                }
+                else
+                {
+                    foreach (var ch in part)
+                    {
+                        var chStr = ch.ToString();
+
+                        if (vocabToId.TryGetValue(chStr, out int chId))
+                        {
+                            tokenIds.Add(chId);
+                        }
+                        else
+                        {
+                            tokenIds.Add(unkTokenId);
+                        }
+                    }
+                }
+            }
+
+            return tokenIds;
+        }
+
+        public Dictionary<(string left, string right), int> CountPairFrequencies(Dictionary<List<string>, int> words)
+        {
+            var pairCounts = new Dictionary<(string left, string right), int>();
+
+            foreach (var kv in words)
+            {
+                var word = kv.Key;
+                int freq = kv.Value;
+
+                for (int i = 0; i < word.Count - 1; i++)
+                {
+                    var pair = (word[i], word[i + 1]);
+
+                    if (pairCounts.ContainsKey(pair))
+                    {
+                        pairCounts[pair] += freq;
+                    }
+                    else
+                    {
+                        pairCounts[pair] = freq;
+                    }
+                }
+            }
+
+            return pairCounts;
+        }
+
+        public ((string left, string right) pair, int frequency) SelectBestPair(Dictionary<(string left, string right), int> pairCounts, int minFrequency)
+        {
+            if (pairCounts == null || pairCounts.Count == 0)
+            {
+                return ((null, null), 0);
+            }
+
+            var bestPair = pairCounts
+                .Where(kv => kv.Value >= minFrequency)
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key.left + kv.Key.right)
+                .FirstOrDefault();
+
+            return (bestPair.Key, bestPair.Value);
+        }
+
+        public Dictionary<List<string>, int> ApplyMergeToVocabulary(Dictionary<List<string>, int> words, string left, string right)
+        {
+            var newWords = new Dictionary<List<string>, int>(new ListEqualityComparer<string>());
+
+            foreach (var kv in words)
+            {
+                var newWord = ApplyMerge(kv.Key, left, right);
+
+                if (newWords.ContainsKey(newWord))
+                {
+                    newWords[newWord] += kv.Value;
+                }
+                else
+                {
+                    newWords[newWord] = kv.Value;
+                }
+            }
+
+            return newWords;
+        }
+      
+        public string DecodeTokens(int[] tokenIds, Dictionary<int, string> idToVocab, string unkToken, bool skipSpecialTokens)
+        {
+            if (tokenIds == null || tokenIds.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder();
+
+            foreach (var id in tokenIds)
+            {
+                if (!idToVocab.TryGetValue(id, out var token))
+                {
+                    token = unkToken;
+                }
+                if (skipSpecialTokens && token.StartsWith("<|") && token.EndsWith("|>"))
+                {
+                    continue;
+                }
+
+                sb.Append(token);
+            }
+
+            return sb.ToString();
+        }
+
+        public int[] PadOrTruncate(int[] tokenIds, int maxLength, bool addSpecialTokens, int padTokenId, int endTokenId)
+        {
+            if (tokenIds.Length > maxLength)
+            {
+                var truncated = new int[maxLength];
+                Array.Copy(tokenIds, truncated, maxLength);
+
+                if (addSpecialTokens)
+                {
+                    truncated[maxLength - 1] = endTokenId;
+                }
+
+                return truncated;
+            }
+
+            if (tokenIds.Length < maxLength)
+            {
+                var padded = new int[maxLength];
+                Array.Copy(tokenIds, padded, tokenIds.Length);
+
+                for (int i = tokenIds.Length; i < maxLength; i++)
+                {
+                    padded[i] = padTokenId;
+                }
+
+                return padded;
+            }
+
+            return tokenIds;
+        }
+
+
         #endregion
 
         public void SigmoidInPlace(float[,] matrix)
@@ -1914,7 +2584,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
-
         private float StableSigmoid(float x)
         {
             if (x >= 0)
@@ -1928,12 +2597,13 @@ namespace CallaghanDev.ML.AccelerationManagers
                 return ex / (1f + ex);
             }
         }
-
+        private static float Softplus(float x)
+        {
+            if (x > 20f) return x;
+            if (x < -20f) return MathF.Exp(x);
+            return MathF.Log(1f + MathF.Exp(x));
+        }
         public void Dispose() { }
 
-
-
-
     }
-
 }

@@ -34,4 +34,8 @@
     <Folder Include="CurveFitting\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Transformers\Tokenizers\ListEqualityComparer.cs" />
+  </ItemGroup>
+
 </Project>

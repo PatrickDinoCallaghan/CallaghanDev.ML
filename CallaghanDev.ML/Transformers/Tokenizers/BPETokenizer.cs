@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.IO;
 using System.Text.Json;
+using CallaghanDev.ML.AccelerationManagers;
+using static CallaghanDev.ML.AccelerationManagers.AccelerationCPU;
 
 namespace CallaghanDev.ML.Transformers
 {
@@ -30,17 +32,22 @@ namespace CallaghanDev.ML.Transformers
 
         public int VocabSize => _vocabToId.Count;
         public int MaxTokenLength { get; set; } = 100;
-        public bool LowerCase { get; set; } = false;
-
-        public BPETokenizer()
+        public bool LowerCase { get; set; } = false; 
+        
+        private IAccelerationManager _accel;
+        public BPETokenizer(IAccelerationManager accelerationManager)
         {
             _vocabToId = new Dictionary<string, int>();
             _idToVocab = new Dictionary<int, string>();
             _merges = new List<(string, string)>();
             _mergePriority = new Dictionary<(string, string), int>();
             _encodeCache = new Dictionary<string, List<int>>();
-
+            _accel = accelerationManager;
             InitializeSpecialTokens();
+        }
+
+        public BPETokenizer()
+        {
         }
 
         private void InitializeSpecialTokens()
@@ -64,7 +71,8 @@ namespace CallaghanDev.ML.Transformers
 
         private string[] PreTokenize(string text)
         {
-            var tokens = new List<string>();
+            return _accel.PreTokenize(text);
+            /*var tokens = new List<string>();
             var currentToken = new StringBuilder();
 
             for (int i = 0; i < text.Length; i++)
@@ -95,11 +103,26 @@ namespace CallaghanDev.ML.Transformers
                 tokens.Add(currentToken.ToString());
             }
 
-            return tokens.ToArray();
+            return tokens.ToArray();*/
         }
 
         public void Train(string[] texts, int vocabSize = 50000, int minFrequency = 10)
         {
+            if (texts == null || texts.Length == 0)
+            {
+                throw new ArgumentException("Cannot train tokenizer on empty corpus.", nameof(texts));
+            }
+
+            if (vocabSize <= 4)
+            {
+                throw new ArgumentOutOfRangeException(nameof(vocabSize), "vocabSize must be greater than special-token count.");
+            }
+
+            if (minFrequency <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(minFrequency), "minFrequency must be positive.");
+            }
+
             var specialTokens = _vocabToId.Where(kv => kv.Key.StartsWith("<|")).ToList();
             _vocabToId.Clear();
             _idToVocab.Clear();
@@ -127,18 +150,14 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
 
-            //Console.WriteLine($"Character vocabulary: {charVocab.Count} characters");
-
-            //Console.WriteLine($"Step 2: Learning BPE merges (target: {vocabSize - nextId} merges)...");
             LearnBPEMerges(wordFreqs, vocabSize - nextId, minFrequency);
-
-            //Console.WriteLine($"Training complete!");
-            //Console.WriteLine($"Final vocabulary size: {VocabSize}");
-            //Console.WriteLine($"Number of merges: {_merges.Count}");
         }
 
         private Dictionary<string, int> GetWordFrequencies(string[] texts)
         {
+
+            return _accel.GetWordFrequencies(texts, LowerCase);
+            /*
             var wordFreqs = new Dictionary<string, int>();
 
             foreach (var text in texts)
@@ -165,11 +184,14 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
 
-            return wordFreqs;
+            return wordFreqs;*/
         }
 
         private HashSet<string> BuildCharacterVocabulary(Dictionary<string, int> wordFreqs)
         {
+            return _accel.BuildCharacterVocabulary(wordFreqs);
+
+            /*
             var chars = new HashSet<string>();
 
             foreach (var word in wordFreqs.Keys)
@@ -183,49 +205,26 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
 
-            return chars;
+            return chars;*/
         }
 
-        private void LearnBPEMerges(Dictionary<string, int> wordFreqs, int numMerges, int minFrequency)
+        private void LearnBPEMerges(Dictionary<string, int> wordFreqs,  int numMerges,  int minFrequency)
         {
-            var words = wordFreqs.ToDictionary(kv => kv.Key.Split(' ').ToList(), kv => kv.Value, new ListEqualityComparer<string>());
+            var words = wordFreqs.ToDictionary(
+                kv => kv.Key.Split(' ').ToList(),
+                kv => kv.Value,
+                new ListEqualityComparer<string>());
 
             for (int mergeIdx = 0; mergeIdx < numMerges; mergeIdx++)
             {
-                var pairCounts = new Dictionary<(string, string), int>();
+                var pairCounts = _accel.CountPairFrequencies(words);
 
-                foreach (var (word, freq) in words)
-                {
-                    for (int i = 0; i < word.Count - 1; i++)
-                    {
-                        var pair = (word[i], word[i + 1]);
-                        if (pairCounts.ContainsKey(pair))
-                        {
-                            pairCounts[pair] += freq;
-                        }
-                        else
-                        {
-                            pairCounts[pair] = freq;
-                        }
-                    }
-                }
+                var (bestPair, frequency) = _accel.SelectBestPair(pairCounts, minFrequency);
 
-                if (pairCounts.Count == 0)
-                {
+                if (frequency == 0)
                     break;
-                }
 
-                var bestPair = pairCounts.Where(kv => kv.Value >= minFrequency)
-                    .OrderByDescending(kv => kv.Value)
-                    .ThenBy(kv => kv.Key.Item1 + kv.Key.Item2)
-                    .FirstOrDefault();
-
-                if (bestPair.Value == 0)
-                {
-                    break;
-                }
-
-                var (left, right) = bestPair.Key;
+                var (left, right) = bestPair;
                 var merged = left + right;
 
                 _merges.Add((left, right));
@@ -238,27 +237,13 @@ namespace CallaghanDev.ML.Transformers
                     _idToVocab[id] = merged;
                 }
 
-                var newWords = new Dictionary<List<string>, int>(new ListEqualityComparer<string>());
-                foreach (var (word, freq) in words)
-                {
-                    var newWord = ApplyMerge(word, left, right);
-                    if (newWords.ContainsKey(newWord))
-                    {
-                        newWords[newWord] += freq;
-                    }
-                    else
-                    {
-                        newWords[newWord] = freq;
-                    }
-                }
-                words = newWords;
-
+                words = _accel.ApplyMergeToVocabulary(words, left, right);
             }
-
         }
-
         private List<string> ApplyMerge(List<string> word, string left, string right)
         {
+            return _accel.ApplyMerge(word, left, right);
+           /*
             var result = new List<string>();
             int i = 0;
 
@@ -276,7 +261,7 @@ namespace CallaghanDev.ML.Transformers
                 }
             }
 
-            return result;
+            return result;*/
         }
 
         public int[] Encode(string text, bool addSpecialTokens = true)
@@ -328,125 +313,39 @@ namespace CallaghanDev.ML.Transformers
 
         private List<int> EncodeWord(string word)
         {
-            var parts = word.Select(c => c.ToString()).ToList();
-
-            while (parts.Count > 1)
-            {
-                (string, string)? bestMerge = null;
-                int bestPriority = int.MaxValue;
-                int bestPos = -1;
-
-                for (int i = 0; i < parts.Count - 1; i++)
-                {
-                    var pair = (parts[i], parts[i + 1]);
-                    if (_mergePriority.TryGetValue(pair, out int priority))
-                    {
-                        if (priority < bestPriority)
-                        {
-                            bestMerge = pair;
-                            bestPriority = priority;
-                            bestPos = i;
-                        }
-                    }
-                }
-
-                if (bestMerge == null)
-                {
-                    break;
-                }
-
-                var (left, right) = bestMerge.Value;
-                parts[bestPos] = left + right;
-                parts.RemoveAt(bestPos + 1);
-            }
-
-            var tokenIds = new List<int>();
-            foreach (var part in parts)
-            {
-                if (_vocabToId.TryGetValue(part, out int id))
-                {
-                    tokenIds.Add(id);
-                }
-                else
-                {
-                    foreach (var ch in part)
-                    {
-                        var chStr = ch.ToString();
-                        if (_vocabToId.TryGetValue(chStr, out int chId))
-                        {
-                            tokenIds.Add(chId);
-                        }
-                        else
-                        {
-                            tokenIds.Add(UnkTokenId);
-                        }
-                    }
-                }
-            }
-
-            return tokenIds;
+            return _accel.EncodeWord(
+                word,
+                _mergePriority,
+                _vocabToId,
+                UnkTokenId);
         }
 
         public string Decode(int[] tokenIds, bool skipSpecialTokens = true)
         {
-            if (tokenIds == null || tokenIds.Length == 0)
-            {
-                return string.Empty;
-            }
-
-            var sb = new StringBuilder();
-
-            foreach (var id in tokenIds)
-            {
-                if (!_idToVocab.TryGetValue(id, out var token))
-                {
-                    token = UNK_TOKEN;
-                }
-
-                if (skipSpecialTokens && token.StartsWith("<|") && token.EndsWith("|>"))
-                {
-                    continue;
-                }
-                sb.Append(token);
-            }
-
-            return sb.ToString();
+            return _accel.DecodeTokens(tokenIds, _idToVocab, UNK_TOKEN, skipSpecialTokens);
         }
 
-        public int[][] EncodeBatch(string[] texts, bool addSpecialTokens = true, int? maxLength = null)
+        public int[][] EncodeBatch(string[] texts, bool addSpecialTokens = true,int? maxLength = null)
         {
-            var encoded = texts.Select(text => Encode(text, addSpecialTokens)).ToArray();
+            var encoded = new int[texts.Length][];
 
-            if (maxLength.HasValue)
+            for (int i = 0; i < texts.Length; i++)
             {
-                for (int i = 0; i < encoded.Length; i++)
+                encoded[i] = Encode(texts[i], addSpecialTokens);
+
+                if (maxLength.HasValue)
                 {
-                    if (encoded[i].Length > maxLength.Value)
-                    {
-                        var truncated = new int[maxLength.Value];
-                        Array.Copy(encoded[i], truncated, maxLength.Value);
-                        if (addSpecialTokens)
-                        {
-                            truncated[maxLength.Value - 1] = EndTokenId;
-                        }
-                        encoded[i] = truncated;
-                    }
-                    else if (encoded[i].Length < maxLength.Value)
-                    {
-                        var padded = new int[maxLength.Value];
-                        Array.Copy(encoded[i], padded, encoded[i].Length);
-                        for (int j = encoded[i].Length; j < maxLength.Value; j++)
-                        {
-                            padded[j] = PadTokenId;
-                        }
-                        encoded[i] = padded;
-                    }
+                    encoded[i] = _accel.PadOrTruncate(
+                        encoded[i],
+                        maxLength.Value,
+                        addSpecialTokens,
+                        PadTokenId,
+                        EndTokenId);
                 }
             }
 
             return encoded;
         }
-
         public void Save(string directory)
         {
             if (!Directory.Exists(directory))
@@ -486,14 +385,17 @@ namespace CallaghanDev.ML.Transformers
 
             Console.WriteLine($"Tokenizer saved to {directory}");
         }
-
         public static BPETokenizer Load(string directory)
         {
-            var tokenizer = new BPETokenizer();
+            var tokenizer = new BPETokenizer(new AccelerationCPU());
 
             var vocabPath = Path.Combine(directory, "vocab.json");
             var vocabJson = File.ReadAllText(vocabPath);
-            tokenizer._vocabToId = JsonSerializer.Deserialize<Dictionary<string, int>>(vocabJson);
+
+            tokenizer._vocabToId =
+                JsonSerializer.Deserialize<Dictionary<string, int>>(vocabJson)
+                ?? throw new InvalidOperationException("Failed to deserialize tokenizer vocab.");
+
             tokenizer._idToVocab = tokenizer._vocabToId.ToDictionary(kv => kv.Value, kv => kv.Key);
 
             tokenizer.PadTokenId = tokenizer._vocabToId[PAD_TOKEN];
@@ -501,20 +403,22 @@ namespace CallaghanDev.ML.Transformers
             tokenizer.EndTokenId = tokenizer._vocabToId[END_TOKEN];
             tokenizer.UnkTokenId = tokenizer._vocabToId[UNK_TOKEN];
 
-            var mergesPath = Path.Combine(directory, "merges.txt");
-            tokenizer._merges.Clear();
-            tokenizer._mergePriority.Clear();
+            tokenizer._merges = new List<(string, string)>();
+            tokenizer._mergePriority = new Dictionary<(string, string), int>();
+            tokenizer._encodeCache = new Dictionary<string, List<int>>();
 
+            var mergesPath = Path.Combine(directory, "merges.txt");
             var lines = File.ReadAllLines(mergesPath);
+
             int priority = 0;
+
             foreach (var line in lines)
             {
                 if (line.StartsWith("#") || string.IsNullOrWhiteSpace(line))
-                {
                     continue;
-                }
 
-                var parts = line.Split(' ');
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
                 if (parts.Length >= 2)
                 {
                     var merge = (parts[0], parts[1]);
@@ -524,24 +428,21 @@ namespace CallaghanDev.ML.Transformers
             }
 
             var configPath = Path.Combine(directory, "tokenizer_config.json");
+
             if (File.Exists(configPath))
             {
                 var configJson = File.ReadAllText(configPath);
                 var config = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(configJson);
 
-                if (config.TryGetValue("max_token_length", out var mtl))
+                if (config != null)
                 {
-                    tokenizer.MaxTokenLength = mtl.GetInt32();
-                }
-                if (config.TryGetValue("lowercase", out var lc))
-                {
-                    tokenizer.LowerCase = lc.GetBoolean();
+                    if (config.TryGetValue("max_token_length", out var mtl))
+                        tokenizer.MaxTokenLength = mtl.GetInt32();
+
+                    if (config.TryGetValue("lowercase", out var lc))
+                        tokenizer.LowerCase = lc.GetBoolean();
                 }
             }
-
-            Console.WriteLine($"Tokenizer loaded from {directory}");
-            Console.WriteLine($"Vocabulary size: {tokenizer.VocabSize}");
-            Console.WriteLine($"Number of merges: {tokenizer._merges.Count}");
 
             return tokenizer;
         }
@@ -561,47 +462,4 @@ namespace CallaghanDev.ML.Transformers
         }
     }
 
-    internal class ListEqualityComparer<T> : IEqualityComparer<List<T>>
-    {
-        public bool Equals(List<T> x, List<T> y)
-        {
-            if (x == null || y == null)
-            {
-                return x == y;
-            }
-
-            if (x.Count != y.Count)
-            {
-                return false;
-            }
-
-            for (int i = 0; i < x.Count; i++)
-            {
-                if (!EqualityComparer<T>.Default.Equals(x[i], y[i]))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        public int GetHashCode(List<T> obj)
-        {
-            if (obj == null)
-            {
-                return 0;
-            }
-
-            unchecked
-            {
-                int hash = 17;
-                foreach (var item in obj)
-                {
-                    hash = hash * 31 + (item?.GetHashCode() ?? 0);
-                }
-                return hash;
-            }
-        }
-    }
 }

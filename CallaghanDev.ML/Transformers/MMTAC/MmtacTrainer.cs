@@ -192,7 +192,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                     try
                     {
-                        var priceinp = SliceRows(inp.PriceSequence, 0, sl - 1);
+                        //var priceinp = SliceRows(inp.PriceSequence, 0, sl - 1);
+                        var priceInp = _accel.SliceRows(inp.PriceSequence, 0, sl - 1);
                         var cache = new MmtacForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
 
                         // Context layout must match PredictWithMemory:
@@ -296,9 +297,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         cache.StoryArrivalTimes = combinedTimes;
 
                         var ph = _model.ForwardPriceDecoderWithCache(
-                            priceinp,
+                            priceInp,
                             0,
-                            priceinp.GetLength(0),
+                            priceInp.GetLength(0),
                             combinedHidden,
                             combinedTimes,
                             cache,
@@ -475,7 +476,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         {
             var inp = allInputs[idx];
             int sl = inp.PriceSequence.GetLength(0);
-            var priceInp = SliceRows(inp.PriceSequence, 0, sl - 1);
+            var priceInp = _accel.SliceRows(inp.PriceSequence, 0, sl - 1);
             int eff = priceInp.GetLength(0);
 
             BuildTargetArrays(allTargets[idx], 1, eff,
@@ -507,8 +508,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             int maxH = sl - _config.PriceContext.MinCurrentLength - 1;
             int sp = minH + _random.Next(maxH - minH + 1);
 
-            var hist = SliceRows(inp.PriceSequence, 0, sp);
-            var current = SliceRows(inp.PriceSequence, sp, sl - 1);
+            var hist = _accel.SliceRows(inp.PriceSequence, 0, sp);
+            var current = _accel.SliceRows(inp.PriceSequence, sp, sl - 1);
             int csl = current.GetLength(0);
             if (csl < 2) return 0f;
 
@@ -1138,7 +1139,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             return (dLiveNewsHidden, dGlobalHidden);
         }
-
+        /*
         private (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttn(float[,] Q, float[,] K, float[,] V, float[,] dOutput, float[][,] attnW, float[,] timeDiffs, TacamtBlock block)
         {
             int psl = Q.GetLength(0), tsl = K.GetLength(0);
@@ -1196,7 +1197,19 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             }
             return (dQ, dK, dV, dDB);
         }
-
+        */
+        private (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttn(float[,] Q, float[,] K, float[,] V, float[,] dOutput, float[][,] attnW, float[,] timeDiffs, TacamtBlock block)
+        {
+            return _accel.BackpropTimeDecayedAttention(
+                Q,
+                K,
+                V,
+                dOutput,
+                attnW,
+                timeDiffs,
+                _config.Price.EmbeddingDim,
+                _config.Price.NumHeads);
+        }
         // 
         // Text encoder backward
         // 
@@ -1960,14 +1973,14 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 return baseLR * MathF.Pow(_trainConfig.LearningRateDecay, epoch - _trainConfig.WarmupEpochs);
             return baseLR;
         }
-
+        /*
         private static float[,] SliceRows(float[,] m, int start, int end)
         {
             int len = end - start, cols = m.GetLength(1);
             var out_ = new float[len, cols];
             for (int i = 0; i < len; i++) for (int j = 0; j < cols; j++) out_[i, j] = m[start + i, j];
             return out_;
-        }
+        }*/
 
         private static void BuildTargetArrays(ModelTarget[] targets, int offset, int count, out float[,] tgtReg, out float[,] tgtRange, out float[,] tgtQuality, out float[,] tgtDir, out float[,] tgtMid)
         {
@@ -2093,8 +2106,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     {
                         int sp = sl / 2;
 
-                        var hist = SliceRows(inputs[i].PriceSequence, 0, sp);
-                        inp = SliceRows(inputs[i].PriceSequence, sp, sl - 1);
+                        var hist = _accel.SliceRows(inputs[i].PriceSequence, 0, sp);
+                        inp = _accel.SliceRows(inputs[i].PriceSequence, sp, sl - 1);
 
                         int csl = inp.GetLength(0);
 
@@ -2149,7 +2162,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     }
                     else
                     {
-                        inp = SliceRows(inputs[i].PriceSequence, 0, sl - 1);
+                        inp = _accel.SliceRows(inputs[i].PriceSequence, 0, sl - 1);
 
                         int eff = inp.GetLength(0);
 
@@ -2262,7 +2275,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                     try
                     {
-                        var priceInp = SliceRows(input.PriceSequence, 0, sl - 1);
+                        var priceInp = _accel.SliceRows(input.PriceSequence, 0, sl - 1);
 
                         var wrappedInput = new MultimodalInput
                         {
@@ -2340,8 +2353,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     if (_config.PriceContext.Enabled && sl >= minSplit)
                     {
                         int sp = sl / 2;
-                        var hist = SliceRows(inputs[i].PriceSequence, 0, sp);
-                        inp = SliceRows(inputs[i].PriceSequence, sp, sl - 1);
+                        var hist = _accel.SliceRows(inputs[i].PriceSequence, 0, sp);
+                        inp = _accel.SliceRows(inputs[i].PriceSequence, sp, sl - 1);
                         int csl = inp.GetLength(0);
 
                         BuildTargetArrays(targets[i], sp + 1, csl, out tgtReg, out tgtRange, out tgtQuality, out tgtDir, out tgtMid);
@@ -2371,7 +2384,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     }
                     else
                     {
-                        inp = SliceRows(inputs[i].PriceSequence, 0, sl - 1);
+                        inp = _accel.SliceRows(inputs[i].PriceSequence, 0, sl - 1);
                         int eff = inp.GetLength(0);
 
                         BuildTargetArrays(targets[i], 1, eff, out tgtReg, out tgtRange, out tgtQuality, out tgtDir, out tgtMid);
@@ -2460,7 +2473,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                     try
                     {
-                        var priceInp = SliceRows(input.PriceSequence, 0, sl - 1);
+                        var priceInp = _accel.SliceRows(input.PriceSequence, 0, sl - 1);
 
                         var wrappedInput = new MultimodalInput
                         {

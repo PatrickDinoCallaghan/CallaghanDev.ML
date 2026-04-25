@@ -2251,5 +2251,90 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             throw new NotImplementedException();
         }
+
+        public float[] ProjectGlobalFeatures(float[] globalFeatures, float[,] projection, float[] bias)
+        {
+            throw new NotImplementedException();
+        }
+
+        public float[,] EmbedTokenIds(int[] tokenIds, float[,] embedding, int embeddingDim)
+        {
+            throw new NotImplementedException();
+        }
+
+        public float[] MeanPoolRows(float[,] matrix)
+        {
+            throw new NotImplementedException();
+        }
+
+        public (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews) BuildMmtacContext(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] contextTypeEmbedding)
+        {
+            throw new NotImplementedException();
+        }
+
+        public (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence, float[,] regressionLogits, float[] rangeLogits, float[] qualityLogits) ProjectMmtacOutputHeads(float[,] hidden, float[,] regressionProjection, float[] regressionBias, float[,] rangeProjection, float[] rangeBias, float[,] qualityProjection, float[] qualityBias, float[,] directionProjection, float[] directionBias, float[,] midDirectionProjection, float[] midDirectionBias, float[,] confidenceProjection, float[] confidenceBias, bool useConfidenceHead)
+        {
+            throw new NotImplementedException();
+        }
+
+        public float[] SoftmaxVector(float[] scores)
+        {
+            throw new NotImplementedException();
+        }
+
+        public (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttention(float[,] q, float[,] k, float[,] v, float[,] dOutput, float[][,] attentionWeights, float[,] timeDiffs, int embeddingDim, int numHeads)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string[] PreTokenize(string text)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Dictionary<string, int> GetWordFrequencies(string[] texts, bool lowerCase)
+        {
+            throw new NotImplementedException();
+        }
+
+        public HashSet<string> BuildCharacterVocabulary(Dictionary<string, int> wordFreqs)
+        {
+            throw new NotImplementedException();
+        }
+
+        public List<string> ApplyMerge(List<string> word, string left, string right)
+        {
+            throw new NotImplementedException();
+        }
+
+        public List<int> EncodeWord(string word, Dictionary<(string, string), int> mergePriority, Dictionary<string, int> vocabToId, int unkTokenId)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Dictionary<(string left, string right), int> CountPairFrequencies(Dictionary<List<string>, int> words)
+        {
+            throw new NotImplementedException();
+        }
+
+        public ((string left, string right) pair, int frequency) SelectBestPair(Dictionary<(string left, string right), int> pairCounts, int minFrequency)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Dictionary<List<string>, int> ApplyMergeToVocabulary(Dictionary<List<string>, int> words, string left, string right)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string DecodeTokens(int[] tokenIds, Dictionary<int, string> idToVocab, string unkToken, bool skipSpecialTokens)
+        {
+            throw new NotImplementedException();
+        }
+
+        public int[] PadOrTruncate(int[] tokenIds, int maxLength, bool addSpecialTokens, int padTokenId, int endTokenId)
+        {
+            throw new NotImplementedException();
+        }
     }
 }
