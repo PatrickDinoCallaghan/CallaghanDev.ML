@@ -140,9 +140,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             }
         }
 
-
-
-
         private float[,] ForwardTextEncoder(int[] textTokenIds)
         {
             int seqLen = textTokenIds.Length;
@@ -330,20 +327,6 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             float u1 = 1.0f - _random.NextSingle();
             float u2 = 1.0f - _random.NextSingle();
             return MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
-        }
-
-        private static float Sigmoid(float x)
-        {
-            if (x >= 0)
-            {
-                float ex = MathF.Exp(-x);
-                return 1.0f / (1.0f + ex);
-            }
-            else
-            {
-                float ex = MathF.Exp(x);
-                return ex / (1.0f + ex);
-            }
         }
 
         public (float[,] predictions, float[,] confidence) Forward(int[] textTokenIds, float[,] priceSequence)
@@ -592,6 +575,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             return x;
         }
+
         #region Save Load
 
 
@@ -684,12 +668,19 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             for (int layer = 0; layer < _config.Text.NumLayers; layer++)
             {
                 var ffnDir = System.IO.Path.Combine(directory, $"text_ffn_{layer}");
-                TextBlocks[layer].FeedForwardNetwork.Save(ffnDir);
+                System.IO.Directory.CreateDirectory(ffnDir);
+
+                var ffnPath = System.IO.Path.Combine(ffnDir, "network.bin");
+                TextBlocks[layer].FeedForwardNetwork.Save(ffnPath);
             }
+
             for (int layer = 0; layer < _config.Price.NumLayers; layer++)
             {
                 var ffnDir = System.IO.Path.Combine(directory, $"price_ffn_{layer}");
-                PriceBlocks[layer].FeedForwardNetwork.Save(ffnDir);
+                System.IO.Directory.CreateDirectory(ffnDir);
+
+                var ffnPath = System.IO.Path.Combine(ffnDir, "network.bin");
+                PriceBlocks[layer].FeedForwardNetwork.Save(ffnPath);
             }
         }
 
@@ -791,15 +782,15 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             }
             for (int layer = 0; layer < config.Text.NumLayers; layer++)
             {
-                var ffnDir = System.IO.Path.Combine(directory, $"text_ffn_{layer}");
-                var loadedFfn = NeuralNetwork.Load(ffnDir, config.Runtime.AccelerationType);
+                var ffnPath = System.IO.Path.Combine(directory, $"text_ffn_{layer}", "network.bin");
+                var loadedFfn = NeuralNetwork.Load(ffnPath, config.Runtime.AccelerationType);
                 model.TextBlocks[layer].ReplaceFeedForwardNetwork(loadedFfn);
             }
 
             for (int layer = 0; layer < config.Price.NumLayers; layer++)
             {
-                var ffnDir = System.IO.Path.Combine(directory, $"price_ffn_{layer}");
-                model.PriceBlocks[layer].FeedForwardNetwork = NeuralNetwork.Load(ffnDir, config.Runtime.AccelerationType);
+                var ffnPath = System.IO.Path.Combine(directory, $"price_ffn_{layer}", "network.bin");
+                model.PriceBlocks[layer].FeedForwardNetwork = NeuralNetwork.Load(ffnPath, config.Runtime.AccelerationType);
             }
             return model;
         }

@@ -35,6 +35,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private (Action, string)[] Tests() => new (Action, string)[]
         {
+            (Test_Save_CreatesExpectedFiles,                                      "Save: expected files/directories are created"),
             // Construction / config guards
             (Test_ModelConstruction_Default,                                      "Construction: default small model initialises"),
             (Test_ModelConstruction_ParameterShapes,                              "Construction: public parameter shapes match config"),
@@ -112,7 +113,6 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             (Test_SaveLoad_NoConfidenceHeadRoundTrips,                            "SaveLoad: no-confidence model round-trips"),
             (Test_SaveLoad_PredictNextIdentical,                                  "SaveLoad: PredictNext output is preserved"),
             (Test_SaveLoad_ConfigSwitchesPreserved,                               "SaveLoad: important config switches are preserved"),
-            (Test_Save_CreatesExpectedFiles,                                      "Save: expected files/directories are created"),
             (Test_Load_MissingWeightsThrows,                                      "Load guard: missing weights file throws"),
             (Test_Load_CorruptWeightsThrows,                                      "Load guard: corrupt weight shape throws"),
         };

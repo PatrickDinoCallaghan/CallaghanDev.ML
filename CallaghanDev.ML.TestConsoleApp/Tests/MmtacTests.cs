@@ -407,13 +407,13 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private (Action, string)[] Tests() => new (Action, string)[]
         {
             (Test_Forward_OutputHeadCoherentOhlcRange_AllTimesteps, "Fix: output head guarantees coherent OHLC/range"),
-(Test_CrossAttention_ContextRowsArePermutationEquivariant, "Fix: cross-attention has no context-row RoPE ordering leak"),
-(Test_CrossAttention_DecayDisabledStillMasksFutureContext, "Fix: decay disabled still masks future context"),
-(Test_DecayNetwork_KeyRefinementMasksFutureKeys, "Fix: decay key-refinement masks future keys"),
-(Test_ForwardWithCache_RowStartShiftsContextTimes, "Fix: cached row slice shifts context times"),
-(Test_Timestamp_WindowEndPredictionMatchesManualWindowStart, "Fix: window-end timestamp overload matches manual window-start conversion"),
-(Test_Train_InvalidSampleSameBatchDiscardsBatchWithoutDirtyUpdate, "Fix: invalid sample does not contaminate batch gradients"),
-(Test_ClearAllMemory_ResetsLastPriceTimestamp, "Fix: ClearAllMemory resets LastPriceTimestamp"),
+            (Test_CrossAttention_ContextRowsArePermutationEquivariant, "Fix: cross-attention has no context-row RoPE ordering leak"),
+            (Test_CrossAttention_DecayDisabledStillMasksFutureContext, "Fix: decay disabled still masks future context"),
+            (Test_DecayNetwork_KeyRefinementMasksFutureKeys, "Fix: decay key-refinement masks future keys"),
+            (Test_ForwardWithCache_RowStartShiftsContextTimes, "Fix: cached row slice shifts context times"),
+            (Test_Timestamp_WindowEndPredictionMatchesManualWindowStart, "Fix: window-end timestamp overload matches manual window-start conversion"),
+            (Test_Train_InvalidSampleSameBatchDiscardsBatchWithoutDirtyUpdate, "Fix: invalid sample does not contaminate batch gradients"),
+            (Test_ClearAllMemory_ResetsLastPriceTimestamp, "Fix: ClearAllMemory resets LastPriceTimestamp"),
 
             // High-confidence functional tests
             (Test_HighConfidence_OutputHeadFiniteDifferenceUpdateDirection, "Grad: one-step output-head updates follow finite-difference loss direction"),

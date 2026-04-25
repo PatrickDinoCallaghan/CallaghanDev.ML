@@ -18,9 +18,9 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             PrintBanner("TRANSFORMER TEST SUITE", '=');
 
+            new CrossAttentionMultimodalTests().RunAllTests();
             new MmtacTests().RunAllTests();
             new TacmatTests().RunAllTests();
-            new CrossAttentionMultimodalTests().RunAllTests();
             new MultiTypeTransformerTests().RunAllTests();
 
             Console.WriteLine();
