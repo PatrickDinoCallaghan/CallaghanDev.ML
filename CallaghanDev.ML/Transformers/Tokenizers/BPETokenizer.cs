@@ -46,8 +46,9 @@ namespace CallaghanDev.ML.Transformers
             InitializeSpecialTokens();
         }
 
-        public BPETokenizer()
+        public BPETokenizer() : this(new AccelerationCPU()) //TODO: Must revise this pattern or each time BPETokenizer is loaded it will only be single threaded
         {
+
         }
 
         private void InitializeSpecialTokens()
@@ -385,16 +386,14 @@ namespace CallaghanDev.ML.Transformers
 
             Console.WriteLine($"Tokenizer saved to {directory}");
         }
-        public static BPETokenizer Load(string directory)
+        public static BPETokenizer Load(string directory, IAccelerationManager accelerationManager)
         {
             var tokenizer = new BPETokenizer(new AccelerationCPU());
 
             var vocabPath = Path.Combine(directory, "vocab.json");
             var vocabJson = File.ReadAllText(vocabPath);
 
-            tokenizer._vocabToId =
-                JsonSerializer.Deserialize<Dictionary<string, int>>(vocabJson)
-                ?? throw new InvalidOperationException("Failed to deserialize tokenizer vocab.");
+            tokenizer._vocabToId = JsonSerializer.Deserialize<Dictionary<string, int>>(vocabJson)  ?? throw new InvalidOperationException("Failed to deserialize tokenizer vocab.");
 
             tokenizer._idToVocab = tokenizer._vocabToId.ToDictionary(kv => kv.Value, kv => kv.Key);
 
@@ -415,7 +414,9 @@ namespace CallaghanDev.ML.Transformers
             foreach (var line in lines)
             {
                 if (line.StartsWith("#") || string.IsNullOrWhiteSpace(line))
+                {
                     continue;
+                }
 
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 

@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Enums;
+﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MMTAC;
@@ -991,7 +992,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private void Test_Forward_StoryAndGlobalChangePrediction()
         {
             var corpus = new[] { "bullish demand growth", "bearish credit stress" };
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(corpus, vocabSize: 64, minFrequency: 1);
 
             var cfg = Cfg(tok.VocabSize + 2, globalDim: 3);
@@ -1019,7 +1020,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private void Test_Forward_WithCacheMatchesForward_AllHeads()
         {
             var corpus = new[] { "policy support growth demand" };
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(corpus, vocabSize: 32, minFrequency: 1);
 
             var cfg = Cfg(tok.VocabSize + 2, embDim: 24, numHeads: 4, numLayers: 2, ffnDim: 48, useConf: true, globalDim: 3);
@@ -1179,7 +1180,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_Tokenizer_SetTokenizeAndOversizedThrows()
         {
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(new[] { "stock rose sharply", "market crashed today" }, vocabSize: 100, minFrequency: 1);
 
             var m = new MmtacModel(Cfg(vocabSize: tok.VocabSize + 5), new Random(42));
@@ -2212,7 +2213,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         {
             var rng = new Random(seed);
             string[] corpus = { "stock rose sharply", "market crashed today", "bullish outlook strong", "bearish data weak" };
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(corpus, vocabSize: 200, minFrequency: 1);
 
             var inputs = new MultimodalInput[n];
@@ -2262,7 +2263,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private (BPETokenizer tok, MultimodalInput[] trainInputs, ModelTarget[][] trainTargets, MultimodalInput[] testInputs, ModelTarget[][] testTargets) PriceHeldOutData(int trainN = 64, int testN = 20, int seqLen = 6, int seed = 123)
         {
             var rng = new Random(seed);
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(new[] { "unused token" }, vocabSize: 32, minFrequency: 1);
 
             MultimodalInput MakeInput(float x, float y, int idx) => new MultimodalInput
@@ -2301,7 +2302,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         {
             string bullText = "strong bullish outlook demand growth";
             string bearText = "weak bearish outlook contraction risk";
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(new[] { bullText, bearText }, vocabSize: 80, minFrequency: 1);
             int[] bull = tok.Encode(bullText, addSpecialTokens: true);
             int[] bear = tok.Encode(bearText, addSpecialTokens: true);
@@ -2324,7 +2325,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private (BPETokenizer tok, MultimodalInput[] inputs, ModelTarget[][] targets) GlobalSignalData(int n = 48, int seqLen = 6)
         {
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(new[] { "unused token" }, vocabSize: 32, minFrequency: 1);
             var inputs = new MultimodalInput[n];
             var targets = new ModelTarget[n][];
@@ -3036,7 +3037,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             string bullText = "central bank support growth demand";
             string bearText = "credit stress slowdown recession";
 
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(new[] { bullText, bearText }, vocabSize: 80, minFrequency: 1);
 
             int[] bull = tok.Encode(bullText, addSpecialTokens: true);

@@ -131,7 +131,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 tok.Save(dir);
-                var loaded = BPETokenizer.Load(dir);
+                var loaded = BPETokenizer.Load(dir, new AccelerationCPU());
 
                 var after = loaded.Encode("lowest lower low", addSpecialTokens: true);
 
@@ -439,7 +439,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             {
                 tok.Save(dir);
 
-                var loaded = BPETokenizer.Load(dir);
+                var loaded = BPETokenizer.Load(dir, new AccelerationCPU());
 
                 Assert(loaded.VocabSize == tok.VocabSize, "Loaded vocab size mismatch");
 
@@ -469,7 +469,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 tok.Save(dir);
-                var loaded = BPETokenizer.Load(dir);
+                var loaded = BPETokenizer.Load(dir, new AccelerationCPU());
 
                 Assert(loaded.MaxTokenLength == 123, "MaxTokenLength not preserved");
                 Assert(loaded.LowerCase == true, "LowerCase not preserved");

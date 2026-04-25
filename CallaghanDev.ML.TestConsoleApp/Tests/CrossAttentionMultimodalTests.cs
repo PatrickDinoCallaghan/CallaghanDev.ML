@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Enums;
+﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
@@ -1389,7 +1390,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private BPETokenizer NewTokenizer(string[] corpus)
         {
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(new AccelerationCPU());
             tok.Train(corpus, vocabSize: 200, minFrequency: 1);
             return tok;
         }

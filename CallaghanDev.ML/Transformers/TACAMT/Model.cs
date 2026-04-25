@@ -133,7 +133,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 throw new ArgumentException("Cannot train tokenizer on empty text corpus.");
             }
 
-            var tokenizer = new BPETokenizer();
+            var tokenizer = new BPETokenizer(_accel);
             tokenizer.Train(texts, _config.Text.VocabSize, minFrequency);
 
             // BPETokenizer.Train may produce fewer tokens than requested if the corpus is small.
@@ -2825,7 +2825,27 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             {
                 try
                 {
-                    var tokenizer = BPETokenizer.Load(tokenizerDir);
+                    IAccelerationManager accelerationManager = null;
+
+                    if (cfg.Runtime.AccelerationType == AccelerationType.CPU)
+                    {
+                        accelerationManager = new AccelerationCPU();
+                    }
+                    if (cfg.Runtime.AccelerationType == AccelerationType.GPU)
+                    {
+                        accelerationManager = new AccelerationGPU(cfg.Runtime.AccelerationType, cfg.Runtime.AccelerationDeviceId);
+                    }
+                    if (cfg.Runtime.AccelerationType == AccelerationType.MultiThreadCPU)
+                    {
+                        accelerationManager = new AccelerationMutliThreadCPU();
+                    }
+                    if (accelerationManager == null)
+                    {
+                        throw new Exception();
+                    }
+
+
+                    var tokenizer = BPETokenizer.Load(tokenizerDir, accelerationManager);
                     m.SetTokenizer(tokenizer);
                 }
                 catch

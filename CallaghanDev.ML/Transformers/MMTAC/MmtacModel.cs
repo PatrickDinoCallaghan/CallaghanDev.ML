@@ -137,7 +137,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             {
                 throw new ArgumentException("Cannot train tokenizer on empty corpus.");
             }
-            var tok = new BPETokenizer();
+            var tok = new BPETokenizer(_accel);
             tok.Train(texts, _config.Text.VocabSize, minFrequency);
             Tokenizer = tok;
         }
@@ -2328,7 +2328,26 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             {
                 try
                 {
-                    m.Tokenizer = BPETokenizer.Load(tokDir);
+                    IAccelerationManager accelerationManager = null;
+
+                    if (cfg.Runtime.AccelerationType == AccelerationType.CPU)
+                    {
+                        accelerationManager = new AccelerationCPU();
+                    }
+                    if (cfg.Runtime.AccelerationType == AccelerationType.GPU)
+                    {
+                        accelerationManager = new AccelerationGPU(cfg.Runtime.AccelerationType, cfg.Runtime.AccelerationDeviceId);
+                    }
+                    if (cfg.Runtime.AccelerationType == AccelerationType.MultiThreadCPU)
+                    {
+                        accelerationManager = new AccelerationMutliThreadCPU();
+                    }
+                    if (accelerationManager == null)
+                    {
+                        throw new Exception();
+                    }
+
+                    m.Tokenizer = BPETokenizer.Load(tokDir, accelerationManager);
                 }
                 catch
                 {
