@@ -104,11 +104,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 LNCrossGamma[i] = 1.0f;
                 LNFFNGamma[i] = 1.0f;
             }
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
         }
-        private void Init()
-        {
 
-        }
         public float[,] Forward(float[,] x, float[,] textHidden, bool[,] selfAttnMask, IAccelerationManager accel)
         {
             int priceSeqLen = x.GetLength(0);

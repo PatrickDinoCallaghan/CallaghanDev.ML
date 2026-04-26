@@ -3,6 +3,7 @@ using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.TACAMT;
 using ILGPU.Algorithms;
 using MathNet.Numerics;
+using System.Buffers;
 using System.Text;
 using static CallaghanDev.ML.Functions;
 
@@ -433,7 +434,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
-        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
+        #region MultiHeadAttentionBackward
+
+        [Obsolete]
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward_Obsolete(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {
             bool[,] mask = null;
 
@@ -444,14 +448,19 @@ namespace CallaghanDev.ML.AccelerationManagers
                 mask = new bool[seqLenQ, seqLenK];
 
                 for (int i = 0; i < seqLenQ; i++)
+                {
                     for (int j = 0; j < seqLenK; j++)
+                    {
                         mask[i, j] = j <= i;
+                    }
+                }
             }
 
             return MultiHeadAttentionBackward(Q, K, V, dConcatenated, numHeads, scale, mask);
         }
 
-        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask)
+        [Obsolete]
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward_Obsolete(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask)
         {
             if (Q == null) throw new ArgumentNullException(nameof(Q));
             if (K == null) throw new ArgumentNullException(nameof(K));
@@ -601,6 +610,284 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (dQFull, dKFull, dVFull);
         }
 
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
+        {
+            return MultiHeadAttentionBackwardCore(
+                Q,
+                K,
+                V,
+                dConcatenated,
+                numHeads,
+                scale,
+                mask: null,
+                useDecoderMask: useDecoderMask);
+        }
+
+        public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask)
+        {
+            return MultiHeadAttentionBackwardCore(
+                Q,
+                K,
+                V,
+                dConcatenated,
+                numHeads,
+                scale,
+                mask,
+                useDecoderMask: false);
+        }
+
+        private (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackwardCore(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask, bool useDecoderMask)
+        {
+            if (Q == null) throw new ArgumentNullException(nameof(Q));
+            if (K == null) throw new ArgumentNullException(nameof(K));
+            if (V == null) throw new ArgumentNullException(nameof(V));
+            if (dConcatenated == null) throw new ArgumentNullException(nameof(dConcatenated));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);
+            int embeddingDim = Q.GetLength(1);
+
+            if (K.GetLength(1) != embeddingDim || V.GetLength(1) != embeddingDim)
+                throw new ArgumentException("Q, K and V must have the same embedding dimension.");
+
+            if (V.GetLength(0) != seqLenK)
+                throw new ArgumentException("K and V must have the same sequence length.");
+
+            if (dConcatenated.GetLength(0) != seqLenQ || dConcatenated.GetLength(1) != embeddingDim)
+                throw new ArgumentException("dConcatenated shape must match Q shape.", nameof(dConcatenated));
+
+            if (embeddingDim % numHeads != 0)
+                throw new ArgumentException("Embedding dim must be divisible by numHeads.", nameof(numHeads));
+
+            if (mask != null && (mask.GetLength(0) != seqLenQ || mask.GetLength(1) != seqLenK))
+                throw new ArgumentException(
+                    $"Mask shape must be [{seqLenQ},{seqLenK}], got [{mask.GetLength(0)},{mask.GetLength(1)}].",
+                    nameof(mask));
+
+            int headDim = embeddingDim / numHeads;
+
+            var dQFull = new float[seqLenQ, embeddingDim];
+            var dKFull = new float[seqLenK, embeddingDim];
+            var dVFull = new float[seqLenK, embeddingDim];
+
+            // Reused scratch buffers.
+            var weights = new float[seqLenK];
+            var dAttn = new float[seqLenK];
+            var activeIndices = new int[seqLenK];
+
+            var qRow = new float[headDim];
+            var doutRow = new float[headDim];
+            var dqRow = new float[headDim];
+
+            for (int head = 0; head < numHeads; head++)
+            {
+                int offset = head * headDim;
+
+                for (int i = 0; i < seqLenQ; i++)
+                {
+                    Array.Clear(dqRow, 0, headDim);
+
+                    for (int k = 0; k < headDim; k++)
+                    {
+                        int col = offset + k;
+                        qRow[k] = Q[i, col];
+                        doutRow[k] = dConcatenated[i, col];
+                    }
+
+                    float maxScore = float.NegativeInfinity;
+                    int activeCount = 0;
+
+                    if (mask != null)
+                    {
+                        for (int j = 0; j < seqLenK; j++)
+                        {
+                            if (!mask[i, j])
+                                continue;
+
+                            float dot = 0f;
+
+                            for (int k = 0; k < headDim; k++)
+                                dot += qRow[k] * K[j, offset + k];
+
+                            float score = dot * scale;
+
+                            weights[j] = score;
+                            activeIndices[activeCount++] = j;
+
+                            if (score > maxScore)
+                                maxScore = score;
+                        }
+                    }
+                    else
+                    {
+                        int visibleKeys = useDecoderMask
+                            ? Math.Min(i + 1, seqLenK)
+                            : seqLenK;
+
+                        activeCount = visibleKeys;
+
+                        for (int j = 0; j < visibleKeys; j++)
+                        {
+                            float dot = 0f;
+
+                            for (int k = 0; k < headDim; k++)
+                                dot += qRow[k] * K[j, offset + k];
+
+                            float score = dot * scale;
+
+                            weights[j] = score;
+
+                            if (score > maxScore)
+                                maxScore = score;
+                        }
+                    }
+
+                    if (activeCount == 0 || float.IsNegativeInfinity(maxScore))
+                        continue;
+
+                    float sumExp = 0f;
+
+                    if (mask != null)
+                    {
+                        for (int n = 0; n < activeCount; n++)
+                        {
+                            int j = activeIndices[n];
+
+                            float w = MathF.Exp(weights[j] - maxScore);
+                            weights[j] = w;
+                            sumExp += w;
+                        }
+                    }
+                    else
+                    {
+                        for (int j = 0; j < activeCount; j++)
+                        {
+                            float w = MathF.Exp(weights[j] - maxScore);
+                            weights[j] = w;
+                            sumExp += w;
+                        }
+                    }
+
+                    if (sumExp <= 0f)
+                        continue;
+
+                    float invSumExp = 1f / sumExp;
+
+                    if (mask != null)
+                    {
+                        for (int n = 0; n < activeCount; n++)
+                        {
+                            int j = activeIndices[n];
+                            weights[j] *= invSumExp;
+                        }
+                    }
+                    else
+                    {
+                        for (int j = 0; j < activeCount; j++)
+                            weights[j] *= invSumExp;
+                    }
+
+                    float rowDot = 0f;
+
+                    // Compute dV and dAttn row.
+                    if (mask != null)
+                    {
+                        for (int n = 0; n < activeCount; n++)
+                        {
+                            int j = activeIndices[n];
+                            float w = weights[j];
+
+                            float dAttnJ = 0f;
+
+                            for (int k = 0; k < headDim; k++)
+                            {
+                                int col = offset + k;
+                                float dout = doutRow[k];
+
+                                dVFull[j, col] += w * dout;
+                                dAttnJ += dout * V[j, col];
+                            }
+
+                            dAttn[j] = dAttnJ;
+                            rowDot += w * dAttnJ;
+                        }
+                    }
+                    else
+                    {
+                        for (int j = 0; j < activeCount; j++)
+                        {
+                            float w = weights[j];
+
+                            float dAttnJ = 0f;
+
+                            for (int k = 0; k < headDim; k++)
+                            {
+                                int col = offset + k;
+                                float dout = doutRow[k];
+
+                                dVFull[j, col] += w * dout;
+                                dAttnJ += dout * V[j, col];
+                            }
+
+                            dAttn[j] = dAttnJ;
+                            rowDot += w * dAttnJ;
+                        }
+                    }
+
+                    // Softmax backward + Q/K backward.
+                    if (mask != null)
+                    {
+                        for (int n = 0; n < activeCount; n++)
+                        {
+                            int j = activeIndices[n];
+
+                            float dDot = weights[j] * (dAttn[j] - rowDot) * scale;
+
+                            if (dDot == 0f)
+                                continue;
+
+                            for (int k = 0; k < headDim; k++)
+                            {
+                                int col = offset + k;
+
+                                dqRow[k] += dDot * K[j, col];
+                                dKFull[j, col] += dDot * qRow[k];
+                            }
+                        }
+                    }
+                    else
+                    {
+                        for (int j = 0; j < activeCount; j++)
+                        {
+                            float dDot = weights[j] * (dAttn[j] - rowDot) * scale;
+
+                            if (dDot == 0f)
+                                continue;
+
+                            for (int k = 0; k < headDim; k++)
+                            {
+                                int col = offset + k;
+
+                                dqRow[k] += dDot * K[j, col];
+                                dKFull[j, col] += dDot * qRow[k];
+                            }
+                        }
+                    }
+
+                    for (int k = 0; k < headDim; k++)
+                        dQFull[i, offset + k] += dqRow[k];
+                }
+            }
+
+            return (dQFull, dKFull, dVFull);
+        }
+
+        #endregion
+
+
+
+
         public float[,] LayerNorm(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
         {
             int batchSize = input.GetLength(0);
@@ -722,18 +1009,35 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public bool[,] CreateCausalMask(int seqLen)
         {
+            if (seqLen < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seqLen));
+            }
+
             var mask = new bool[seqLen, seqLen];
+
+            var trueRow = new bool[seqLen];
+            Array.Fill(trueRow, true);
+
+            const int boolSize = sizeof(bool); // 1 byte
+
             for (int i = 0; i < seqLen; i++)
             {
-                for (int j = 0; j <= i; j++)
-                {
-                    mask[i, j] = true;
-                }
+                Buffer.BlockCopy(
+                    trueRow,
+                    0,
+                    mask,
+                    i * seqLen * boolSize,
+                    (i + 1) * boolSize);
             }
+
             return mask;
         }
 
-        public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
+        #region MultiHeadAttentionForward
+
+        [Obsolete]
+        public float[,] MultiHeadAttentionForward_Obsolete(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
         {
             int seqLenQ = Q.GetLength(0);
             int seqLenK = K.GetLength(0);  // K and V have the same seq length
@@ -742,7 +1046,6 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (embeddingDim % numHeads != 0)
             {
-
                 throw new ArgumentException("Embedding dim must be divisible by numHeads");
             }
             var concatenated = new float[seqLenQ, embeddingDim];
@@ -789,6 +1092,145 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return concatenated;
         }
+
+        public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
+        {
+            if (Q == null)
+            {
+                throw new ArgumentNullException(nameof(Q));
+            }
+            if (K == null)
+            {
+                throw new ArgumentNullException(nameof(K));
+            }
+            if (V == null)
+            {
+                throw new ArgumentNullException(nameof(V));
+            } 
+
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);
+            int embeddingDim = Q.GetLength(1);
+
+            if (K.GetLength(1) != embeddingDim || V.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("Q, K and V must have the same embedding dimension.");
+            }
+
+            if (V.GetLength(0) != seqLenK)
+            {
+                throw new ArgumentException("K and V must have the same sequence length.");
+            }
+
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dim must be divisible by numHeads.");
+            }
+
+            if (mask != null && (mask.GetLength(0) != seqLenQ || mask.GetLength(1) != seqLenK))
+            {
+                throw new ArgumentException("Mask shape must be [seqLenQ, seqLenK].");
+            }
+
+            int headDim = embeddingDim / numHeads;
+            var output = new float[seqLenQ, embeddingDim];
+
+            float[] scores = ArrayPool<float>.Shared.Rent(seqLenK);
+
+            try
+            {
+                for (int head = 0; head < numHeads; head++)
+                {
+                    int startIdx = head * headDim;
+
+                    for (int i = 0; i < seqLenQ; i++)
+                    {
+                        float maxScore = float.NegativeInfinity;
+
+                        // Compute QK^T row directly for this query token.
+                        for (int k = 0; k < seqLenK; k++)
+                        {
+                            if (mask != null && !mask[i, k])
+                            {
+                                scores[k] = float.NegativeInfinity;
+                                continue;
+                            }
+
+                            float dot = 0f;
+
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                dot += Q[i, startIdx + d] * K[k, startIdx + d];
+                            }
+
+                            float score = dot * scale;
+                            scores[k] = score;
+
+                            if (score > maxScore)
+                            {
+                                maxScore = score;
+                            }
+                        }
+
+                        // Handle fully masked row.
+                        if (float.IsNegativeInfinity(maxScore))
+                        {
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                output[i, startIdx + d] = 0f;
+                            }
+
+                            continue;
+                        }
+
+                        // Stable softmax.
+                        float sumExp = 0f;
+
+                        for (int k = 0; k < seqLenK; k++)
+                        {
+                            if (float.IsNegativeInfinity(scores[k]))
+                            {
+                                scores[k] = 0f;
+                                continue;
+                            }
+
+                            float exp = MathF.Exp(scores[k] - maxScore);
+                            scores[k] = exp;
+                            sumExp += exp;
+                        }
+
+                        float invSumExp = sumExp > 0f ? 1f / sumExp : 0f;
+
+                        for (int k = 0; k < seqLenK; k++)
+                        {
+                            scores[k] *= invSumExp;
+                        }
+
+                        // Multiply attention row by V directly into output.
+                        for (int d = 0; d < headDim; d++)
+                        {
+                            float value = 0f;
+
+                            for (int k = 0; k < seqLenK; k++)
+                            {
+                                value += scores[k] * V[k, startIdx + d];
+                            }
+
+                            output[i, startIdx + d] = value;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(scores);
+            }
+
+            return output;
+        }
+
+        #endregion
+
         /*
         public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {

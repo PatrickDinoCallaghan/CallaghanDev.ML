@@ -1,5 +1,6 @@
 ﻿using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.TACAMT;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -873,24 +874,42 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (dInput, dGamma, dBeta);
         }
 
-
         public bool[,] CreateCausalMask(int seqLen)
         {
-            var mask = new bool[seqLen, seqLen];
-            for (int i = 0; i < seqLen; i++)
+            if (seqLen < 0)
             {
-                for (int j = 0; j <= i; j++)
-                {
-                    mask[i, j] = true;
-                }
+                throw new ArgumentOutOfRangeException(nameof(seqLen));
             }
+
+            int workUnits = seqLen * seqLen;
+
+            if (!ShouldParallelize(workUnits))
+            {
+                return _singleThreadCPU.CreateCausalMask(seqLen);
+            }
+
+            var mask = new bool[seqLen, seqLen];
+
+            var trueRow = new bool[seqLen];
+            Array.Fill(trueRow, true);
+
+            Parallel.For(0, seqLen, _parallelOptions, i =>
+            {
+                Buffer.BlockCopy(
+                    trueRow,
+                    0,
+                    mask,
+                    i * seqLen,
+                    i + 1);
+            });
+
             return mask;
         }
-
         #region MultiHeadAttentionForward
 
         // This is the best i could attempt. Please please please let me never have to try this again. Jesus.
-        public unsafe float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
+        [Obsolete]
+        public unsafe float[,] MultiHeadAttentionForward_Obsolete(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
         {
             int seqLenQ = Q.GetLength(0);
             int seqLenK = K.GetLength(0);
@@ -906,13 +925,14 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             // Always parallelise across heads - each head is fully independent
             Parallel.For(0, numHeads, _parallelOptions, head =>
-                MHAForwardHeadFast(Q, K, V, concatenated, head, headDim, seqLenQ, seqLenK, scale, mask)
+                MHAForwardHeadFast_Obsolete(Q, K, V, concatenated, head, headDim, seqLenQ, seqLenK, scale, mask)
             );
 
             return concatenated;
         }
 
-        private unsafe void MHAForwardHeadFast(float[,] Q, float[,] K, float[,] V, float[,] concatenated, int head, int headDim, int seqLenQ, int seqLenK, float scale, bool[,] mask)
+        [Obsolete]
+        private unsafe void MHAForwardHeadFast_Obsolete(float[,] Q, float[,] K, float[,] V, float[,] concatenated, int head, int headDim, int seqLenQ, int seqLenK, float scale, bool[,] mask)
         {
             int offset = head * headDim;
             int vecSize = Vector<float>.Count;
@@ -977,6 +997,232 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
             }
+        }
+
+        public unsafe float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
+        {
+            int workUnits = numHeads * Q.GetLength(0);
+
+            if (!ShouldParallelize(workUnits))
+            {
+                return _singleThreadCPU.MultiHeadAttentionForward(Q, K, V, numHeads, scale, mask);
+            }
+
+            if (Q == null)
+            {
+                throw new ArgumentNullException(nameof(Q));
+            }
+            if (K == null)
+            {
+                throw new ArgumentNullException(nameof(K));
+            }
+            if (V == null)
+            {
+                throw new ArgumentNullException(nameof(V));
+            }
+            if (numHeads <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(numHeads));
+            }
+
+            int seqLenQ = Q.GetLength(0);
+            int seqLenK = K.GetLength(0);
+            int embeddingDim = Q.GetLength(1);
+
+            if (K.GetLength(1) != embeddingDim || V.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("Q, K and V must have the same embedding dimension.");
+            }
+            if (V.GetLength(0) != seqLenK)
+            {
+                throw new ArgumentException("K and V must have the same sequence length.");
+            }
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dim must be divisible by numHeads.");
+            }
+            if (mask != null && (mask.GetLength(0) != seqLenQ || mask.GetLength(1) != seqLenK))
+            {
+                throw new ArgumentException("Mask shape must be [seqLenQ, seqLenK].");
+            }
+
+            int headDim = embeddingDim / numHeads;
+            int totalWorkItems = numHeads * seqLenQ;
+
+            int vecSize = Vector<float>.Count;
+            int headVecEnd = headDim - (headDim % vecSize);
+
+            var output = new float[seqLenQ, embeddingDim];
+
+            fixed (float* qFixed = Q)
+            fixed (float* kFixed = K)
+            fixed (float* vFixed = V)
+            fixed (float* outFixed = output)
+            {
+                // Avoid capturing fixed locals directly inside the lambda.
+                nint qBase = (nint)qFixed;
+                nint kBase = (nint)kFixed;
+                nint vBase = (nint)vFixed;
+                nint outBase = (nint)outFixed;
+
+                Parallel.For(
+                    0,
+                    totalWorkItems,
+                    _parallelOptions,
+                    () => ArrayPool<float>.Shared.Rent(seqLenK),
+                    (workIndex, loopState, scores) =>
+                    {
+                        float* pQ = (float*)qBase;
+                        float* pK = (float*)kBase;
+                        float* pV = (float*)vBase;
+                        float* pOut = (float*)outBase;
+
+                        int head = workIndex / seqLenQ;
+                        int queryIndex = workIndex % seqLenQ;
+
+                        int offset = head * headDim;
+
+                        float* qRow = pQ + queryIndex * embeddingDim + offset;
+                        float* outRow = pOut + queryIndex * embeddingDim + offset;
+
+                        float maxScore = float.NegativeInfinity;
+
+                        // QK^T for this single query row/head.
+                        for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+                        {
+                            if (mask != null && !mask[queryIndex, keyIndex])
+                            {
+                                scores[keyIndex] = float.NegativeInfinity;
+                                continue;
+                            }
+
+                            float* kRow = pK + keyIndex * embeddingDim + offset;
+
+                            float dot = 0f;
+                            int d = 0;
+
+                            for (; d < headVecEnd; d += vecSize)
+                            {
+                                var qVec = new Vector<float>(new ReadOnlySpan<float>(qRow + d, vecSize));
+                                var kVec = new Vector<float>(new ReadOnlySpan<float>(kRow + d, vecSize));
+
+                                dot += Vector.Dot(qVec, kVec);
+                            }
+
+                            for (; d < headDim; d++)
+                            {
+                                dot += qRow[d] * kRow[d];
+                            }
+
+                            float score = dot * scale;
+                            scores[keyIndex] = score;
+
+                            if (score > maxScore)
+                            {
+                                maxScore = score;
+                            }
+                        }
+
+                        // Fully masked row: output zeros instead of NaN.
+                        if (float.IsNegativeInfinity(maxScore))
+                        {
+                            int d = 0;
+
+                            Vector<float> zero = Vector<float>.Zero;
+
+                            for (; d < headVecEnd; d += vecSize)
+                            {
+                                zero.CopyTo(new Span<float>(outRow + d, vecSize));
+                            }
+
+                            for (; d < headDim; d++)
+                            {
+                                outRow[d] = 0f;
+                            }
+
+                            return scores;
+                        }
+
+                        // Stable softmax.
+                        float sumExp = 0f;
+
+                        for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+                        {
+                            float score = scores[keyIndex];
+
+                            if (float.IsNegativeInfinity(score))
+                            {
+                                scores[keyIndex] = 0f;
+                                continue;
+                            }
+
+                            float exp = MathF.Exp(score - maxScore);
+                            scores[keyIndex] = exp;
+                            sumExp += exp;
+                        }
+
+                        float invSumExp = sumExp > 0f ? 1f / sumExp : 0f;
+
+                        for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+                        {
+                            scores[keyIndex] *= invSumExp;
+                        }
+
+                        // Clear output row/head.
+                        {
+                            int d = 0;
+                            Vector<float> zero = Vector<float>.Zero;
+
+                            for (; d < headVecEnd; d += vecSize)
+                            {
+                                zero.CopyTo(new Span<float>(outRow + d, vecSize));
+                            }
+
+                            for (; d < headDim; d++)
+                            {
+                                outRow[d] = 0f;
+                            }
+                        }
+
+                        // Attention weights × V.
+                        // This layout walks V rows contiguously and SIMD-accumulates into outRow.
+                        for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+                        {
+                            float weight = scores[keyIndex];
+
+                            if (weight == 0f)
+                            {
+                                continue;
+                            }
+
+                            float* vRow = pV + keyIndex * embeddingDim + offset;
+                            var weightVec = new Vector<float>(weight);
+
+                            int d = 0;
+
+                            for (; d < headVecEnd; d += vecSize)
+                            {
+                                var current = new Vector<float>(new ReadOnlySpan<float>(outRow + d, vecSize));
+                                var valueVec = new Vector<float>(new ReadOnlySpan<float>(vRow + d, vecSize));
+
+                                (current + weightVec * valueVec).CopyTo(new Span<float>(outRow + d, vecSize));
+                            }
+
+                            for (; d < headDim; d++)
+                            {
+                                outRow[d] += weight * vRow[d];
+                            }
+                        }
+
+                        return scores;
+                    },
+                    scores =>
+                    {
+                        ArrayPool<float>.Shared.Return(scores);
+                    });
+            }
+
+            return output;
         }
 
         #endregion
@@ -1234,7 +1480,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     }
                 }
                 for (int j = 0; j < embeddingDim; j++)
-                { 
+                {
                     biasGrad[j] += lbg[j];
                 }
             }
@@ -1305,7 +1551,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             float sum = 0;
             object lockObj = new object();
 
-            Parallel.For(0, vector.Length, _parallelOptions, 
+            Parallel.For(0, vector.Length, _parallelOptions,
                 () => 0.0f, (i, state, localSum) => localSum + vector[i] * vector[i],
                 localSum => { lock (lockObj) { sum += localSum; } }
             );
@@ -1480,7 +1726,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 loss += localLosses[i];
             }
 
-            loss = loss/ (effectiveLen * outputDim);
+            loss = loss / (effectiveLen * outputDim);
 
             return (loss, dOutput);
         }
@@ -1573,7 +1819,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         lwg[e, f] += dVal * continuousInput[i, f];
                     }
-                    
+
                     lbg[e] += dVal;
                 }
 
@@ -1722,7 +1968,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return output;
         }
 
-        private static unsafe void ContentAwareCrossAttentionHead(float[,] Q, float[,] K, float[,] V,float[,] output, float[,] weights, float[,] scores, int h, int headDim, int psl, int tsl, float scale, float[,,] decayBias)
+        private static unsafe void ContentAwareCrossAttentionHead(float[,] Q, float[,] K, float[,] V, float[,] output, float[,] weights, float[,] scores, int h, int headDim, int psl, int tsl, float scale, float[,,] decayBias)
         {
             int si = h * headDim;
             int embDim = Q.GetLength(1);
@@ -1834,7 +2080,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             });
         }
 
-        public float[,] ComputeTimeDiffMatrix( int priceSeqLen, float[] keyArrivalTimes)
+        public float[,] ComputeTimeDiffMatrix(int priceSeqLen, float[] keyArrivalTimes)
         {
             int numKeys = keyArrivalTimes.Length;
 
@@ -1854,8 +2100,8 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return td;
         }
-    
-        public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos,  float[,] contextHidden,  int totalCtx, float scale)
+
+        public float[] ComputeMemoryAttentionScores(float[,] priceHidden, int lastPos, float[,] contextHidden, int totalCtx, float scale)
         {
             int embDim = priceHidden.GetLength(1);
 
@@ -2154,9 +2400,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
-       
+
         #endregion
-        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false,  Random dropoutRng = null)
+        public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool isTraining = false, Random dropoutRng = null)
         {
             int psl = Q.GetLength(0);
             int tsl = K.GetLength(0);
@@ -2185,7 +2431,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return output;
         }
-   
+
         public void Matrix3DScaleInPlace(float[,,] matrix, float scale)
         {
             int d0 = matrix.GetLength(0);

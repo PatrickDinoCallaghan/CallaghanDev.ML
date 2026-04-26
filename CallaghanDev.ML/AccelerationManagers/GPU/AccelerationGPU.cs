@@ -20,8 +20,6 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, float> _matUpdateKernel;
         private readonly Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float> _vecUpdateKernel;
        
-        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float> _layerNormForwardKernel;
-        private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float> _layerNormBackwardKernel;
         private readonly Action<Index1D, ArrayView2D<float, Stride2D.DenseX>> _matSquaredNormKernel;
 
         private readonly Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _embedTokensKernel;
@@ -102,9 +100,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             _vecScaleInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, float>(VecScaleInPlaceKernel);
             _matUpdateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, float>(MatUpdateKernel);
             _vecUpdateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(VecUpdateKernel);
-            _layerNormForwardKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(LayerNormForwardKernel);
-            _layerNormBackwardKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(LayerNormBackwardKernel);
-
+             
             _embedTokensKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(EmbedTokensKernel);
             _addBiasPosKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(AddBiasPosKernel);
             
@@ -182,71 +178,6 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         }
 
     
-        private static void LayerNormForwardKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, ArrayView1D<float, Stride1D.Dense> means, ArrayView1D<float, Stride1D.Dense> variances, float epsilon)
-        {
-            int features = (int)input.Extent.Y;
-
-            float mean = 0.0f;
-
-
-            for (int j = 0; j < features; j++)
-            {
-                mean += input[batch, j];
-            }
-            mean = mean / features;
-            means[batch] = mean;
-
-            float variance = 0.0f;
-
-            for (int j = 0; j < features; j++)
-            {
-                float diff = input[batch, j] - mean;
-                variance += diff * diff;
-            }
-
-            variance = variance/ features;
-            variances[batch] = variance;
-
-            float stdDev = XMath.Sqrt(variance + epsilon);
-
-            for (int j = 0; j < features; j++)
-            {
-                output[batch, j] = gamma[j] * (input[batch, j] - mean) / stdDev + beta[j];
-            }
-        }
-
-        private static void LayerNormBackwardKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> dOut, ArrayView2D<float, Stride2D.DenseX> normalized, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> mean, ArrayView1D<float, Stride1D.Dense> variance, ArrayView2D<float, Stride2D.DenseX> dInput, ArrayView1D<float, Stride1D.Dense> dGamma,  ArrayView1D<float, Stride1D.Dense> dBeta, float epsilon)
-        {
-            int features = (int)input.Extent.Y;
-            float invStd = 1.0f / XMath.Sqrt(variance[batch] + epsilon);
-
-            for (int j = 0; j < features; j++)
-            {
-                Atomic.Add(ref dGamma[j], dOut[batch, j] * normalized[batch, j]);
-                Atomic.Add(ref dBeta[j], dOut[batch, j]);
-            }
-
-            float dVar = 0.0f;
-            float dMean = 0.0f;
-            float invStdCubed = invStd * invStd * invStd;
-
-            for (int j = 0; j < features; j++)
-            {
-                float dNorm = dOut[batch, j] * gamma[j];
-                float xMinusMean = input[batch, j] - mean[batch];
-                dVar += dNorm * xMinusMean * (-0.5f) * invStdCubed;
-                dMean += dNorm * (-invStd);
-            }
-
-            float invN = 1.0f / features;
-
-            for (int j = 0; j < features; j++)
-            {
-                float dNorm = dOut[batch, j] * gamma[j];
-                float xMinusMean = input[batch, j] - mean[batch];
-                dInput[batch, j] = dNorm * invStd + dVar * 2.0f * xMinusMean * invN + dMean * invN;
-            }
-        }
         private static void Mat3DScaleInPlaceKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> mat, float scale)
         {
             mat[idx] *= scale;
@@ -704,68 +635,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         #endregion
 
 
-        public float[,] MultiHeadAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, bool[,] mask = null)
-        {
-            int seqLenQ = Q.GetLength(0);
-            int seqLenK = K.GetLength(0);
-            int embeddingDim = Q.GetLength(1);
 
-            if (embeddingDim % numHeads != 0)
-            {
-                throw new ArgumentException("Embedding dim must be divisible by numHeads");
-            }
-
-            int headDim = embeddingDim / numHeads;
-
-            var concatenated = new float[seqLenQ, embeddingDim];
-
-            for (int head = 0; head < numHeads; head++)
-            {
-                int startIdx = head * headDim;
-
-                var Q_head = new float[seqLenQ, headDim];
-
-                for (int i = 0; i < seqLenQ; i++)
-                {
-                    for (int j = 0; j < headDim; j++)
-                    {
-                        Q_head[i, j] = Q[i, startIdx + j];
-                    }
-                }
-
-                var K_head = new float[seqLenK, headDim];
-                var V_head = new float[seqLenK, headDim];
-
-
-                for (int i = 0; i < seqLenK; i++)
-                {
-                    for (int j = 0; j < headDim; j++)
-                    {
-                        K_head[i, j] = K[i, startIdx + j];
-                        V_head[i, j] = V[i, startIdx + j];
-                    }
-                }
-                
-                var scores = MatrixMultiplyTranspose(Q_head, K_head);
-
-                var scaledScores = MatrixScale(scores, scale);
-
-                var attnWeights = Softmax(scaledScores, mask);
-
-                var headOutput = MatrixMultiply(attnWeights, V_head);
-
-
-                for (int i = 0; i < seqLenQ; i++)
-                {
-                    for (int j = 0; j < headDim; j++)
-                    {
-                        concatenated[i, startIdx + j] = headOutput[i, j];
-                    }
-                }
-            }
-
-            return concatenated;
-        }
 
         public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {
@@ -959,107 +829,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                     dInput[i, k] += dInputContrib[i, k];
         }
 
-        public (float[,] output, float[] means, float[] variances, float[,] normalized) LayerNormForward(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
-        {
-            int batchSize = input.GetLength(0);
-            int features = input.GetLength(1);
 
-            var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
-            var bufGamma = _accelerator.Allocate1D<float>(features);
-            var bufBeta = _accelerator.Allocate1D<float>(features);
-            var bufOut = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
-            var bufMeans = _accelerator.Allocate1D<float>(batchSize);
-            var bufVariances = _accelerator.Allocate1D<float>(batchSize);
-
-            try
-            {
-                bufIn.CopyFromCPU(input);
-                bufGamma.CopyFromCPU(gamma);
-                bufBeta.CopyFromCPU(beta);
-
-                _layerNormForwardKernel(new Index1D(batchSize),
-                    bufIn.View, bufGamma.View, bufBeta.View,
-                    bufOut.View, bufMeans.View, bufVariances.View,
-                    epsilon);
-
-                var output = new float[batchSize, features];
-                var means = new float[batchSize];
-                var variances = new float[batchSize];
-                bufOut.CopyToCPU(output);
-                bufMeans.CopyToCPU(means);
-                bufVariances.CopyToCPU(variances);
-
-                // Compute normalized on CPU from means/variances (avoids extra GPU buffer)
-                var normalized = new float[batchSize, features];
-                for (int i = 0; i < batchSize; i++)
-                {
-                    float stdDev = MathF.Sqrt(variances[i] + epsilon);
-                    for (int j = 0; j < features; j++)
-                    {
-                        normalized[i, j] = (input[i, j] - means[i]) / stdDev;
-                    }
-                }
-
-                return (output, means, variances, normalized);
-            }
-            finally
-            {
-                bufIn.Dispose(); bufGamma.Dispose(); bufBeta.Dispose();
-                bufOut.Dispose(); bufMeans.Dispose(); bufVariances.Dispose();
-            }
-        }
-
-        public (float[,] dInput, float[] dGamma, float[] dBeta) LayerNormBackward(float[,] dOut, float[,] normalized, float[] gamma, float[,] input, float[] mean, float[] variance, float epsilon = 1e-5f)
-        {
-            int batchSize = dOut.GetLength(0);
-            int features = dOut.GetLength(1);
-
-            var bufDOut = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
-            var bufNormalized = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
-            var bufGamma = _accelerator.Allocate1D<float>(features);
-            var bufInput = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
-            var bufMean = _accelerator.Allocate1D<float>(batchSize);
-            var bufVariance = _accelerator.Allocate1D<float>(batchSize);
-            var bufDInput = _accelerator.Allocate2DDenseX<float>(new Index2D(batchSize, features));
-            var bufDGamma = _accelerator.Allocate1D<float>(features);
-            var bufDBeta = _accelerator.Allocate1D<float>(features);
-
-            try
-            {
-                bufDOut.CopyFromCPU(dOut);
-                bufNormalized.CopyFromCPU(normalized);
-                bufGamma.CopyFromCPU(gamma);
-                bufInput.CopyFromCPU(input);
-                bufMean.CopyFromCPU(mean);
-                bufVariance.CopyFromCPU(variance);
-
-                // Zero out accumulation buffers
-                bufDGamma.CopyFromCPU(new float[features]);
-                bufDBeta.CopyFromCPU(new float[features]);
-                bufDInput.CopyFromCPU(new float[batchSize, features]);
-
-                _layerNormBackwardKernel(new Index1D(batchSize),
-                    bufDOut.View, bufNormalized.View, bufGamma.View,
-                    bufInput.View, bufMean.View, bufVariance.View,
-                    bufDInput.View, bufDGamma.View, bufDBeta.View,
-                    epsilon);
-
-                var dInput = new float[batchSize, features];
-                var dGamma = new float[features];
-                var dBeta = new float[features];
-                bufDInput.CopyToCPU(dInput);
-                bufDGamma.CopyToCPU(dGamma);
-                bufDBeta.CopyToCPU(dBeta);
-
-                return (dInput, dGamma, dBeta);
-            }
-            finally
-            {
-                bufDOut.Dispose(); bufNormalized.Dispose(); bufGamma.Dispose();
-                bufInput.Dispose(); bufMean.Dispose(); bufVariance.Dispose();
-                bufDInput.Dispose(); bufDGamma.Dispose(); bufDBeta.Dispose();
-            }
-        }
 
         public float MatrixSquaredNorm(float[,] matrix)
         {
@@ -1373,20 +1143,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             return sum;
         }
 
-        public bool[,] CreateCausalMask(int seqLen)
-        {
-            var mask = new bool[seqLen, seqLen];
-
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j <= i; j++)
-                {
-                    mask[i, j] = true;
-                }
-            }
-            return mask;
-        }
-
+ 
       
 
         public void SigmoidInPlace(float[,] matrix)

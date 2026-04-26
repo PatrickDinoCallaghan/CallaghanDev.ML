@@ -18,6 +18,8 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             PrintBanner("TRANSFORMER TEST SUITE", '=');
 
+            new MultiHeadAttentionForwardTests().RunAllTests();
+
             new RotaryPositionEmbeddingTests().RunAllTests();
             new BPETokenizerTests().RunAllTests();
             new MmtacTests().RunAllTests();
