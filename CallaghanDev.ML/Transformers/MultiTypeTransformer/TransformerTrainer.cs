@@ -15,7 +15,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private readonly TransformerGradients _gradients;
         private readonly IAccelerationManager _accel;
         private readonly Random _random;
-
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         private readonly List<List<float[,]>> _ffnWeightGrads;
         private readonly List<List<float[]>> _ffnBiasGrads;
 
@@ -30,6 +30,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             _ffnWeightGrads = new List<List<float[,]>>();
             _ffnBiasGrads = new List<List<float[]>>();
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(model.Config.Runtime);
+
             for (int i = 0; i < _modelConfig.NumLayers; i++)
             {
                 var (wGrads, bGrads) = _model.Blocks[i].FeedForwardNetwork.CreateGradientStorage();
@@ -105,13 +107,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             }
         }
 
-        public void TrainContinuous(
-            float[][,] inputs,
-            float[][,] regressionTargets = null,
-            int[][] classTargets = null,
-            float[][,] valInputs = null,
-            float[][,] valRegressionTargets = null,
-            int[][] valClassTargets = null)
+        public void TrainContinuous(float[][,] inputs, float[][,] regressionTargets = null, int[][] classTargets = null, float[][,] valInputs = null, float[][,] valRegressionTargets = null, int[][] valClassTargets = null)
         {
             if (_modelConfig.Data.UsesDiscreteTokens)
                 throw new InvalidOperationException($"Use Train(int[][]) for {_modelConfig.Data.DataType}.");
@@ -467,8 +463,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             var ln2Cache = cache.LN2Caches[layerIdx];
             var (dFFResidual, dLN2Gamma, dLN2Beta) = _accel.LayerNormBackward(dOut, ln2Cache.Normalized, block.LN2Gamma, ln2Cache.Input, ln2Cache.Mean, ln2Cache.Variance);
             var ln2Grads = _gradients.LN2Grads[layerIdx];
-            _accel.AccumulateVectorGradients(ln2Grads.GammaGrad, dLN2Gamma);
-            _accel.AccumulateVectorGradients(ln2Grads.BetaGrad, dLN2Beta);
+            _accel.VectorAccumulate(ln2Grads.GammaGrad, dLN2Gamma);
+            _accel.VectorAccumulate(ln2Grads.BetaGrad, dLN2Beta);
 
             var dNormed1_from_ffn = BackpropFFN(layerIdx, dFFResidual, cache);
             var dNormed1 = _accel.MatrixAdd(dFFResidual, dNormed1_from_ffn);
@@ -476,8 +472,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             var ln1Cache = cache.LN1Caches[layerIdx];
             var (dAttnResidual, dLN1Gamma, dLN1Beta) = _accel.LayerNormBackward(dNormed1, ln1Cache.Normalized, block.LN1Gamma, ln1Cache.Input, ln1Cache.Mean, ln1Cache.Variance);
             var ln1Grads = _gradients.LN1Grads[layerIdx];
-            _accel.AccumulateVectorGradients(ln1Grads.GammaGrad, dLN1Gamma);
-            _accel.AccumulateVectorGradients(ln1Grads.BetaGrad, dLN1Beta);
+            _accel.VectorAccumulate(ln1Grads.GammaGrad, dLN1Gamma);
+            _accel.VectorAccumulate(ln1Grads.BetaGrad, dLN1Beta);
 
             var dX_from_attn = BackpropAttention(layerIdx, dAttnResidual, cache.AttentionCaches[layerIdx]);
             return _accel.MatrixAdd(dAttnResidual, dX_from_attn);
@@ -531,7 +527,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                 scale,
                 mask);
 
-            RotaryPositionEmbedding.ApplyBackwardInPlace(dQFull, dKFull, numHeads);
+            _rotaryPositionEmbedding.ApplyBackwardInPlace(dQFull, dKFull, numHeads);
 
             var dInput = new float[seqLen, embeddingDim];
             _accel.BackpropLinearProjection(cache.Input, dQFull, attention.WQ, grads.WQ_Grad, grads.BiasQ_Grad, dInput);
@@ -551,7 +547,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             var K = _accel.MatrixAddBias(_accel.BatchDotProduct(attention.WK, input), attention.BiasK);
             var V = _accel.MatrixAddBias(_accel.BatchDotProduct(attention.WV, input), attention.BiasV);
 
-            RotaryPositionEmbedding.ApplyInPlace(Q, K, numHeads);
+            _rotaryPositionEmbedding.ApplyInPlace(Q, K, numHeads);
 
             cache.Q = Q;
             cache.K = K;

@@ -742,7 +742,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_Tokenizer_TooLargeVocab_Throws()
         {
-            var tokenizer = new BPETokenizer(new AccelerationCPU());
+            var tokenizer = new BPETokenizer(new RuntimeConfig());
             tokenizer.Train(new[] { "alpha beta gamma delta epsilon zeta eta theta" }, vocabSize: 80, minFrequency: 1);
 
             var model = new TACAMT_Model(CreateConfig(textVocabSize: Math.Max(2, tokenizer.VocabSize - 1)), new Random(42));
@@ -751,7 +751,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_Tokenizer_SaveLoad_RoundTrip()
         {
-            var tokenizer = new BPETokenizer(new AccelerationCPU());
+            var tokenizer = new BPETokenizer(new RuntimeConfig());
             tokenizer.Train(new[] { "stock price rose", "market fell sharply" }, vocabSize: 60, minFrequency: 1);
 
             var model = new TACAMT_Model(CreateConfig(textVocabSize: tokenizer.VocabSize + 2), new Random(42));
@@ -2189,7 +2189,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_E2E_LearnsBullVsBearNewsSignal()
         {
-            var tokenizer = new BPETokenizer(new AccelerationCPU());
+            var tokenizer = new BPETokenizer(new RuntimeConfig());
             tokenizer.Train(new[] { "bull bull bull rally upside", "bear bear bear crash downside" }, vocabSize: 80, minFrequency: 1);
             var config = CreateConfig(textVocabSize: tokenizer.VocabSize + 2, inputFeatures: 2, outputDim: 1, embDim: 24, numHeads: 4, numLayers: 1, ffnDim: 48, priceSeqLen: 8, priceContextEnabled: false);
             var model = new TACAMT_Model(config, new Random(42));
@@ -2207,7 +2207,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_E2E_LearnsRecencyUnderCompetition()
         {
-            var tokenizer = new BPETokenizer(new AccelerationCPU());
+            var tokenizer = new BPETokenizer(new RuntimeConfig());
             tokenizer.Train(new[] { "positive catalyst positive catalyst", "neutral background neutral background" }, vocabSize: 80, minFrequency: 1);
             var positive = tokenizer.Encode("positive catalyst positive catalyst", addSpecialTokens: true);
             var neutral = tokenizer.Encode("neutral background neutral background", addSpecialTokens: true);
@@ -2364,7 +2364,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 "bullish sentiment on tech sector",
                 "neutral background market commentary"
             };
-            var tokenizer = new BPETokenizer(new AccelerationCPU());
+            var tokenizer = new BPETokenizer(new RuntimeConfig());
             tokenizer.Train(corpus, vocabSize: 100, minFrequency: 1);
             return tokenizer;
         }

@@ -277,13 +277,18 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             var result = new float[numRows, cols];
 
+            int bytesPerRow = cols * sizeof(float);
+
             Parallel.For(0, numRows, _parallelOptions, i =>
             {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = matrix[startRow + i, j];
-                }
+                Buffer.BlockCopy(
+                    matrix,
+                    (startRow + i) * bytesPerRow,
+                    result,
+                    i * bytesPerRow,
+                    bytesPerRow);
             });
+
             return result;
         }
 
@@ -303,14 +308,14 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
 
-        public unsafe void MatrixAccumulate(float[,] target, float[,] source)
+        public unsafe void MatrixAddInPlace(float[,] target, float[,] source)
         {
             int rows = target.GetLength(0);
             int cols = target.GetLength(1);
 
             if (!ShouldParallelize(rows * cols))
             {
-                _singleThreadCPU.MatrixAccumulate(target, source);
+                _singleThreadCPU.MatrixAddInPlace(target, source);
 
                 return;
             }
@@ -321,22 +326,13 @@ namespace CallaghanDev.ML.AccelerationManagers
             });
         }
 
-        public void MatrixAddInPlace(float[,] target, float[,] addend)
-        {
-            MatrixAccumulate(target, addend);
-        }
         public void VectorAccumulate(float[] target, float[] source)
         {
-            AccumulateVectorGradients(target, source);
-        }
-
-        public void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad)
-        {
-            int len = targetGrad.Length;
+            int len = target.Length;
 
             if (!ShouldParallelize(len))
             {
-                _singleThreadCPU.AccumulateVectorGradients(targetGrad, sourceGrad);
+                _singleThreadCPU.VectorAccumulate(target, source);
                 return;
             }
 
@@ -348,19 +344,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             int j = 0;
             while (j < vecEnd)
             {
-                var t = new Vector<float>(targetGrad, j);
-                var s = new Vector<float>(sourceGrad, j);
-                (t + s).CopyTo(targetGrad, j);
+                var t = new Vector<float>(target, j);
+                var s = new Vector<float>(target, j);
+                (t + s).CopyTo(target, j);
                 j += vecSize;
             }
 
             while (j < len)
             {
-                targetGrad[j] += sourceGrad[j];
+                target[j] += source[j];
                 j++;
             }
         }
-
 
         #endregion
 
@@ -2333,6 +2328,26 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
         public int[] PadOrTruncate(int[] tokenIds, int maxLength, bool addSpecialTokens, int padTokenId, int endTokenId)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ApplyRotaryPositionEmbeddingBackwardInPlace(float[,] matrix, int numHeads)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads, float baseTheta, bool inverse)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ApplyRotaryPositionEmbeddingHeadInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse)
         {
             throw new NotImplementedException();
         }

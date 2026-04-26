@@ -1390,7 +1390,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private BPETokenizer NewTokenizer(string[] corpus)
         {
-            var tok = new BPETokenizer(new AccelerationCPU());
+            
+            var tok = new BPETokenizer(new RuntimeConfig());
             tok.Train(corpus, vocabSize: 200, minFrequency: 1);
             return tok;
         }

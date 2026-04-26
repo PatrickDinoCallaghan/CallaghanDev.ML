@@ -9,6 +9,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
     {
         public readonly MultiHeadAttention CrossAttention;
 
+        public readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
+
         public float[] LnCrossGamma;
         public float[] LnCrossBeta;
         public ContentAwareDecayNetwork DecayNetwork;
@@ -21,9 +23,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private bool _useDecayNetwork = true;
         private Random _dropoutRng;
         public bool UseDecayNetworkForCrossAttention => _useDecayNetwork;
-
         public TacamtBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random,  float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8) : base(embeddingDim, numHeads, accel)
         {
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(accel);
             SelfAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
 
             LNSelfGamma = InitGamma(embeddingDim);
@@ -55,6 +57,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             LNFFNGamma = InitGamma(embeddingDim);
             LNFFNBeta = new float[embeddingDim];
         }
+
 
         // ---- External setters (cleaner than giant Forward signature) ----
         public void SetContext(float[,] context) => _context = context;
@@ -97,7 +100,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var K = ComputeProjection(_context, CrossAttention.WK, CrossAttention.BiasK, Accel);
             var V = ComputeProjection(_context, CrossAttention.WV, CrossAttention.BiasV, Accel);
 
-            RotaryPositionEmbedding.ApplyInPlace(Q, K, NumHeads);
+            _rotaryPositionEmbedding.ApplyInPlace(Q, K, NumHeads);
 
             float scale = 1.0f / MathF.Sqrt(HeadDim);
             float[,,] attentionBias = null;

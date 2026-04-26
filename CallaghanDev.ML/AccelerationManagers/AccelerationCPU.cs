@@ -175,39 +175,42 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public float[,] SliceRows(float[,] matrix, int startRow, int endRow)
         {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
             if (startRow < 0 || endRow > matrix.GetLength(0) || startRow > endRow)
             {
                 throw new ArgumentOutOfRangeException();
             }
+
             int cols = matrix.GetLength(1);
             int numRows = endRow - startRow;
             var result = new float[numRows, cols];
+
+            int bytesPerRow = cols * sizeof(float);
+
             for (int i = 0; i < numRows; i++)
             {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = matrix[startRow + i, j];
-                }
+                Buffer.BlockCopy(matrix, (startRow + i) * bytesPerRow, result, i * bytesPerRow, bytesPerRow);
             }
+
             return result;
         }
 
         public float[] ExtractRow(float[,] matrix, int rowIndex, int cols)
         {
             var result = new float[cols];
-            for (int j = 0; j < cols; j++)
-            {
-                result[j] = matrix[rowIndex, j];
-            }
+
+            Buffer.BlockCopy(matrix, rowIndex * cols * sizeof(float), result, 0, cols * sizeof(float));
+
             return result;
         }
 
         public void SetRow(float[,] matrix, int rowIndex, float[] values, int cols)
         {
-            for (int j = 0; j < cols; j++)
-            {
-                matrix[rowIndex, j] = values[j];
-            }
+            Buffer.BlockCopy(values, 0, matrix, rowIndex * cols * sizeof(float), cols * sizeof(float));
         }
 
         public void ZeroMatrix(float[,] matrix)
@@ -228,7 +231,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             Array.Clear(vector, 0, vector.Length);
         }
 
-        public void MatrixAccumulate(float[,] target, float[,] source)
+        public void MatrixAddInPlace(float[,] target, float[,] addend)
         {
             int rows = target.GetLength(0);
             int cols = target.GetLength(1);
@@ -236,26 +239,16 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 for (int j = 0; j < cols; j++)
                 {
-                    target[i, j] += source[i, j];
+                    target[i, j] += addend[i, j];
                 }
             }
         }
 
-        public void MatrixAddInPlace(float[,] target, float[,] addend)
-        {
-            MatrixAccumulate(target, addend);
-        }
-
         public void VectorAccumulate(float[] target, float[] source)
         {
-            AccumulateVectorGradients(target, source);
-        }
-
-        public void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad)
-        {
-            for (int j = 0; j < targetGrad.Length; j++)
+            for (int j = 0; j < target.Length; j++)
             {
-                targetGrad[j] += sourceGrad[j];
+                target[j] += source[j];
             }
         }
 
@@ -676,7 +669,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return (output, means, variances, normalized);
         }
-       
+
         public (float[,] dInput, float[] dGamma, float[] dBeta) LayerNormBackward(float[,] dOut, float[,] normalized, float[] gamma, float[,] input, float[] mean, float[] variance, float epsilon = 1e-5f)
         {
             int batchSize = dOut.GetLength(0);
@@ -1626,7 +1619,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return (decayBias, cache);
         }
-        
+
         public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
         {
             int queryLen = Q.GetLength(0);
@@ -1702,7 +1695,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return output;
         }
-        
+
         public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null)
         {
             if (Q == null) throw new ArgumentNullException(nameof(Q));
@@ -1878,7 +1871,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             if (bias == null)
             {
                 throw new ArgumentNullException(nameof(bias));
-            } 
+            }
 
             int ed = projection.GetLength(0);
             int gd = projection.GetLength(1);
@@ -2501,7 +2494,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return newWords;
         }
-      
+
         public string DecodeTokens(int[] tokenIds, Dictionary<int, string> idToVocab, string unkToken, bool skipSpecialTokens)
         {
             if (tokenIds == null || tokenIds.Length == 0)
@@ -2605,5 +2598,123 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
         public void Dispose() { }
 
+        public void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads, float baseTheta, bool inverse)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            if (numHeads <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(numHeads));
+            }
+
+            if (baseTheta <= 0f || float.IsNaN(baseTheta) || float.IsInfinity(baseTheta))
+            {
+                throw new ArgumentOutOfRangeException(nameof(baseTheta));
+            }
+
+            int embeddingDim = matrix.GetLength(1);
+
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dimension must be divisible by number of heads.");
+            }
+
+            int headDim = embeddingDim / numHeads;
+
+            if ((headDim & 1) != 0)
+            {
+                throw new ArgumentException("RoPE requires an even per-head dimension.");
+            }
+
+            for (int head = 0; head < numHeads; head++)
+            {
+                int startCol = head * headDim;
+
+                ApplyRotaryPositionEmbeddingHeadCoreInPlace(
+                    matrix,
+                    startCol,
+                    headDim,
+                    baseTheta,
+                    inverse);
+            }
+        }
+
+        public void ApplyRotaryPositionEmbeddingHeadInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            if (startCol < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startCol));
+            }
+
+            if (headDim < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(headDim));
+            }
+
+            if ((headDim & 1) != 0)
+            {
+                throw new ArgumentException("RoPE requires an even per-head dimension.", nameof(headDim));
+            }
+
+            if (baseTheta <= 0f || float.IsNaN(baseTheta) || float.IsInfinity(baseTheta))
+            {
+                throw new ArgumentOutOfRangeException(nameof(baseTheta));
+            }
+
+            int embeddingDim = matrix.GetLength(1);
+
+            if (startCol + headDim > embeddingDim)
+            {
+                throw new ArgumentException("Head range exceeds matrix embedding dimension.");
+            }
+
+            ApplyRotaryPositionEmbeddingHeadCoreInPlace(
+                matrix,
+                startCol,
+                headDim,
+                baseTheta,
+                inverse);
+        }
+
+        private static void ApplyRotaryPositionEmbeddingHeadCoreInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse)
+        {
+            int seqLen = matrix.GetLength(0);
+            int pairCount = headDim / 2;
+
+            for (int pos = 0; pos < seqLen; pos++)
+            {
+                for (int pair = 0; pair < pairCount; pair++)
+                {
+                    int evenCol = startCol + (pair * 2);
+                    int oddCol = evenCol + 1;
+
+                    float theta = pos / MathF.Pow(baseTheta, (2f * pair) / headDim);
+                    float cos = MathF.Cos(theta);
+                    float sin = MathF.Sin(theta);
+
+                    if (inverse)
+                    {
+                        sin = -sin;
+                    }
+
+                    float x0 = matrix[pos, evenCol];
+                    float x1 = matrix[pos, oddCol];
+
+                    matrix[pos, evenCol] = (x0 * cos) - (x1 * sin);
+                    matrix[pos, oddCol] = (x0 * sin) + (x1 * cos);
+                }
+            }
+        }
+
     }
+
+
 }

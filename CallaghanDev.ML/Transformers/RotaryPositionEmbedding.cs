@@ -1,12 +1,28 @@
-﻿using System;
+﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers.GPU;
+using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.Configuration;
+using System;
 
 namespace CallaghanDev.ML.Transformers
 {
-    public static class RotaryPositionEmbedding
+    public class RotaryPositionEmbedding
     {
         private const float BaseTheta = 10000f;
+        private readonly IAccelerationManager _accel;
 
-        public static void ApplyInPlace(float[,] q, float[,] k, int numHeads)
+        public RotaryPositionEmbedding(RuntimeConfig runtime) : this(AccelerationFactory.Create(runtime))
+        {
+
+        }
+
+        public RotaryPositionEmbedding(IAccelerationManager accelerationManager)
+        {
+            _accel = accelerationManager;
+        }
+
+
+        public void ApplyInPlace(float[,] q, float[,] k, int numHeads)
         {
             if (q == null)
             {
@@ -38,7 +54,7 @@ namespace CallaghanDev.ML.Transformers
             ApplyInPlace(k, numHeads);
         }
 
-        public static void ApplyInPlace(float[,] x, int numHeads)
+        public void ApplyInPlace(float[,] x, int numHeads)
         {
             if (x == null) throw new ArgumentNullException(nameof(x));
 
@@ -54,14 +70,14 @@ namespace CallaghanDev.ML.Transformers
                 throw new ArgumentException("RoPE requires an even per-head dimension.");
             }
 
-            for (int head = 0; head < numHeads; head++)
-            {
-                int start = head * headDim;
-                RotateHeadInPlace(x, start, headDim, inverse: false);
-            }
+            _accel.ApplyRotaryPositionEmbeddingInPlace(
+                x,
+                numHeads,
+                BaseTheta,
+                inverse: false);
         }
 
-        public static void ApplyBackwardInPlace(float[,] dQ, float[,] dK, int numHeads)
+        public void ApplyBackwardInPlace(float[,] dQ, float[,] dK, int numHeads)
         {
             if (dQ == null)
             {
@@ -93,7 +109,7 @@ namespace CallaghanDev.ML.Transformers
             ApplyBackwardInPlace(dK, numHeads);
         }
 
-        public static void ApplyBackwardInPlace(float[,] dX, int numHeads)
+        public void ApplyBackwardInPlace(float[,] dX, int numHeads)
         {
             if (dX == null)
             {
@@ -111,42 +127,8 @@ namespace CallaghanDev.ML.Transformers
             {
                 throw new ArgumentException("RoPE requires an even per-head dimension.");
             }
-
-            for (int head = 0; head < numHeads; head++)
-            {
-                int start = head * headDim;
-                RotateHeadInPlace(dX, start, headDim, inverse: true);
-            }
-        }
-
-        private static void RotateHeadInPlace(float[,] matrix, int startCol, int headDim, bool inverse)
-        {
-            int seqLen = matrix.GetLength(0);
-            int pairCount = headDim / 2;
-
-            for (int pos = 0; pos < seqLen; pos++)
-            {
-                for (int pair = 0; pair < pairCount; pair++)
-                {
-                    int evenCol = startCol + (pair * 2);
-                    int oddCol = evenCol + 1;
-
-                    float theta = pos / MathF.Pow(BaseTheta, (2f * pair) / headDim);
-                    float cos = MathF.Cos(theta);
-                    float sin = MathF.Sin(theta);
-
-                    if (inverse)
-                    {
-                        sin = -sin;
-                    }
-
-                    float x0 = matrix[pos, evenCol];
-                    float x1 = matrix[pos, oddCol];
-
-                    matrix[pos, evenCol] = (x0 * cos) - (x1 * sin);
-                    matrix[pos, oddCol] = (x0 * sin) + (x1 * cos);
-                }
-            }
+            _accel.ApplyRotaryPositionEmbeddingInPlace(dX, numHeads, BaseTheta, inverse: true);
+       
         }
     }
 }

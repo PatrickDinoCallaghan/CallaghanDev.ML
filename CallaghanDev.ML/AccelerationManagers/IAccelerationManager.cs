@@ -1,5 +1,7 @@
-﻿using CallaghanDev.ML.Enums;
+﻿using CallaghanDev.ML.AccelerationManagers.GPU;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.TACAMT;
+using ILGPU.Runtime;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -34,9 +36,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// </summary>
         float[,] MatrixAdd(float[,] A, float[,] B);
 
-
         float[,] MatrixAddBias(float[,] matrix, float[] bias);
-
 
         /// <summary>
         /// Batch matrix-vector dot products: computes weights * inputRows[i] for each row.
@@ -77,19 +77,13 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// <summary>
         /// In-place element-wise: target[i,j] += source[i,j]
         /// </summary>
-        void MatrixAccumulate(float[,] target, float[,] source);
-
-
         void MatrixAddInPlace(float[,] target, float[,] addend);
 
-
-        void VectorAccumulate(float[] target, float[] source);
 
         /// <summary>
         /// Element-wise vector accumulation: target[j] += source[j]
         /// </summary>
-        void AccumulateVectorGradients(float[] targetGrad, float[] sourceGrad);
-
+        void VectorAccumulate(float[] target, float[] source);
 
         #endregion
 
@@ -211,7 +205,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         void VectorUpdate(float[] weights, float[] gradients, float learningRate);
         #endregion
 
-        #region Multimodal/TACAMT/MMTAC
+        #region Transformer specific - Multimodal/TACAMT/MMTAC
 
         void ApplyContextTypeEmbedding(float[,] contextHidden, float[,] typeEmbedding, int[] typeIndices);
 
@@ -274,6 +268,14 @@ namespace CallaghanDev.ML.AccelerationManagers
         int[] PadOrTruncate(int[] tokenIds, int maxLength, bool addSpecialTokens, int padTokenId, int endTokenId);
 
         #endregion
+
+        #region Rotary Position Embeddings
+
+        void ApplyRotaryPositionEmbeddingHeadInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse);
+        void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads, float baseTheta, bool inverse);
+
+        #endregion
+
         void SigmoidInPlace(float[,] matrix);
         void Dispose();
     }

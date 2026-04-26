@@ -1,11 +1,15 @@
-﻿using System;
+﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers.GPU;
+using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers.Configuration;
+using ILGPU.Runtime;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
-using System.IO;
 using System.Text.Json;
-using CallaghanDev.ML.AccelerationManagers;
+using System.Text.RegularExpressions;
 using static CallaghanDev.ML.AccelerationManagers.AccelerationCPU;
 
 namespace CallaghanDev.ML.Transformers
@@ -35,18 +39,24 @@ namespace CallaghanDev.ML.Transformers
         public bool LowerCase { get; set; } = false; 
         
         private IAccelerationManager _accel;
-        public BPETokenizer(IAccelerationManager accelerationManager)
+        public BPETokenizer(RuntimeConfig runtime)
+        {
+            Init(runtime);
+
+        }
+        private void Init(RuntimeConfig runtime)
         {
             _vocabToId = new Dictionary<string, int>();
             _idToVocab = new Dictionary<int, string>();
             _merges = new List<(string, string)>();
             _mergePriority = new Dictionary<(string, string), int>();
             _encodeCache = new Dictionary<string, List<int>>();
-            _accel = accelerationManager;
+
+            _accel = AccelerationFactory.Create(runtime);
             InitializeSpecialTokens();
         }
 
-        public BPETokenizer() : this(new AccelerationCPU()) //TODO: Must revise this pattern or each time BPETokenizer is loaded it will only be single threaded
+        private BPETokenizer() 
         {
 
         }
@@ -241,30 +251,7 @@ namespace CallaghanDev.ML.Transformers
                 words = _accel.ApplyMergeToVocabulary(words, left, right);
             }
         }
-        private List<string> ApplyMerge(List<string> word, string left, string right)
-        {
-            return _accel.ApplyMerge(word, left, right);
-           /*
-            var result = new List<string>();
-            int i = 0;
-
-            while (i < word.Count)
-            {
-                if (i < word.Count - 1 && word[i] == left && word[i + 1] == right)
-                {
-                    result.Add(left + right);
-                    i += 2;
-                }
-                else
-                {
-                    result.Add(word[i]);
-                    i++;
-                }
-            }
-
-            return result;*/
-        }
-
+     
         public int[] Encode(string text, bool addSpecialTokens = true)
         {
             if (string.IsNullOrEmpty(text))
@@ -347,6 +334,8 @@ namespace CallaghanDev.ML.Transformers
 
             return encoded;
         }
+
+        #region Save/Load
         public void Save(string directory)
         {
             if (!Directory.Exists(directory))
@@ -386,9 +375,12 @@ namespace CallaghanDev.ML.Transformers
 
             Console.WriteLine($"Tokenizer saved to {directory}");
         }
-        public static BPETokenizer Load(string directory, IAccelerationManager accelerationManager)
+        public static BPETokenizer Load(string directory, AccelerationType accelerationType, int AccelerationDeviceId = 0)
         {
-            var tokenizer = new BPETokenizer(new AccelerationCPU());
+            var tokenizer = new BPETokenizer();
+
+            RuntimeConfig runtime = new RuntimeConfig();
+            tokenizer.Init(runtime);
 
             var vocabPath = Path.Combine(directory, "vocab.json");
             var vocabJson = File.ReadAllText(vocabPath);
@@ -447,6 +439,9 @@ namespace CallaghanDev.ML.Transformers
 
             return tokenizer;
         }
+
+        #endregion
+
 
         public string IdToToken(int id)
         {

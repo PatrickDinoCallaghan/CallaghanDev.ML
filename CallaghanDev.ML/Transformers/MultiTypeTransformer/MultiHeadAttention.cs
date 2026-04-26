@@ -9,7 +9,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private readonly int _numHeads;
         private readonly int _headDim;
         private readonly IAccelerationManager _accel;
-
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         public float[,] WQ { get; set; }
         public float[,] WK { get; set; }
         public float[,] WV { get; set; }
@@ -22,15 +22,23 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         public MultiHeadAttention(int embeddingDim, int numHeads, IAccelerationManager accel, Random random = null)
         {
             if (embeddingDim <= 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(embeddingDim), "Embedding dimension must be positive.");
+            }
             if (numHeads <= 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(numHeads), "Number of heads must be positive.");
+            }
             if (embeddingDim % numHeads != 0)
+            {
                 throw new ArgumentException("Embedding dimension must be divisible by number of heads.", nameof(numHeads));
+            }
 
             int headDim = embeddingDim / numHeads;
             if ((headDim & 1) != 0)
+            {
                 throw new ArgumentException("RoPE requires an even per-head dimension.", nameof(embeddingDim));
+            }
 
             _embeddingDim = embeddingDim;
             _numHeads = numHeads;
@@ -38,7 +46,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             _accel = accel ?? throw new ArgumentNullException(nameof(accel));
 
             random ??= new Random();
-
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(accel);
             WQ = InitWeights(embeddingDim, embeddingDim, random);
             WK = InitWeights(embeddingDim, embeddingDim, random);
             WV = InitWeights(embeddingDim, embeddingDim, random);
@@ -85,7 +93,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             var K = MatMulWithBias(input, WK, BiasK);
             var V = MatMulWithBias(input, WV, BiasV);
 
-            RotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
+            _rotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
             return AttentionCore(Q, K, V, mask);
         }
 
@@ -106,7 +114,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             var K = MatMulWithBias(keyValue, WK, BiasK);
             var V = MatMulWithBias(keyValue, WV, BiasV);
 
-            RotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
+            _rotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
             return AttentionCore(Q, K, V, mask);
         }
 

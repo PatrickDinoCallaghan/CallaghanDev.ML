@@ -32,7 +32,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         private readonly IAccelerationManager _accel;
         private readonly Random _random;
         private readonly Random _dropoutRng;
-
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         private readonly List<List<float[,]>> _textFFNWeightGrads;
         private readonly List<List<float[]>> _textFFNBiasGrads;
         private readonly List<List<float[,]>> _priceFFNWeightGrads;
@@ -52,6 +52,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             _textFFNBiasGrads = new List<List<float[]>>();
             _priceFFNWeightGrads = new List<List<float[,]>>();
             _priceFFNBiasGrads = new List<List<float[]>>();
+
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(model.Config.Runtime);
 
             for (int i = 0; i < _config.Text.NumLayers; i++)
             {
@@ -386,12 +388,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // TrainBatch
         // 
 
-        private float TrainBatch(
-      int[] batchIndices,
-      MultimodalInput[] allInputs,
-      ModelTarget[][] allTargets,
-      float[][] allConf,
-      float lr)
+        private float TrainBatch(int[] batchIndices, MultimodalInput[] allInputs, ModelTarget[][] allTargets, float[][] allConf, float lr)
         {
             ZeroAllGradients();
 
@@ -472,6 +469,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             UpdateAllParameters(lr);
             return tl / vc;
         }
+
         private float TrainSimple(int idx, MultimodalInput[] allInputs, ModelTarget[][] allTargets, float[][] allConf)
         {
             var inp = allInputs[idx];
@@ -1118,7 +1116,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     nh,
                     scale,
                     _config.Price.UseDecoderOnly);
-                RotaryPositionEmbedding.ApplyBackwardInPlace(dQSelf, dKSelf, nh);
+
+                _rotaryPositionEmbedding.ApplyBackwardInPlace(dQSelf, dKSelf, nh);
 
                 var dBlockIn = new float[seqLen, ed];
                 _accel.BackpropLinearProjection(bc.BlockInput, dQSelf, block.SelfAttention.WQ, selfGrads.WQ_Grad, selfGrads.BiasQ_Grad, dBlockIn);
@@ -1278,7 +1277,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 var dC = new float[sl, ed];
                 _accel.BackpropLinearProjection(ac.AttentionOutput, dAR, b.Attention.WO, ag.WO_Grad, ag.BiasO_Grad, dC);
                 var (dQ, dK, dV) = _accel.MultiHeadAttentionBackward(ac.Q, ac.K, ac.V, dC, nh, s, _config.Text.UseDecoderOnly);
-                RotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, nh);
+                _rotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, nh);
 
                 var dI = new float[sl, ed];
                 _accel.BackpropLinearProjection(ac.Input, dQ, b.Attention.WQ, ag.WQ_Grad, ag.BiasQ_Grad, dI);
@@ -1290,18 +1289,17 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             _accel.AccumulateTokenEmbeddingGrad(_gradients.TextEmbeddingGrad, dX, cache.TextTokenIds, dX.GetLength(0), ed);
         }
 
-        private void CommitObservedSampleToMemory(
-       MultimodalInput inp,
-       double currentTs,
-       double timeUnitsPerPosition,
-       int maxNewsMemory,
-       int maxPriceMemory)
+        private void CommitObservedSampleToMemory(MultimodalInput inp, double currentTs, double timeUnitsPerPosition, int maxNewsMemory, int maxPriceMemory)
         {
             if (inp == null || inp.PriceSequence == null)
+            {
                 return;
+            }
 
             if (timeUnitsPerPosition == 0.0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition), "Must be non-zero.");
+            }
 
             int embDim = _config.Price.EmbeddingDim;
             float invTime = (float)(1.0 / timeUnitsPerPosition);
@@ -1310,7 +1308,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             float[] liveNewsTimesPost = null;
 
             if (inp.NewsStories != null && inp.NewsStories.Length > 0)
+            {
                 (liveNewsHiddenPost, liveNewsTimesPost) = _model.EncodeStoriesForMemory(inp.NewsStories);
+            }
 
             var postCtxH = new List<float[]>();
             var postCtxT = new List<float>();
@@ -1332,13 +1332,17 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             foreach (var e in _model.NewsMemory)
             {
                 if (e?.HiddenState == null)
+                {
                     continue;
+                }
 
                 var v = new float[embDim];
                 int copyDim = Math.Min(embDim, e.HiddenState.Length);
 
                 for (int d = 0; d < copyDim; d++)
+                {
                     v[d] = e.HiddenState[d];
+                }
 
                 postCtxH.Add(v);
                 postCtxT.Add(-(float)((currentTs - e.AbsoluteTimestamp) * invTime));

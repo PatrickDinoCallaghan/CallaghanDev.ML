@@ -1,5 +1,6 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Transformers;
+using CallaghanDev.ML.Transformers.Configuration;
 using System.Reflection;
 
 namespace CallaghanDev.ML.TestConsoleApp.Tests
@@ -21,7 +22,6 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             (Test_SaveLoad_MergePriorityPreserved, "SaveLoad: merge priority preserved"),
             (Test_Train_RetrainClearsOldVocabularyAndCache, "Train: retrain clears old vocab/cache"),
             (Test_Construction_DefaultTokensCorrect, "Construction: special token ids are correct"),
-            (Test_Construction_NullAccelerationFallsBackOrThrowsClearly, "Construction: acceleration manager is usable"),
             (Test_Train_InvalidArgumentsThrow, "Train: invalid arguments throw"),
             (Test_Train_BuildsVocabularyAndMerges, "Train: builds vocab and learns merges"),
             (Test_Encode_EmptyStringBehaviour, "Encode: empty string special-token behaviour"),
@@ -131,7 +131,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 tok.Save(dir);
-                var loaded = BPETokenizer.Load(dir, new AccelerationCPU());
+                var loaded = BPETokenizer.Load(dir, Enums.AccelerationType.CPU);
 
                 var after = loaded.Encode("lowest lower low", addSpecialTokens: true);
 
@@ -183,22 +183,6 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(tok.IdToToken(3) == BPETokenizer.UNK_TOKEN, "id 3 lookup failed");
 
             Assert(tok.VocabSize == 4, $"Initial vocab size should be 4, got {tok.VocabSize}");
-        }
-
-        private void Test_Construction_NullAccelerationFallsBackOrThrowsClearly()
-        {
-            var ctor = typeof(BPETokenizer).GetConstructor(new[] { typeof(IAccelerationManager) });
-            Assert(ctor != null, "BPETokenizer(IAccelerationManager) constructor missing");
-
-            var tok = new BPETokenizer(new AccelerationCPU());
-            tok.Train(new[] { "hello world" }, vocabSize: 32, minFrequency: 1);
-
-            var ids = tok.Encode("hello");
-            Assert(ids.Length > 0, "Tokenizer with AccelerationCPU failed to encode");
-
-            var defaultCtor = typeof(BPETokenizer).GetConstructor(Type.EmptyTypes);
-            Assert(defaultCtor != null,
-                "BPETokenizer needs a parameterless constructor because Load() calls new BPETokenizer(). Add public BPETokenizer() : this(new AccelerationCPU()) { }");
         }
 
         private void Test_Train_InvalidArgumentsThrow()
@@ -439,7 +423,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             {
                 tok.Save(dir);
 
-                var loaded = BPETokenizer.Load(dir, new AccelerationCPU());
+                var loaded = BPETokenizer.Load(dir, Enums.AccelerationType.CPU);
 
                 Assert(loaded.VocabSize == tok.VocabSize, "Loaded vocab size mismatch");
 
@@ -469,7 +453,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 tok.Save(dir);
-                var loaded = BPETokenizer.Load(dir, new AccelerationCPU());
+                var loaded = BPETokenizer.Load(dir, Enums.AccelerationType.CPU);
 
                 Assert(loaded.MaxTokenLength == 123, "MaxTokenLength not preserved");
                 Assert(loaded.LowerCase == true, "LowerCase not preserved");
@@ -557,7 +541,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private static BPETokenizer NewTokenizer()
         {
-            return new BPETokenizer(new AccelerationCPU());
+            return new BPETokenizer(new RuntimeConfig());
         }
 
         private static BPETokenizer TrainedTokenizer()

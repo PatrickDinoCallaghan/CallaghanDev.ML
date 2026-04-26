@@ -17,7 +17,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private readonly MultimodalTransformerConfig _config;
         private readonly Random _random;
         private readonly IAccelerationManager _accel;
-
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         public MultimodalTransformerConfig Config => _config;
         public IAccelerationManager AccelerationManager => _accel;
         public float[,] TextTokenEmbedding { get; set; }
@@ -36,22 +36,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             _config = config;
             _random = random ?? new Random();
 
-            if (_config.Runtime.AccelerationType == AccelerationType.GPU || _config.Runtime.AccelerationType == AccelerationType.CUDA)
-            {
-                _accel = new AccelerationGPU(_config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId);
-            }
-            else if (_config.Runtime.AccelerationType == AccelerationType.CPU)
-            {
-                _accel = new AccelerationCPU();
-            }
-            else if (_config.Runtime.AccelerationType == AccelerationType.MultiThreadCPU)
-            {
-                _accel = new AccelerationMutliThreadCPU();
-            }
-            else
-            {
-                throw new Exception("Unsupported AccelerationType");
-            }
+            _accel = AccelerationFactory.Create(_config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_config.Runtime);
 
             InitTextEncoder();
             InitPriceDecoder();
@@ -106,7 +92,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             for (int i = 0; i < _config.Price.NumLayers; i++)
             {
-                PriceBlocks[i] = new TransformerBlock(_config.Price.EmbeddingDim, _config.Price.NumHeads, _config.Price.FeedForwardDim, _config.Runtime.FFNActivationType, _accel, _random, _config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId, _config.Regularization.L2RegulationLamda);
+                PriceBlocks[i] = new TransformerBlock(_config.Price.EmbeddingDim, _config.Price.NumHeads, _config.Price.FeedForwardDim, _config.Runtime.FFNActivationType, _random, _config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId, _config.Regularization.L2RegulationLamda);
             }
         }
 
@@ -308,7 +294,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var K = ComputeProjection(kvSource_K, attention.WK, attention.BiasK);
             var V = ComputeProjection(kvSource_V, attention.WV, attention.BiasV);
 
-            RotaryPositionEmbedding.ApplyInPlace(Q, K, numHeads);
+            _rotaryPositionEmbedding.ApplyInPlace(Q, K, numHeads);
 
             cache.Q = Q;
             cache.K = K;
@@ -468,7 +454,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var selfK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
                 var selfV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
 
-                RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
+                _rotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
 
                 blockCache.SelfQ = selfQ;
                 blockCache.SelfK = selfK;
@@ -482,8 +468,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 blockCache.SelfResidualInput = selfResidual;
 
-                var (normedSelf, selfMeans, selfVars, selfNormed) =
-                    _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
+                var (normedSelf, selfMeans, selfVars, selfNormed) = _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
 
                 blockCache.LNSelfCache.Input = selfResidual;
                 blockCache.LNSelfCache.Mean = selfMeans;
@@ -499,7 +484,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     var crossK = ComputeProjection(textHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
                     var crossV = ComputeProjection(textHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
 
-                    RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
+                    _rotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
 
                     blockCache.CrossQ = crossQ;
                     blockCache.CrossK = crossK;

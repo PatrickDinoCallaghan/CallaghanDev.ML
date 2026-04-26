@@ -45,22 +45,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         public float MaxGate { get; set; } = 0.98f;
         public ContentAwareDecayNetwork() { }
 
-        public ContentAwareDecayNetwork(
-            int numHeads,
-            int contentDim,
-            int projectionDim,
-            int hiddenDim,
-            Random random,
-            float memAttnDropout = 0.1f,
-            float mlpDropout = 0.1f,
-            float weightDecay = 0.0f,
-            int numTimeBases = 8,
-            float timeNormalizationHours = 1.0f,
-            float initialHalfLifeHours = 1.25f,
-            float minHalfLifeHours = 0.35f,
-            float maxHalfLifeHours = 6.0f,
-            float minGate = 0.02f,
-            float maxGate = 0.98f)
+        public ContentAwareDecayNetwork(int numHeads, int contentDim, int projectionDim, int hiddenDim, Random random, float memAttnDropout = 0.1f, float mlpDropout = 0.1f, float weightDecay = 0.0f, int numTimeBases = 8, float timeNormalizationHours = 1.0f, float initialHalfLifeHours = 1.25f, float minHalfLifeHours = 0.35f, float maxHalfLifeHours = 6.0f, float minGate = 0.02f, float maxGate = 0.98f)
         {
             NumHeads = numHeads;
             ContentDim = contentDim;

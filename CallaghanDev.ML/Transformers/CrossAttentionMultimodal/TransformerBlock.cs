@@ -1,6 +1,8 @@
 using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
+using ILGPU.Runtime;
 using System;
 
 namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
@@ -22,46 +24,65 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private readonly int _embeddingDim;
 
         private readonly int _numHeads;
-        public TransformerBlock(
-       int embeddingDim,
-       int numHeads,
-       int feedForwardDim,
-       ActivationType ffnActivation,
-       IAccelerationManager accel,
-       Random random,
-       AccelerationType accelType = AccelerationType.CPU,
-       int accelDeviceId = 0,
-       float l2Lambda = 0.01f)
+
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
+
+        private readonly IAccelerationManager _accel;
+
+        public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, Random random, AccelerationType accelerationType, int AccelerationDeviceId = 0, float l2Lambda = 0.01f)
         {
             if (embeddingDim <= 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(embeddingDim));
+            }
             if (numHeads <= 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(numHeads));
+            }
             if (feedForwardDim <= 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(feedForwardDim));
-            if (accel == null)
-                throw new ArgumentNullException(nameof(accel));
+            }
 
             if (embeddingDim % numHeads != 0)
+            {
                 throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
+            }
+
+            if (accelerationType == AccelerationType.GPU || accelerationType == AccelerationType.CUDA)
+            {
+                _accel = new AccelerationGPU(accelerationType, AccelerationDeviceId);
+            }
+            else if (accelerationType == AccelerationType.CPU)
+            {
+                _accel = new AccelerationCPU();
+            }
+            else if (accelerationType == AccelerationType.MultiThreadCPU)
+            {
+                _accel = new AccelerationMutliThreadCPU();
+            }
+            else
+            {
+                throw new Exception("Unsupported AccelerationType");
+            }
 
             random ??= new Random();
 
             _numHeads = numHeads;
             _embeddingDim = embeddingDim;
 
-            SelfAttention = new MultiHeadAttention(embeddingDim, _numHeads, accel, random);
+            SelfAttention = new MultiHeadAttention(embeddingDim, _numHeads, _accel, random);
             LNSelfGamma = new float[embeddingDim];
             LNSelfBeta = new float[embeddingDim];
 
-            CrossAttention = new MultiHeadAttention(embeddingDim, _numHeads, accel, random);
+            CrossAttention = new MultiHeadAttention(embeddingDim, _numHeads, _accel, random);
             LNCrossGamma = new float[embeddingDim];
             LNCrossBeta = new float[embeddingDim];
 
             var parameters = new Parameters
             {
-                AccelerationType = accelType,
-                AccelerationDeviceId = accelDeviceId,
+                AccelerationType = accelerationType,
+                AccelerationDeviceId = AccelerationDeviceId,
                 CostFunction = CostFunctionType.mse,
                 ActivationDistribution = ActivationDistribution.Normal,
                 LayerWidths = new List<int> { embeddingDim, feedForwardDim, embeddingDim },
@@ -84,6 +105,10 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 LNFFNGamma[i] = 1.0f;
             }
         }
+        private void Init()
+        {
+
+        }
         public float[,] Forward(float[,] x, float[,] textHidden, bool[,] selfAttnMask, IAccelerationManager accel)
         {
             int priceSeqLen = x.GetLength(0);
@@ -96,7 +121,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var selfK = ComputeProjection(x, SelfAttention.WK, SelfAttention.BiasK, accel);
             var selfV = ComputeProjection(x, SelfAttention.WV, SelfAttention.BiasV, accel);
 
-            RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
+            _rotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
 
             var selfAttnOut = accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfAttnMask);
             var selfProjected = ComputeProjection(selfAttnOut, SelfAttention.WO, SelfAttention.BiasO, accel);
@@ -111,7 +136,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var crossK = ComputeProjection(textHidden, CrossAttention.WK, CrossAttention.BiasK, accel);
                 var crossV = ComputeProjection(textHidden, CrossAttention.WV, CrossAttention.BiasV, accel);
 
-                RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
+                _rotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
 
                 var crossAttnOut = accel.MultiHeadAttentionForward(crossQ, crossK, crossV, numHeads, scale, null);
                 var crossProjected = ComputeProjection(crossAttnOut, CrossAttention.WO, CrossAttention.BiasO, accel);

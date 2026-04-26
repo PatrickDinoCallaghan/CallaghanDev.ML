@@ -232,20 +232,26 @@ namespace CallaghanDev.ML.Transformers.Configuration
     {
         public ActivationType FFNActivationType { get; set; } = ActivationType.Relu;
 
-        public AccelerationType AccelerationType { get; set; } = AccelerationType.MultiThreadCPU;
+        public AccelerationType AccelerationType { get; set; } = AccelerationType.CPU;
 
         public int AccelerationDeviceId { get; set; } = 0;
 
         public override void Validate()
         {
             if (!Enum.IsDefined(typeof(ActivationType), FFNActivationType))
+            {
                 throw new ArgumentException($"Invalid {nameof(FFNActivationType)} value: {FFNActivationType}.");
+            }
 
             if (!Enum.IsDefined(typeof(AccelerationType), AccelerationType))
+            {
                 throw new ArgumentException($"Invalid {nameof(AccelerationType)} value: {AccelerationType}.");
+            }
 
             if (AccelerationDeviceId < 0)
+            {
                 throw new ArgumentException($"{nameof(AccelerationDeviceId)} must be non-negative, got {AccelerationDeviceId}.");
+            }
         }
     }
 

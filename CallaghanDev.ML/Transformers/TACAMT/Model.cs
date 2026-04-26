@@ -33,7 +33,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private readonly MultimodalTransformerConfig _config;
         private readonly Random _random;
         private readonly IAccelerationManager _accel;
-
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         public MultimodalTransformerConfig Config => _config;
         public IAccelerationManager AccelerationManager => _accel;
 
@@ -69,22 +69,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             config.Validate();
             _config = config;
             _random = random ?? new Random();
-            if (_config.Runtime.AccelerationType == AccelerationType.GPU || _config.Runtime.AccelerationType == AccelerationType.CUDA)
-            {
-                _accel = new AccelerationGPU(_config.Runtime.AccelerationType, _config.Runtime.AccelerationDeviceId);
-            }
-            else if (_config.Runtime.AccelerationType == AccelerationType.CPU)
-            {
-                _accel = new AccelerationCPU();
-            }
-            else if (_config.Runtime.AccelerationType == AccelerationType.MultiThreadCPU)
-            {
-                _accel = new AccelerationMutliThreadCPU();
-            }
-            else
-            {
-                throw new Exception("Unsupported AccelerationType");
-            }
+      
+            _accel = AccelerationFactory.Create(_config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(config.Runtime);
 
             InitTextEncoder();
             InitPriceDecoder();
@@ -101,6 +88,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     ContextTypeEmbedding[t, d] = SampleGaussian() * typeStd;
                 }
             }
+
         }
 
         /// <summary>
@@ -133,7 +121,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 throw new ArgumentException("Cannot train tokenizer on empty text corpus.");
             }
 
-            var tokenizer = new BPETokenizer(_accel);
+            var tokenizer = new BPETokenizer(_config.Runtime);
+
             tokenizer.Train(texts, _config.Text.VocabSize, minFrequency);
 
             // BPETokenizer.Train may produce fewer tokens than requested if the corpus is small.
@@ -1258,15 +1247,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 isTraining: isTraining,
                 dropoutRng: dropoutRng);
         }
-        internal float[,] ForwardPriceDecoderWithCache(
-            float[,] priceSequence,
-            int rowStart,
-            int rowCount,
-            float[,] storyHidden,
-            float[] storyTimes,
-            MultimodalForwardCache cache,
-            bool isTraining = true,
-            Random dropoutRng = null)
+        internal float[,] ForwardPriceDecoderWithCache(float[,] priceSequence, int rowStart, int rowCount, float[,] storyHidden, float[] storyTimes, MultimodalForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
             if (priceSequence == null)
                 throw new ArgumentNullException(nameof(priceSequence));
@@ -1327,7 +1308,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 var selfK = ComputeProjection(x, block.SelfAttention.WK, block.SelfAttention.BiasK);
                 var selfV = ComputeProjection(x, block.SelfAttention.WV, block.SelfAttention.BiasV);
 
-                RotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
+                _rotaryPositionEmbedding.ApplyInPlace(selfQ, selfK, numHeads);
 
                 blockCache.SelfQ = selfQ;
                 blockCache.SelfK = selfK;
@@ -1377,7 +1358,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     var crossK = ComputeProjection(storyHidden, block.CrossAttention.WK, block.CrossAttention.BiasK);
                     var crossV = ComputeProjection(storyHidden, block.CrossAttention.WV, block.CrossAttention.BiasV);
 
-                    RotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
+                    _rotaryPositionEmbedding.ApplyInPlace(crossQ, crossK, numHeads);
 
                     blockCache.CrossQ = crossQ;
                     blockCache.CrossK = crossK;
@@ -1482,19 +1463,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return x;
         }
-        private float[,] ContentAwareCrossAttentionWithCache(
-      float[,] Q,
-      float[,] K,
-      float[,] V,
-      float[,] timeDiffs,
-      float[] keyTimesFromRef,
-      float[,] queryEmbeddings,
-      float[,] keyEmbeddings,
-      TacamtBlock block,
-      BlockCache bc,
-      bool isTraining = false,
-      Random dropoutRng = null,
-      int globalBypassCount = 0)
+        private float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, bool isTraining = false, Random dropoutRng = null, int globalBypassCount = 0)
         {
             int priceEmbeddingDim = _config.Price.EmbeddingDim;
             int priceNumHeads = _config.Price.NumHeads;
@@ -1515,6 +1484,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 isTraining: isTraining,
                 dropoutRng: dropoutRng);
         }
+        
         internal (float[,], float[,]) ProjectToOutput(float[,] hidden)
         {
             int sl = hidden.GetLength(0);
@@ -1967,7 +1937,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             var K = ComputeProjection(ks, attn.WK, attn.BiasK);
             var V = ComputeProjection(vs, attn.WV, attn.BiasV);
 
-            RotaryPositionEmbedding.ApplyInPlace(Q, K, nh);
+            _rotaryPositionEmbedding.ApplyInPlace(Q, K, nh);
 
             cache.Q = Q;
             cache.K = K;
@@ -2845,7 +2815,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     }
 
 
-                    var tokenizer = BPETokenizer.Load(tokenizerDir, accelerationManager);
+                    var tokenizer = BPETokenizer.Load(tokenizerDir, cfg.Runtime.AccelerationType, cfg.Runtime.AccelerationDeviceId);
                     m.SetTokenizer(tokenizer);
                 }
                 catch

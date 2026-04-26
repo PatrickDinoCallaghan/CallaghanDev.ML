@@ -16,7 +16,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private readonly Gradients _gradients;
         private readonly IAccelerationManager _accel;
         private readonly Random _random;
-
+        private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         private readonly List<List<float[,]>> _textFFNWeightGrads;
         private readonly List<List<float[]>> _textFFNBiasGrads;
 
@@ -31,6 +31,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             _gradients = new Gradients(_config);
             _accel = model.AccelerationManager;
             _random = new Random();
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(model.Config.Runtime);
 
             // Allocate FFN gradient storage
             _textFFNWeightGrads = new List<List<float[,]>>();
@@ -44,6 +45,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             _priceFFNWeightGrads = new List<List<float[,]>>();
             _priceFFNBiasGrads = new List<List<float[]>>();
+
             for (int i = 0; i < _config.Price.NumLayers; i++)
             {
                 var (wGrads, bGrads) = model.PriceBlocks[i].FeedForwardNetwork.CreateGradientStorage();
@@ -164,13 +166,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             return mse;
         }
-        private float TrainBatch(
-       int[] batchIndices,
-       int[][] allText,
-       float[][,] allPriceInputs,
-       float[][,] allPriceTargets,
-       float[][] allConfTargets,
-       float learningRate)
+        private float TrainBatch(int[] batchIndices, int[][] allText, float[][,] allPriceInputs, float[][,] allPriceTargets, float[][] allConfTargets, float learningRate)
         {
             ZeroAllGradients();
 
@@ -369,9 +365,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             float scale = 1.0f / MathF.Sqrt(headDim);
 
             // Accumulate gradient w.r.t. text hidden states across all layers
-            float[,] dTextHiddenTotal = hasText
-     ? new float[cache.TextFinalHidden.GetLength(0), embDim]
-     : null;
+            float[,] dTextHiddenTotal = hasText ? new float[cache.TextFinalHidden.GetLength(0), embDim] : null;
             int textSeqLen = 0;
             if (hasText)
             {
@@ -392,8 +386,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 // ================================================
                 var (dFFResidual, dLNFFNGamma, dLNFFNBeta) = _accel.LayerNormBackward(dX, blockCache.LNFFNCache.Normalized, block.LNFFNGamma, blockCache.LNFFNCache.Input, blockCache.LNFFNCache.Mean, blockCache.LNFFNCache.Variance);
         
-                 _accel.AccumulateVectorGradients(blockGrads.LNFFNGrads.GammaGrad, dLNFFNGamma);
-                _accel.AccumulateVectorGradients(blockGrads.LNFFNGrads.BetaGrad, dLNFFNBeta);
+                 _accel.VectorAccumulate(blockGrads.LNFFNGrads.GammaGrad, dLNFFNGamma);
+                _accel.VectorAccumulate(blockGrads.LNFFNGrads.BetaGrad, dLNFFNBeta);
  
                 int seqLen = dFFResidual.GetLength(0);
                 var dNormedCross_from_ffn = new float[seqLen, embDim];
@@ -435,11 +429,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                     _accel.BackpropLinearProjection(blockCache.CrossAttnOutput, dCrossResidual, block.CrossAttention.WO, crossAttnGrads.WO_Grad, crossAttnGrads.BiasO_Grad, dCrossConcatenated);
 
-                    var (dCrossQ, dCrossK, dCrossV) = _accel.MultiHeadAttentionBackward(
-            blockCache.CrossQ, blockCache.CrossK, blockCache.CrossV,
-            dCrossConcatenated, numHeads, scale, false);
+                    var (dCrossQ, dCrossK, dCrossV) = _accel.MultiHeadAttentionBackward(blockCache.CrossQ, blockCache.CrossK, blockCache.CrossV, dCrossConcatenated, numHeads, scale, false);
 
-                    RotaryPositionEmbedding.ApplyBackwardInPlace(dCrossQ, dCrossK, numHeads);
+                    _rotaryPositionEmbedding.ApplyBackwardInPlace(dCrossQ, dCrossK, numHeads);
 
                     var dNormedSelf_from_cross = new float[seqLen, embDim];
 
@@ -454,8 +446,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
 
                     // Accumulate text gradients
-                    _accel.MatrixAccumulate(dTextHiddenTotal, dTextFromK);
-                    _accel.MatrixAccumulate(dTextHiddenTotal, dTextFromV);
+                    _accel.MatrixAddInPlace(dTextHiddenTotal, dTextFromK);
+                    _accel.MatrixAddInPlace(dTextHiddenTotal, dTextFromV);
                     dNormedSelf = _accel.MatrixAdd(dCrossResidual, dNormedSelf_from_cross);
                 }
                 else
@@ -481,19 +473,18 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 _accel.BackpropLinearProjection(blockCache.SelfAttnOutput, dSelfResidual, block.SelfAttention.WO, selfAttnGrads.WO_Grad, selfAttnGrads.BiasO_Grad, dSelfConcatenated);
 
-                var (dSelfQ, dSelfK, dSelfV) = _accel.MultiHeadAttentionBackward(
-               blockCache.SelfQ, blockCache.SelfK, blockCache.SelfV,
-               dSelfConcatenated, numHeads, scale, _config.Price.UseDecoderOnly);
+                var (dSelfQ, dSelfK, dSelfV) = _accel.MultiHeadAttentionBackward(blockCache.SelfQ, blockCache.SelfK, blockCache.SelfV, dSelfConcatenated, numHeads, scale, _config.Price.UseDecoderOnly);
 
-                RotaryPositionEmbedding.ApplyBackwardInPlace(dSelfQ, dSelfK, numHeads);
+                _rotaryPositionEmbedding.ApplyBackwardInPlace(dSelfQ, dSelfK, numHeads);
 
                 var dBlockInput = new float[seqLen, embDim];
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfQ,
-                    block.SelfAttention.WQ, selfAttnGrads.WQ_Grad, selfAttnGrads.BiasQ_Grad, dBlockInput);
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfK,
-                    block.SelfAttention.WK, selfAttnGrads.WK_Grad, selfAttnGrads.BiasK_Grad, dBlockInput);
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfV,
-                    block.SelfAttention.WV, selfAttnGrads.WV_Grad, selfAttnGrads.BiasV_Grad, dBlockInput);
+
+
+                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfQ, block.SelfAttention.WQ, selfAttnGrads.WQ_Grad, selfAttnGrads.BiasQ_Grad, dBlockInput);
+
+                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfK, block.SelfAttention.WK, selfAttnGrads.WK_Grad, selfAttnGrads.BiasK_Grad, dBlockInput);
+
+                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfV, block.SelfAttention.WV, selfAttnGrads.WV_Grad, selfAttnGrads.BiasV_Grad, dBlockInput);
 
                 // Residual connection: dX_prev = dSelfResidual + dBlockInput
                 dX = _accel.MatrixAdd(dSelfResidual, dBlockInput);
@@ -531,8 +522,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var ln2Grads = _gradients.TextLN2Grads[layer];
      
 
-                _accel.AccumulateVectorGradients(ln2Grads.GammaGrad, dLN2Gamma);
-                _accel.AccumulateVectorGradients(ln2Grads.BetaGrad, dLN2Beta);
+                _accel.VectorAccumulate(ln2Grads.GammaGrad, dLN2Gamma);
+                _accel.VectorAccumulate(ln2Grads.BetaGrad, dLN2Beta);
 
 
                 // FFN backward
@@ -556,8 +547,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var (dAttnResidual, dLN1Gamma, dLN1Beta) = _accel.LayerNormBackward(dNormed1, ln1Cache.Normalized, block.LN1Gamma, ln1Cache.Input, ln1Cache.Mean, ln1Cache.Variance);
                 var ln1Grads = _gradients.TextLN1Grads[layer];
 
-                _accel.AccumulateVectorGradients(ln1Grads.GammaGrad, dLN1Gamma);
-                _accel.AccumulateVectorGradients(ln1Grads.BetaGrad, dLN1Beta);
+                _accel.VectorAccumulate(ln1Grads.GammaGrad, dLN1Gamma);
+                _accel.VectorAccumulate(ln1Grads.BetaGrad, dLN1Beta);
 
                 // Attention backward
                 var attnCache = cache.TextAttentionCaches[layer];
@@ -567,11 +558,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 _accel.BackpropLinearProjection(attnCache.AttentionOutput, dAttnResidual, block.Attention.WO, textAttnGrads.WO_Grad, textAttnGrads.BiasO_Grad, dConcatenated);
 
-                var (dQ, dK, dV) = _accel.MultiHeadAttentionBackward(
-                   attnCache.Q, attnCache.K, attnCache.V,
-                   dConcatenated, numHeads, scale, _config.Text.UseDecoderOnly);
+                var (dQ, dK, dV) = _accel.MultiHeadAttentionBackward(attnCache.Q, attnCache.K, attnCache.V, dConcatenated, numHeads, scale, _config.Text.UseDecoderOnly);
 
-                RotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, numHeads);
+                _rotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, numHeads);
 
                 var dInput = new float[seqLen, embDim];
 
