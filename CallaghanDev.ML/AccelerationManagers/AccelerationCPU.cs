@@ -1,4 +1,4 @@
-﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.TACAMT;
 using ILGPU.Algorithms;
@@ -25,11 +25,12 @@ namespace CallaghanDev.ML.AccelerationManagers
             int colsB = B.GetLength(1);
 
             if (colsA != rowsB)
+            {
                 throw new ArgumentException($"Matrix dimensions don't match: [{rowsA}x{colsA}] * [{rowsB}x{colsB}]");
+            }
 
             var C = new float[rowsA, colsB];
 
-            // Cache-friendly blocked multiplication
             const int BLOCK = 32;
             for (int ii = 0; ii < rowsA; ii += BLOCK)
             {
@@ -46,8 +47,11 @@ namespace CallaghanDev.ML.AccelerationManagers
                             for (int j = jj; j < jMax; j++)
                             {
                                 float sum = C[i, j];
+
                                 for (int k = kk; k < kMax; k++)
+                                {
                                     sum += A[i, k] * B[k, j];
+                                }
                                 C[i, j] = sum;
                             }
                         }
@@ -76,7 +80,9 @@ namespace CallaghanDev.ML.AccelerationManagers
                 {
                     float sum = 0.0f;
                     for (int k = 0; k < colsA; k++)
+                    {
                         sum += A[i, k] * B[j, k];
+                    }
                     C[i, j] = sum;
                 }
             }
@@ -90,8 +96,12 @@ namespace CallaghanDev.ML.AccelerationManagers
             var result = new float[rows, cols];
 
             for (int i = 0; i < rows; i++)
+            {
                 for (int j = 0; j < cols; j++)
+                {
                     result[i, j] = matrix[i, j] * scalar;
+                }
+            }
             return result;
         }
 
@@ -130,27 +140,38 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             int seqLen = inputMatrix.GetLength(0);
 
-            // Delegate to offset-aware version
+            // send to offset-aware version
             return BatchDotProduct(weights, inputMatrix, rowStart: 0, rowCount: seqLen);
         }
 
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount)
         {
-            if (weights == null) throw new ArgumentNullException(nameof(weights));
-            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+            if (weights == null)
+            {
+                throw new ArgumentNullException(nameof(weights));
+            }
+            if (inputMatrix == null)
+            {
+                throw new ArgumentNullException(nameof(inputMatrix));
+            } 
 
             if (rowStart < 0 || rowCount < 0)
+            {
                 throw new ArgumentOutOfRangeException();
+            }
 
             if (rowStart + rowCount > inputMatrix.GetLength(0))
+            {
                 throw new ArgumentException("Invalid row slice.");
+            }
 
             int outputDim = weights.GetLength(0);
             int inputDim = weights.GetLength(1);
 
             if (inputMatrix.GetLength(1) != inputDim)
-                throw new ArgumentException(
-                    $"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+            {
+                throw new ArgumentException($"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+            }
 
             var result = new float[rowCount, outputDim];
 
@@ -216,15 +237,12 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public void ZeroMatrix(float[,] matrix)
         {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            for (int i = 0; i < rows; i++)
+            if (matrix == null)
             {
-                for (int j = 0; j < cols; j++)
-                {
-                    matrix[i, j] = 0;
-                }
+                throw new ArgumentNullException(nameof(matrix));
             }
+
+            Array.Clear(matrix, 0, matrix.Length);
         }
 
         public void ZeroVector(float[] vector)
@@ -236,6 +254,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             int rows = target.GetLength(0);
             int cols = target.GetLength(1);
+
             for (int i = 0; i < rows; i++)
             {
                 for (int j = 0; j < cols; j++)
@@ -256,7 +275,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         #endregion
 
         #region Neural network
-        // I realize this behaves like a transpose rather than a plain dot product-but that’s exactly what we want, and it’s correct.
+        // I realize this behaves like a transpose rather than a plain dot product-but that's exactly what we want, and it's correct.
         public float[] CalculateDotProduct(float[,] matrix, float[] vector)
         {
             int rows = matrix.GetLength(0);   // number of neurons in this layer
@@ -306,6 +325,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             int n = cost.Length;
             var grad = new float[n];
+
             for (int i = 0; i < n; i++)
             {
                 grad[i] = -cost[i] * derivative[i];
@@ -322,6 +342,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             for (int j = 0; j < cols; j++)
             {
                 float sum = 0.0f;
+
                 for (int i = 0; i < rows; i++)
                 {
                     sum += weights[i, j] * nextDeltas[i];
@@ -330,6 +351,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             var delta = new float[cols];
+
             for (int i = 0; i < cols; i++)
             {
                 delta[i] = pre[i] * derivative[i];
@@ -352,8 +374,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                     float regTerm = lambda * weights[i, j];
 
-                    updated[i, j] = weights[i, j]
-                                  - learningRate * (gradStep + regTerm);
+                    updated[i, j] = weights[i, j] - learningRate * (gradStep + regTerm);
                 }
             }
             return updated;
@@ -363,6 +384,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             int n = bias.Length;
             var updated = new float[n];
+
             for (int i = 0; i < n; i++)
             {
                 updated[i] = bias[i] - learningRate * deltas[i];
@@ -379,13 +401,18 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public float[,] Softmax(float[,] matrix, bool[,] mask = null)
         {
-            if (matrix == null) throw new ArgumentNullException(nameof(matrix));
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
 
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
 
             if (mask != null && (mask.GetLength(0) != rows || mask.GetLength(1) != cols))
+            {
                 throw new ArgumentException($"Mask shape must be [{rows},{cols}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));
+            }
 
             var result = new float[rows, cols];
 
@@ -396,18 +423,26 @@ namespace CallaghanDev.ML.AccelerationManagers
                 for (int j = 0; j < cols; j++)
                 {
                     if (mask != null && !mask[i, j])
+                    {
                         continue;
+                    }
 
                     float value = matrix[i, j];
                     if (float.IsNaN(value))
+                    {
                         throw new InvalidOperationException($"Softmax input contains NaN at [{i},{j}].");
+                    }
 
                     if (value > max)
+                    {
                         max = value;
+                    }
                 }
 
                 if (float.IsNegativeInfinity(max))
+                {
                     continue; // Entire row is masked. Return zeros for that row.
+                }
 
                 float sum = 0.0f;
                 for (int j = 0; j < cols; j++)
@@ -424,11 +459,15 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
 
                 if (sum <= 0f || float.IsNaN(sum) || float.IsInfinity(sum))
+                {
                     continue;
+                }
 
                 float invSum = 1.0f / sum;
                 for (int j = 0; j < cols; j++)
+                {
                     result[i, j] *= invSum;
+                }
             }
 
             return result;
@@ -885,9 +924,6 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #endregion
 
-
-
-
         public float[,] LayerNorm(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f)
         {
             int batchSize = input.GetLength(0);
@@ -897,21 +933,30 @@ namespace CallaghanDev.ML.AccelerationManagers
             for (int i = 0; i < batchSize; i++)
             {
                 float mean = 0.0f;
+
                 for (int j = 0; j < features; j++)
+                {
                     mean += input[i, j];
+                }
+
                 mean /= features;
 
                 float variance = 0.0f;
+
                 for (int j = 0; j < features; j++)
                 {
                     float diff = input[i, j] - mean;
                     variance += diff * diff;
                 }
+
                 variance /= features;
 
                 float stdDev = MathF.Sqrt(variance + epsilon);
+
                 for (int j = 0; j < features; j++)
+                {
                     result[i, j] = gamma[j] * (input[i, j] - mean) / stdDev + beta[j];
+                }
             }
             return result;
         }
@@ -947,6 +992,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 variances[i] = variance;
 
                 float stdDev = MathF.Sqrt(variance + epsilon);
+
                 for (int j = 0; j < features; j++)
                 {
                     normalized[i, j] = (input[i, j] - mean) / stdDev;
@@ -977,6 +1023,7 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
 
                 var dNorm = new float[features];
+
                 for (int j = 0; j < features; j++)
                 {
                     dNorm[j] = dOut[i, j] * gamma[j];
@@ -984,6 +1031,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
                 float dVar = 0;
                 float invStdCubed = invStd * invStd * invStd;
+
                 for (int j = 0; j < features; j++)
                 {
                     float xMinusMean = input[i, j] - mean[i];
@@ -991,12 +1039,14 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
 
                 float dMean = 0;
+
                 for (int j = 0; j < features; j++)
                 {
                     dMean += dNorm[j] * (-invStd);
                 }
 
                 float invN = 1.0f / features;
+
                 for (int j = 0; j < features; j++)
                 {
                     float xMinusMean = input[i, j] - mean[i];
@@ -1023,12 +1073,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             for (int i = 0; i < seqLen; i++)
             {
-                Buffer.BlockCopy(
-                    trueRow,
-                    0,
-                    mask,
-                    i * seqLen * boolSize,
-                    (i + 1) * boolSize);
+                Buffer.BlockCopy(trueRow, 0, mask, i * seqLen * boolSize, (i + 1) * boolSize);
             }
 
             return mask;
@@ -1430,13 +1475,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             for (int i = 0; i < seqLen; i++)
             {
                 var row = new float[input.GetLength(1)];
+
                 for (int j = 0; j < input.GetLength(1); j++)
+                {
                     row[j] = input[i, j];
+                }
 
                 var out_row = forwardPassFn(row);
 
                 for (int j = 0; j < outputDim; j++)
+                {
                     result[i, j] = out_row[j];
+                }
             }
 
             return result;
@@ -2737,6 +2787,30 @@ namespace CallaghanDev.ML.AccelerationManagers
             return tokens.ToArray();
         }
 
+        private static string ToCharacterSequence(string word)
+        {
+            if (string.IsNullOrEmpty(word))
+            {
+                return string.Empty;
+            }
+
+            if (word.Length == 1)
+            {
+                return word;
+            }
+
+            var sb = new StringBuilder(word.Length * 2 - 1);
+            sb.Append(word[0]);
+
+            for (int i = 1; i < word.Length; i++)
+            {
+                sb.Append(' ');
+                sb.Append(word[i]);
+            }
+
+            return sb.ToString();
+        }
+
         public Dictionary<string, int> GetWordFrequencies(string[] texts, bool lowerCase)
         {
             var wordFreqs = new Dictionary<string, int>();
@@ -2753,11 +2827,11 @@ namespace CallaghanDev.ML.AccelerationManagers
                     {
                         continue;
                     }
-                    var charSeq = string.Join(" ", word.Select(c => c.ToString()));
+                    string charSeq = ToCharacterSequence(word);
 
-                    if (wordFreqs.ContainsKey(charSeq))
+                    if (wordFreqs.TryGetValue(charSeq, out int count))
                     {
-                        wordFreqs[charSeq]++;
+                        wordFreqs[charSeq] = count + 1;
                     }
                     else
                     {
@@ -2997,49 +3071,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #endregion
 
-        public void SigmoidInPlace(float[,] matrix)
-        {
-            int rows = matrix.GetLength(0);
-            int cols = matrix.GetLength(1);
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    float x = matrix[i, j];
-                    if (x >= 0)
-                    {
-                        float ex = MathF.Exp(-x);
-                        matrix[i, j] = 1.0f / (1.0f + ex);
-                    }
-                    else
-                    {
-                        float ex = MathF.Exp(x);
-                        matrix[i, j] = ex / (1.0f + ex);
-                    }
-                }
-            }
-        }
-        private float StableSigmoid(float x)
-        {
-            if (x >= 0)
-            {
-                float ex = MathF.Exp(-x);
-                return 1f / (1f + ex);
-            }
-            else
-            {
-                float ex = MathF.Exp(x);
-                return ex / (1f + ex);
-            }
-        }
-        private static float Softplus(float x)
-        {
-            if (x > 20f) return x;
-            if (x < -20f) return MathF.Exp(x);
-            return MathF.Log(1f + MathF.Exp(x));
-        }
-        public void Dispose() { }
-
+        #region Rotary Position Embeddings
         public void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads, float baseTheta, bool inverse)
         {
             if (matrix == null)
@@ -3083,7 +3115,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                     inverse);
             }
         }
-
         public void ApplyRotaryPositionEmbeddingHeadInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse)
         {
             if (matrix == null)
@@ -3125,7 +3156,6 @@ namespace CallaghanDev.ML.AccelerationManagers
                 baseTheta,
                 inverse);
         }
-
         private static void ApplyRotaryPositionEmbeddingHeadCoreInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse)
         {
             int seqLen = matrix.GetLength(0);
@@ -3155,8 +3185,54 @@ namespace CallaghanDev.ML.AccelerationManagers
                 }
             }
         }
-
+        #endregion
+        public void SigmoidInPlace(float[,] matrix)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    float x = matrix[i, j];
+                    if (x >= 0)
+                    {
+                        float ex = MathF.Exp(-x);
+                        matrix[i, j] = 1.0f / (1.0f + ex);
+                    }
+                    else
+                    {
+                        float ex = MathF.Exp(x);
+                        matrix[i, j] = ex / (1.0f + ex);
+                    }
+                }
+            }
+        }
+        private float StableSigmoid(float x)
+        {
+            if (x >= 0)
+            {
+                float ex = MathF.Exp(-x);
+                return 1f / (1f + ex);
+            }
+            else
+            {
+                float ex = MathF.Exp(x);
+                return ex / (1f + ex);
+            }
+        }
+        private float Softplus(float x)
+        {
+            if (x > 20f)
+            {
+                return x;
+            }
+            if (x < -20f)
+            {
+                return MathF.Exp(x);
+            }
+            return MathF.Log(1f + MathF.Exp(x));
+        }
+        public void Dispose() { }
     }
-
-
 }

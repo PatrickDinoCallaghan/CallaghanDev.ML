@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
 using System.Reflection;
@@ -24,80 +25,81 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             (Test_Construction_DefaultTokensCorrect, "Construction: special token ids are correct"),
             (Test_Train_InvalidArgumentsThrow, "Train: invalid arguments throw"),
             (Test_Train_BuildsVocabularyAndMerges, "Train: builds vocab and learns merges"),
+            (Test_Train_ShowProgressTrue_DoesNotThrow, "Train: progress output path does not throw"),
+            (Test_Train_ShowProgressFalse_DoesNotThrow, "Train: no-progress path does not throw"),
+            (Test_Train_NoPossibleMergesStillBuildsCharacterVocab, "Train: no possible merges still builds char vocab"),
             (Test_Encode_EmptyStringBehaviour, "Encode: empty string special-token behaviour"),
+            (Test_Encode_NullStringBehaviour, "Encode: null string special-token behaviour"),
             (Test_Encode_WithAndWithoutSpecialTokens, "Encode: special token wrapping"),
             (Test_Encode_DeterministicAndCacheSafe, "Encode: deterministic and cache stable"),
             (Test_Encode_UnknownCharactersFallbackToUnk, "Encode: unknown characters fallback"),
             (Test_Decode_SkipsSpecialTokens, "Decode: skips special tokens"),
             (Test_Decode_IncludesSpecialTokensWhenRequested, "Decode: includes special tokens when requested"),
+            (Test_Decode_NullAndEmptyReturnEmptyString, "Decode: null/empty token arrays return empty string"),
             (Test_EncodeBatch_NoPaddingMatchesEncode, "EncodeBatch: no maxLength matches Encode"),
             (Test_EncodeBatch_PadsAndTruncates, "EncodeBatch: pads and truncates correctly"),
+            (Test_EncodeBatch_EmptyInputReturnsEmptyBatch, "EncodeBatch: empty input returns empty output"),
+            (Test_EncodeBatch_NullInputThrows, "EncodeBatch: null input throws"),
+            (Test_EncodeBatch_ParallelMatchesSequential, "EncodeBatch: parallel path matches sequential"),
+            (Test_EncodeBatch_ShowProgressTrue_DoesNotThrow, "EncodeBatch: progress output path does not throw"),
             (Test_LowerCase_ChangesVocabularyAndEncoding, "LowerCase: normalizes text"),
             (Test_IdToTokenAndTokenToId, "Lookup: IdToToken and TokenToId work"),
             (Test_GetVocabulary_IsIdOrdered, "Vocabulary: returned in id order"),
             (Test_SaveLoad_RoundTripPreservesEncoding, "SaveLoad: preserves encoding"),
             (Test_SaveLoad_PreservesConfig, "SaveLoad: preserves tokenizer config"),
+            (Test_Save_InvalidDirectoryThrows, "Save: invalid directory throws"),
+            (Test_Load_InvalidDirectoryThrows, "Load: invalid directory throws"),
+            (Test_Load_MissingVocabThrows, "Load: missing vocab.json throws"),
+            (Test_Load_MissingMergesThrows, "Load: missing merges.txt throws"),
+            (Test_Load_UsesRequestedAccelerationType, "Load: requested acceleration type is stored"),
             (Test_Acceleration_PrimitivesMatchTokenizerUse, "Acceleration: tokenizer primitive functions behave correctly"),
-            (Test_ParallelEncodeBatch_ReadOnlyDeterministic, "Future parallelism: parallel Encode calls are deterministic"),
+            (Test_ParallelEncode_ReadOnlyDeterministic, "Parallel Encode: read-only deterministic"),
+            (Test_ParallelEncodeBatch_ReadOnlyDeterministic, "Parallel EncodeBatch: deterministic"),
+            (Test_ConcurrentEncodeCache_DoesNotCorrupt, "Encode cache: concurrent access does not corrupt"),
         };
+
         private void Test_BPE_LearnsFrequentWholeWordMerge()
         {
             var tok = NewTokenizer();
 
-            tok.Train(
-                Enumerable.Repeat("hello", 20).ToArray(),
-                vocabSize: 50,
-                minFrequency: 1);
+            tok.Train(Enumerable.Repeat("hello", 20).ToArray(), vocabSize: 50, minFrequency: 1);
 
             int[] encoded = tok.Encode("hello", addSpecialTokens: false);
 
-            Assert(encoded.Length == 1,
-                $"Expected frequent word 'hello' to merge into one token, got {encoded.Length}");
+            Assert(encoded.Length == 1, $"Expected frequent word 'hello' to merge into one token, got {encoded.Length}");
 
-            Assert(tok.IdToToken(encoded[0]) == "hello",
-                $"Expected token to decode to 'hello', got {tok.IdToToken(encoded[0])}");
+            Assert(tok.IdToToken(encoded[0]) == "hello", $"Expected token to decode to 'hello', got {tok.IdToToken(encoded[0])}");
         }
 
         private void Test_BPE_MinFrequencyPreventsRareMerge()
         {
             var tok = NewTokenizer();
 
-            tok.Train(
-                new[] { "hello" },
-                vocabSize: 50,
-                minFrequency: 10);
+            tok.Train(new[] { "hello" }, vocabSize: 50, minFrequency: 10);
 
             int[] encoded = tok.Encode("hello", addSpecialTokens: false);
 
-            Assert(encoded.Length > 1,
-                $"Expected minFrequency to prevent full merge, got one token: {tok.IdToToken(encoded[0])}");
+            Assert(encoded.Length > 1, $"Expected minFrequency to prevent full merge, got one token: {tok.IdToToken(encoded[0])}");
         }
 
         private void Test_BPE_MergePriorityAffectsEncoding()
         {
             var tok = NewTokenizer();
 
-            tok.Train(
-                Enumerable.Repeat("abab", 20).ToArray(),
-                vocabSize: 50,
-                minFrequency: 1);
+            tok.Train(Enumerable.Repeat("abab", 20).ToArray(), vocabSize: 50, minFrequency: 1);
 
             int[] encoded = tok.Encode("abab", addSpecialTokens: false);
             string decoded = tok.Decode(encoded, skipSpecialTokens: true);
 
             Assert(decoded == "abab", $"Decoded text mismatch. decoded={decoded}");
-            Assert(encoded.Length <= 2,
-                $"Expected learned BPE merges to compact 'abab', got {encoded.Length} tokens");
+            Assert(encoded.Length <= 2, $"Expected learned BPE merges to compact 'abab', got {encoded.Length} tokens");
         }
 
         private void Test_Punctuation_IsPreservedAsSeparateTokens()
         {
             var tok = NewTokenizer();
 
-            tok.Train(
-                new[] { "hello, world!" },
-                vocabSize: 50,
-                minFrequency: 1);
+            tok.Train(new[] { "hello, world!" }, vocabSize: 50, minFrequency: 1);
 
             var vocab = tok.GetVocabulary();
 
@@ -106,8 +108,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             string decoded = tok.Decode(tok.Encode("hello, world!", true), true);
 
-            Assert(decoded == "hello,world!",
-                $"Expected punctuation-preserving decode without whitespace reconstruction. decoded={decoded}");
+            Assert(decoded == "hello,world!", $"Expected punctuation-preserving decode without whitespace reconstruction. decoded={decoded}");
         }
 
         private void Test_SaveLoad_MergePriorityPreserved()
@@ -117,12 +118,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             tok.Train(
                 new[]
                 {
-            "low lower lowest",
-            "low lower lowest",
-            "low lower lowest"
+                    "low lower lowest",
+                    "low lower lowest",
+                    "low lower lowest"
                 },
-                vocabSize: 80,
-                minFrequency: 1);
+                vocabSize: 80, minFrequency: 1);
 
             var before = tok.Encode("lowest lower low", addSpecialTokens: true);
 
@@ -131,12 +131,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 tok.Save(dir);
-                var loaded = BPETokenizer.Load(dir, Enums.AccelerationType.CPU);
+                var loaded = BPETokenizer.Load(dir, AccelerationType.CPU);
 
                 var after = loaded.Encode("lowest lower low", addSpecialTokens: true);
 
-                Assert(before.SequenceEqual(after),
-                    "Encoding changed after save/load, so merge priority may not be preserved.");
+                Assert(before.SequenceEqual(after), "Encoding changed after save/load, so merge priority may not be preserved.");
             }
             finally
             {
@@ -160,9 +159,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             var encoded = tok.Encode("abc", addSpecialTokens: false);
 
-            Assert(encoded.All(id => id == tok.UnkTokenId),
-                "Old cached encoding appears to have survived retrain.");
+            Assert(encoded.All(id => id == tok.UnkTokenId), "Old cached encoding appears to have survived retrain.");
         }
+
         private void Test_Construction_DefaultTokensCorrect()
         {
             var tok = NewTokenizer();
@@ -189,21 +188,13 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         {
             var tok = NewTokenizer();
 
-            AssertThrows<ArgumentException>(
-                () => tok.Train(null, vocabSize: 32, minFrequency: 1),
-                "Train should reject null corpus");
+            AssertThrows<ArgumentException>(() => tok.Train(null, vocabSize: 32, minFrequency: 1), "Train should reject null corpus");
 
-            AssertThrows<ArgumentException>(
-                () => tok.Train(Array.Empty<string>(), vocabSize: 32, minFrequency: 1),
-                "Train should reject empty corpus");
+            AssertThrows<ArgumentException>(() => tok.Train(Array.Empty<string>(), vocabSize: 32, minFrequency: 1), "Train should reject empty corpus");
 
-            AssertThrows<ArgumentOutOfRangeException>(
-                () => tok.Train(new[] { "abc" }, vocabSize: 4, minFrequency: 1),
-                "Train should reject vocabSize <= special-token count");
+            AssertThrows<ArgumentOutOfRangeException>(() => tok.Train(new[] { "abc" }, vocabSize: 4, minFrequency: 1), "Train should reject vocabSize <= special-token count");
 
-            AssertThrows<ArgumentOutOfRangeException>(
-                () => tok.Train(new[] { "abc" }, vocabSize: 32, minFrequency: 0),
-                "Train should reject minFrequency <= 0");
+            AssertThrows<ArgumentOutOfRangeException>(() => tok.Train(new[] { "abc" }, vocabSize: 32, minFrequency: 0), "Train should reject minFrequency <= 0");
         }
 
         private void Test_Train_BuildsVocabularyAndMerges()
@@ -218,8 +209,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     "newer wider lower",
                     "market lower low"
                 },
-                vocabSize: 80,
-                minFrequency: 1);
+                vocabSize: 80, minFrequency: 1);
 
             Assert(tok.VocabSize > 4, "Vocabulary did not grow beyond special tokens");
             Assert(tok.TokenToId("l") != tok.UnkTokenId, "Expected character token 'l'");
@@ -230,16 +220,65 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(encoded.All(id => id >= 0 && id < tok.VocabSize), "Encoded ids out of vocab range");
         }
 
+        private void Test_Train_ShowProgressTrue_DoesNotThrow()
+        {
+            var tok = NewTokenizer();
+
+            tok.Train(new[] { "alpha beta gamma", "alpha beta", "gamma delta" }, vocabSize: 40, minFrequency: 1, showProgress: false);
+
+            Assert(tok.VocabSize > 4, "Tokenizer did not train with progress enabled");
+        }
+
+        private void Test_Train_ShowProgressFalse_DoesNotThrow()
+        {
+            var tok = NewTokenizer();
+
+            tok.Train(new[] 
+            { 
+                "alpha beta gamma",
+                "alpha beta",
+                "gamma delta" 
+            },
+            vocabSize: 40, minFrequency: 1, showProgress: false);
+
+            Assert(tok.VocabSize > 4, "Tokenizer did not train with progress disabled");
+        }
+
+        private void Test_Train_NoPossibleMergesStillBuildsCharacterVocab()
+        {
+            var tok = NewTokenizer();
+
+            tok.Train(new[] { "abcdef" },
+                vocabSize: 50, minFrequency: 100);
+
+            Assert(tok.TokenToId("a") != tok.UnkTokenId, "Character vocab missing 'a'");
+            Assert(tok.TokenToId("f") != tok.UnkTokenId, "Character vocab missing 'f'");
+
+            var encoded = tok.Encode("abcdef", addSpecialTokens: false);
+
+            Assert(encoded.Length == 6, $"Expected char-level encoding when merges blocked, got {encoded.Length}");
+        }
+
         private void Test_Encode_EmptyStringBehaviour()
         {
             var tok = NewTokenizer();
 
             var withSpecial = tok.Encode("", addSpecialTokens: true);
-            Assert(withSpecial.SequenceEqual(new[] { tok.StartTokenId, tok.EndTokenId }),
-                "Empty string with special tokens should be [START, END]");
+            Assert(withSpecial.SequenceEqual(new[] { tok.StartTokenId, tok.EndTokenId }), "Empty string with special tokens should be [START, END]");
 
             var withoutSpecial = tok.Encode("", addSpecialTokens: false);
             Assert(withoutSpecial.Length == 0, "Empty string without special tokens should be empty");
+        }
+
+        private void Test_Encode_NullStringBehaviour()
+        {
+            var tok = NewTokenizer();
+
+            var withSpecial = tok.Encode(null, addSpecialTokens: true);
+            Assert(withSpecial.SequenceEqual(new[] { tok.StartTokenId, tok.EndTokenId }), "Null string with special tokens should be [START, END]");
+
+            var withoutSpecial = tok.Encode(null, addSpecialTokens: false);
+            Assert(withoutSpecial.Length == 0, "Null string without special tokens should be empty");
         }
 
         private void Test_Encode_WithAndWithoutSpecialTokens()
@@ -253,8 +292,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(withSpecial[0] == tok.StartTokenId, "First token should be START");
             Assert(withSpecial[^1] == tok.EndTokenId, "Last token should be END");
 
-            Assert(withSpecial.Skip(1).Take(withSpecial.Length - 2).SequenceEqual(withoutSpecial),
-                "Inner tokens should match no-special encoding");
+            Assert(withSpecial.Skip(1).Take(withSpecial.Length - 2).SequenceEqual(withoutSpecial), "Inner tokens should match no-special encoding");
         }
 
         private void Test_Encode_DeterministicAndCacheSafe()
@@ -307,6 +345,14 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(decoded.Contains(BPETokenizer.END_TOKEN), "Decoded text should include END token");
         }
 
+        private void Test_Decode_NullAndEmptyReturnEmptyString()
+        {
+            var tok = TrainedTokenizer();
+
+            Assert(tok.Decode(null) == string.Empty, "Decode(null) should return empty string");
+            Assert(tok.Decode(Array.Empty<int>()) == string.Empty, "Decode(empty) should return empty string");
+        }
+
         private void Test_EncodeBatch_NoPaddingMatchesEncode()
         {
             var tok = TrainedTokenizer();
@@ -332,14 +378,12 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         {
             var tok = TrainedTokenizer();
 
-            var batch = tok.EncodeBatch(
-                new[]
+            var batch = tok.EncodeBatch(new[]
                 {
                     "stock",
                     "central bank support growth demand sharply today"
                 },
-                addSpecialTokens: true,
-                maxLength: 6);
+                addSpecialTokens: true, maxLength: 6);
 
             Assert(batch.Length == 2, "Batch length mismatch");
             Assert(batch[0].Length == 6, "Padded row length mismatch");
@@ -353,6 +397,61 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(batch[1][^1] == tok.EndTokenId, "Truncated row should force final END token");
         }
 
+        private void Test_EncodeBatch_EmptyInputReturnsEmptyBatch()
+        {
+            var tok = TrainedTokenizer();
+
+            var batch = tok.EncodeBatch( Array.Empty<string>(), addSpecialTokens: true, maxLength: 8, parallel: true, showProgress: false);
+
+            Assert(batch.Length == 0, "Empty EncodeBatch input should return empty output");
+        }
+
+        private void Test_EncodeBatch_NullInputThrows()
+        {
+            var tok = TrainedTokenizer();
+
+            AssertThrows<ArgumentNullException>(() => tok.EncodeBatch(null), "EncodeBatch should reject null input");
+        }
+
+        private void Test_EncodeBatch_ParallelMatchesSequential()
+        {
+            var tok = TrainedTokenizer();
+
+            string[] texts = Enumerable.Range(0, 250)
+                .Select(i => (i % 5) switch
+                {
+                    0 => "stock rose sharply",
+                    1 => "market crashed today",
+                    2 => "central bank support growth",
+                    3 => "credit stress recession risk",
+                    _ => "routine market update commentary"
+                })
+                .ToArray();
+
+            var sequential = tok.EncodeBatch(texts, addSpecialTokens: true, maxLength: 12, parallel: false, showProgress: false);
+
+            var parallel = tok.EncodeBatch(texts, addSpecialTokens: true, maxLength: 12, parallel: true, showProgress: false);
+
+            Assert(sequential.Length == parallel.Length, "Parallel batch length mismatch");
+
+            for (int i = 0; i < texts.Length; i++)
+            {
+                Assert(sequential[i].SequenceEqual(parallel[i]), $"Parallel EncodeBatch mismatch at index {i}");
+            }
+        }
+
+        private void Test_EncodeBatch_ShowProgressTrue_DoesNotThrow()
+        {
+            var tok = TrainedTokenizer();
+
+            string[] texts = Enumerable.Range(0, 80).Select(i => "stock rose sharply " + i).ToArray();
+
+            var batch = tok.EncodeBatch(texts, addSpecialTokens: true, maxLength: 16, parallel: false, showProgress: false);
+
+            Assert(batch.Length == texts.Length, "Progress EncodeBatch returned wrong length");
+            Assert(batch.All(row => row.Length == 16), "Progress EncodeBatch maxLength not applied");
+        }
+
         private void Test_LowerCase_ChangesVocabularyAndEncoding()
         {
             var tok = NewTokenizer();
@@ -364,8 +463,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             var b = tok.Encode("stock", addSpecialTokens: false);
 
             Assert(a.SequenceEqual(b), "LowerCase=true should make STOCK and stock encode identically");
-            Assert(tok.Decode(tok.Encode("STOCK", addSpecialTokens: false)).Contains("stock"),
-                "Decoded lowercase text should contain normalized lowercase form");
+            Assert(tok.Decode(tok.Encode("STOCK", addSpecialTokens: false)).Contains("stock"), "Decoded lowercase text should contain normalized lowercase form");
         }
 
         private void Test_IdToTokenAndTokenToId()
@@ -379,11 +477,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 Assert(tok.IdToToken(id) == token, $"Round-trip token/id lookup failed for {token}");
             }
 
-            Assert(tok.TokenToId("__missing_token__") == tok.UnkTokenId,
-                "Missing token should map to UnkTokenId");
+            Assert(tok.TokenToId("__missing_token__") == tok.UnkTokenId, "Missing token should map to UnkTokenId");
 
-            Assert(tok.IdToToken(int.MaxValue) == BPETokenizer.UNK_TOKEN,
-                "Missing id should map to UNK token");
+            Assert(tok.IdToToken(int.MaxValue) == BPETokenizer.UNK_TOKEN, "Missing id should map to UNK token");
         }
 
         private void Test_GetVocabulary_IsIdOrdered()
@@ -413,9 +509,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 "unknown € token"
             };
 
-            var before = texts
-                .Select(t => tok.Encode(t, addSpecialTokens: true))
-                .ToArray();
+            var before = texts.Select(t => tok.Encode(t, addSpecialTokens: true)).ToArray();
 
             string dir = TmpDir();
 
@@ -423,7 +517,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             {
                 tok.Save(dir);
 
-                var loaded = BPETokenizer.Load(dir, Enums.AccelerationType.CPU);
+                var loaded = BPETokenizer.Load(dir, AccelerationType.CPU);
 
                 Assert(loaded.VocabSize == tok.VocabSize, "Loaded vocab size mismatch");
 
@@ -433,8 +527,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     Assert(before[i].SequenceEqual(after), $"Encoding mismatch after load for text index {i}");
                 }
 
-                Assert(tok.GetVocabulary().SequenceEqual(loaded.GetVocabulary()),
-                    "Vocabulary differs after load");
+                Assert(tok.GetVocabulary().SequenceEqual(loaded.GetVocabulary()), "Vocabulary differs after load");
             }
             finally
             {
@@ -453,10 +546,81 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 tok.Save(dir);
-                var loaded = BPETokenizer.Load(dir, Enums.AccelerationType.CPU);
+                var loaded = BPETokenizer.Load(dir, AccelerationType.CPU);
 
                 Assert(loaded.MaxTokenLength == 123, "MaxTokenLength not preserved");
                 Assert(loaded.LowerCase == true, "LowerCase not preserved");
+            }
+            finally
+            {
+                DeleteDir(dir);
+            }
+        }
+
+        private void Test_Save_InvalidDirectoryThrows()
+        {
+            var tok = TrainedTokenizer();
+
+            AssertThrows<ArgumentException>(() => tok.Save(null), "Save should reject null directory");
+
+            AssertThrows<ArgumentException>(() => tok.Save(""), "Save should reject empty directory");
+        }
+
+        private void Test_Load_InvalidDirectoryThrows()
+        {
+            string missing = Path.Combine(Path.GetTempPath(), "missing_tokenizer_" + Guid.NewGuid().ToString("N"));
+
+            AssertThrows<DirectoryNotFoundException>(() => BPETokenizer.Load(missing, AccelerationType.CPU), "Load should reject missing directory");
+        }
+
+        private void Test_Load_MissingVocabThrows()
+        {
+            string dir = TmpDir();
+
+            try
+            {
+                File.WriteAllText(Path.Combine(dir, "merges.txt"), "#version: 0.2");
+
+                AssertThrows<FileNotFoundException>(() => BPETokenizer.Load(dir, AccelerationType.CPU), "Load should reject missing vocab.json");
+            }
+            finally
+            {
+                DeleteDir(dir);
+            }
+        }
+
+        private void Test_Load_MissingMergesThrows()
+        {
+            var tok = TrainedTokenizer();
+            string dir = TmpDir();
+
+            try
+            {
+                tok.Save(dir);
+                File.Delete(Path.Combine(dir, "merges.txt"));
+
+                AssertThrows<FileNotFoundException>(() => BPETokenizer.Load(dir, AccelerationType.CPU), "Load should reject missing merges.txt");
+            }
+            finally
+            {
+                DeleteDir(dir);
+            }
+        }
+
+        private void Test_Load_UsesRequestedAccelerationType()
+        {
+            var tok = TrainedTokenizer();
+            string dir = TmpDir();
+
+            try
+            {
+                tok.Save(dir);
+
+                var loaded = BPETokenizer.Load(dir, AccelerationType.MultiThreadCPU, AccelerationDeviceId: 0);
+
+                var accelerationType = GetPrivateField<AccelerationType>(loaded, "_accelerationType");
+
+                Assert(accelerationType == AccelerationType.MultiThreadCPU, $"Expected loaded tokenizer acceleration type MultiThreadCPU, got {accelerationType}");
             }
             finally
             {
@@ -469,12 +633,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             var accel = new AccelerationCPU();
 
             var tokens = accel.PreTokenize("Hello, world! 123");
-            Assert(tokens.SequenceEqual(new[] { "Hello", ",", "world", "!", "123" }),
-                "PreTokenize produced unexpected tokens");
+            Assert(tokens.SequenceEqual(new[] { "Hello", ",", "world", "!", "123" }), "PreTokenize produced unexpected tokens");
 
-            var freqs = accel.GetWordFrequencies(
-                new[] { "aa aa ab", "aa!" },
-                lowerCase: false);
+            var freqs = accel.GetWordFrequencies(new[] { "aa aa ab", "aa!" }, lowerCase: false);
 
             Assert(freqs["a a"] == 3, "Word frequency for 'aa' should be 3");
             Assert(freqs["a b"] == 1, "Word frequency for 'ab' should be 1");
@@ -508,23 +669,21 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(truncated.SequenceEqual(new[] { 1, 5, 2 }), "PadOrTruncate truncation failed");
         }
 
-        private void Test_ParallelEncodeBatch_ReadOnlyDeterministic()
+        private void Test_ParallelEncode_ReadOnlyDeterministic()
         {
             var tok = TrainedTokenizer();
 
             string[] texts = Enumerable.Range(0, 500)
-          .Select(i => (i % 4) switch
-          {
-              0 => "stock rose sharply",
-              1 => "market crashed today",
-              2 => "central bank support growth",
-              _ => "credit stress recession risk"
-          })
-          .ToArray();
-
-            var expected = texts
-                .Select(t => tok.Encode(t, addSpecialTokens: true))
+                .Select(i => (i % 4) switch
+                {
+                    0 => "stock rose sharply",
+                    1 => "market crashed today",
+                    2 => "central bank support growth",
+                    _ => "credit stress recession risk"
+                })
                 .ToArray();
+
+            var expected = texts.Select(t => tok.Encode(t, addSpecialTokens: true)).ToArray();
 
             var actual = new int[texts.Length][];
 
@@ -539,17 +698,68 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             }
         }
 
+        private void Test_ParallelEncodeBatch_ReadOnlyDeterministic()
+        {
+            var tok = TrainedTokenizer();
+
+            string[] texts = Enumerable.Range(0, 500)
+                .Select(i => (i % 4) switch
+                {
+                    0 => "stock rose sharply",
+                    1 => "market crashed today",
+                    2 => "central bank support growth",
+                    _ => "credit stress recession risk"
+                })
+                .ToArray();
+
+            var expected = tok.EncodeBatch(texts, addSpecialTokens: true, maxLength: 20, parallel: false, showProgress: false);
+
+            var actual = tok.EncodeBatch(texts, addSpecialTokens: true, maxLength: 20, parallel: true, showProgress: false);
+
+            for (int i = 0; i < texts.Length; i++)
+            {
+                Assert(actual[i].SequenceEqual(expected[i]), $"Parallel EncodeBatch mismatch at index {i}");
+            }
+        }
+
+        private void Test_ConcurrentEncodeCache_DoesNotCorrupt()
+        {
+            var tok = TrainedTokenizer();
+
+            string[] texts = Enumerable.Range(0, 1_000).Select(i => "central bank support growth " + (i % 20)).ToArray();
+
+            Parallel.ForEach(texts, text =>
+            {
+                var ids = tok.Encode(text, addSpecialTokens: true);
+
+                Assert(ids.Length >= 2, "Encoded row should include at least START/END");
+                Assert(ids[0] == tok.StartTokenId, "Encoded row should start with START");
+                Assert(ids[^1] == tok.EndTokenId, "Encoded row should end with END");
+            });
+
+            var cache = GetPrivateField<Dictionary<string, List<int>>>(tok, "_encodeCache");
+
+            Assert(cache.Count <= 10000, "Encode cache exceeded max size");
+            Assert(cache.Count > 0, "Encode cache did not populate under concurrent use");
+        }
+
         private static BPETokenizer NewTokenizer()
         {
-            return new BPETokenizer(new RuntimeConfig());
+            var tokenizer = new BPETokenizer(new RuntimeConfig
+            {
+                AccelerationType = AccelerationType.CPU,
+                AccelerationDeviceId = 0
+            });
+
+            tokenizer.ShowTrainingProgress = false;
+            return tokenizer;
         }
 
         private static BPETokenizer TrainedTokenizer()
         {
             var tok = NewTokenizer();
 
-            tok.Train(
-                new[]
+            tok.Train(new[]
                 {
                     "stock rose sharply",
                     "stock rose sharply",
@@ -561,29 +771,26 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     "bearish data weak",
                     "bullish outlook strong"
                 },
-                vocabSize: 120,
-                minFrequency: 1);
+                vocabSize: 120, minFrequency: 1);
 
             return tok;
         }
 
         private static T GetPrivateField<T>(object instance, string fieldName)
         {
-            var field = instance.GetType().GetField(
-                fieldName,
-                BindingFlags.Instance | BindingFlags.NonPublic);
+            var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
 
             if (field == null)
+            {
                 throw new InvalidOperationException($"Could not find private field {fieldName}");
+            }
 
             return (T)field.GetValue(instance);
         }
 
         private static string TmpDir()
         {
-            string dir = Path.Combine(
-                Path.GetTempPath(),
-                "bpe_tokenizer_test_" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(Path.GetTempPath(), "bpe_tokenizer_test_" + Guid.NewGuid().ToString("N"));
 
             Directory.CreateDirectory(dir);
             return dir;
@@ -592,7 +799,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private static void DeleteDir(string dir)
         {
             if (Directory.Exists(dir))
+            {
                 Directory.Delete(dir, recursive: true);
+            }
         }
 
         private void AssertThrows<T>(Action action, string message) where T : Exception

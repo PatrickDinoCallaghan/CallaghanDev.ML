@@ -1,4 +1,4 @@
-﻿namespace CallaghanDev.ML.TestConsoleApp.Tests
+﻿namespace CallaghanDev.ML.TestConsoleApp
 {
     internal abstract class TestBase
     {

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 
 namespace CallaghanDev.ML.Helpers
 {
+    // TODO: Replace this Progress bar with the new one
     public static class ProgressBarHelper
     {
         private static int _barLength = 50;

@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.TACAMT;
 using System.Buffers;
 using System.Collections.Concurrent;
@@ -26,27 +27,70 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             _parallelOptions = new ParallelOptions
             {
-                MaxDegreeOfParallelism = Environment.ProcessorCount
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount)
             };
         }
 
-        private bool ShouldParallelize(int workUnits)
+        private AccelerationCPU SingleThreadCPU
         {
-            if (workUnits < PARALLEL_THRESHOLD && !AlwaysParallel)
+            get
             {
-                if (_singleThreadCPU == null)
+                if (_singleThreadCPU != null)
                 {
-                    lock (_singleThreadCPULock)
+                    return _singleThreadCPU;
+                }
+
+                lock (_singleThreadCPULock)
+                {
+                    if (_singleThreadCPU == null)
                     {
-                        // Double-check pattern to avoid multiple instantiations
-                        if (_singleThreadCPU == null)
-                        {
-                            _singleThreadCPU = new AccelerationCPU();
-                        }
+                        _singleThreadCPU = new AccelerationCPU();
                     }
+
+                    return _singleThreadCPU;
                 }
             }
-            return workUnits >= PARALLEL_THRESHOLD || AlwaysParallel;
+        }
+
+        private bool ShouldParallelize(long workUnits)
+        {
+            if (AlwaysParallel)
+            {
+                return true;
+            }
+
+            if (workUnits < PARALLEL_THRESHOLD)
+            {
+                _ = SingleThreadCPU;
+                return false;
+            }
+
+            return true;
+        }
+
+        private static string ToCharacterSequence(string word)
+        {
+            if (string.IsNullOrEmpty(word))
+            {
+                return string.Empty;
+            }
+
+            if (word.Length == 1)
+            {
+                return word;
+            }
+
+            var chars = new char[word.Length * 2 - 1];
+            chars[0] = word[0];
+
+            int outIndex = 1;
+            for (int i = 1; i < word.Length; i++)
+            {
+                chars[outIndex++] = ' ';
+                chars[outIndex++] = word[i];
+            }
+
+            return new string(chars);
         }
 
         #region Shared Tensor primitives
@@ -59,7 +103,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rowsA * colsB))
             {
-                return _singleThreadCPU.MatrixMultiply(A, B);
+                return SingleThreadCPU.MatrixMultiply(A, B);
             }
 
             int colsA = A.GetLength(1);
@@ -109,7 +153,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rowsA * rowsB))
             {
-                return _singleThreadCPU.MatrixMultiplyTranspose(A, B);
+                return SingleThreadCPU.MatrixMultiplyTranspose(A, B);
             }
 
             int colsB = B.GetLength(1);
@@ -145,7 +189,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.MatrixScale(matrix, scalar);
+                return SingleThreadCPU.MatrixScale(matrix, scalar);
             }
 
             var result = new float[rows, cols];
@@ -168,7 +212,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.MatrixAdd(A, B);
+                return SingleThreadCPU.MatrixAdd(A, B);
             }
             var result = new float[rows, cols];
 
@@ -190,7 +234,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.MatrixAddBias(matrix, bias);
+                return SingleThreadCPU.MatrixAddBias(matrix, bias);
             }
 
             var result = new float[rows, cols];
@@ -232,7 +276,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rowCount * outputDim))
             {
-                return _singleThreadCPU.BatchDotProduct(weights, inputMatrix, rowStart, rowCount);
+                return SingleThreadCPU.BatchDotProduct(weights, inputMatrix, rowStart, rowCount);
             }
 
             var result = new float[rowCount, outputDim];
@@ -273,7 +317,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(numRows * cols))
             {
-                return _singleThreadCPU.SliceRows(matrix, startRow, endRow);
+                return SingleThreadCPU.SliceRows(matrix, startRow, endRow);
             }
 
             var result = new float[numRows, cols];
@@ -316,7 +360,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                _singleThreadCPU.MatrixAddInPlace(target, source);
+                SingleThreadCPU.MatrixAddInPlace(target, source);
 
                 return;
             }
@@ -333,29 +377,37 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(len))
             {
-                _singleThreadCPU.VectorAccumulate(target, source);
+                SingleThreadCPU.VectorAccumulate(target, source);
                 return;
             }
 
 
-            // Small vector=> SIMD without thread overhead
             int vecSize = Vector<float>.Count;
-            int vecEnd = len - (len % vecSize);
 
-            int j = 0;
-            while (j < vecEnd)
-            {
-                var t = new Vector<float>(target, j);
-                var s = new Vector<float>(target, j);
-                (t + s).CopyTo(target, j);
-                j += vecSize;
-            }
+            Parallel.ForEach(
+                Partitioner.Create(0, len),
+                _parallelOptions,
+                range =>
+                {
+                    int start = range.Item1;
+                    int end = range.Item2;
+                    int j = start;
+                    int vecEnd = end - ((end - j) % vecSize);
 
-            while (j < len)
-            {
-                target[j] += source[j];
-                j++;
-            }
+                    while (j < vecEnd)
+                    {
+                        var t = new Vector<float>(target, j);
+                        var s = new Vector<float>(source, j);
+                        (t + s).CopyTo(target, j);
+                        j += vecSize;
+                    }
+
+                    while (j < end)
+                    {
+                        target[j] += source[j];
+                        j++;
+                    }
+                });
         }
 
         #endregion
@@ -375,7 +427,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.CalculateDotProduct(matrix, vector);
+                return SingleThreadCPU.CalculateDotProduct(matrix, vector);
             }
 
             Parallel.For(0, rows, _parallelOptions, i =>
@@ -397,7 +449,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(n))
             {
-                return _singleThreadCPU.ActivateLayer(dot, bias, activationType);
+                return SingleThreadCPU.ActivateLayer(dot, bias, activationType);
             }
             var activation = new float[n];
             var derivative = new float[n];
@@ -422,7 +474,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(n))
             {
-                return _singleThreadCPU.CalculateOutputGradients(cost, derivative);
+                return SingleThreadCPU.CalculateOutputGradients(cost, derivative);
             }
 
             var grad = new float[n];
@@ -443,7 +495,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.CalculateHiddenGradients(weights, nextDeltas, derivative);
+                return SingleThreadCPU.CalculateHiddenGradients(weights, nextDeltas, derivative);
             }
             else
             {
@@ -484,7 +536,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.UpdateWeights(weights, deltas, prevActivations, learningRate, lambda);
+                return SingleThreadCPU.UpdateWeights(weights, deltas, prevActivations, learningRate, lambda);
             }
             else
             {
@@ -511,7 +563,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(n))
             {
-                return _singleThreadCPU.UpdateBias(bias, deltas, learningRate);
+                return SingleThreadCPU.UpdateBias(bias, deltas, learningRate);
             }
             else
             {
@@ -543,7 +595,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.Softmax(matrix, mask);
+                return SingleThreadCPU.Softmax(matrix, mask);
             }
 
             var result = new float[rows, cols];
@@ -695,7 +747,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(batchSize * features))
             {
-                return _singleThreadCPU.LayerNorm(input, gamma, beta, epsilon);
+                return SingleThreadCPU.LayerNorm(input, gamma, beta, epsilon);
             }
             var result = new float[batchSize, features];
 
@@ -747,7 +799,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(batchSize * features))
             {
-                return _singleThreadCPU.LayerNormForward(input, gamma, beta, epsilon);
+                return SingleThreadCPU.LayerNormForward(input, gamma, beta, epsilon);
             }
             var means = new float[batchSize];
             var variances = new float[batchSize];
@@ -885,7 +937,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(workUnits))
             {
-                return _singleThreadCPU.CreateCausalMask(seqLen);
+                return SingleThreadCPU.CreateCausalMask(seqLen);
             }
 
             var mask = new bool[seqLen, seqLen];
@@ -1005,7 +1057,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(workUnits))
             {
-                return _singleThreadCPU.MultiHeadAttentionForward(Q, K, V, numHeads, scale, mask);
+                return SingleThreadCPU.MultiHeadAttentionForward(Q, K, V, numHeads, scale, mask);
             }
 
             if (Q == null)
@@ -1400,7 +1452,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(seqLen * inputDim))
             {
-                return _singleThreadCPU.FFNForwardBatch(input, seqLen, outputDim, forwardPassFn);
+                return SingleThreadCPU.FFNForwardBatch(input, seqLen, outputDim, forwardPassFn);
             }
 
             var result = new float[seqLen, outputDim];
@@ -1432,7 +1484,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(seqLen * embeddingDim))
             {
-                _singleThreadCPU.BackpropLinearProjection(input, dOutput, weights, weightGrad, biasGrad, dInput);
+                SingleThreadCPU.BackpropLinearProjection(input, dOutput, weights, weightGrad, biasGrad, dInput);
                 return;
             }
 
@@ -1521,7 +1573,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                return _singleThreadCPU.MatrixSquaredNorm(matrix);
+                return SingleThreadCPU.MatrixSquaredNorm(matrix);
             }
 
             float sum = 0;
@@ -1545,7 +1597,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             if (!ShouldParallelize(vector.Length))
             {
-                return _singleThreadCPU.VectorSquaredNorm(vector);
+                return SingleThreadCPU.VectorSquaredNorm(vector);
             }
 
             float sum = 0;
@@ -1566,7 +1618,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                _singleThreadCPU.MatrixScaleInPlace(matrix, scale);
+                SingleThreadCPU.MatrixScaleInPlace(matrix, scale);
                 return;
             }
 
@@ -1583,7 +1635,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             if (!ShouldParallelize(vector.Length))
             {
-                _singleThreadCPU.VectorScaleInPlace(vector, scale);
+                SingleThreadCPU.VectorScaleInPlace(vector, scale);
                 return;
             }
 
@@ -1599,7 +1651,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                _singleThreadCPU.MatrixUpdate(weights, gradients, learningRate);
+                SingleThreadCPU.MatrixUpdate(weights, gradients, learningRate);
                 return;
             }
 
@@ -1616,7 +1668,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             if (!ShouldParallelize(weights.Length))
             {
-                _singleThreadCPU.VectorUpdate(weights, gradients, learningRate);
+                SingleThreadCPU.VectorUpdate(weights, gradients, learningRate);
                 return;
             }
 
@@ -1634,7 +1686,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(effectiveLen * outputDim))
             {
-                return _singleThreadCPU.CrossEntropyLossAndGradient(logits, targets, effectiveLen);
+                return SingleThreadCPU.CrossEntropyLossAndGradient(logits, targets, effectiveLen);
             }
             var localLosses = new float[effectiveLen];
 
@@ -1698,7 +1750,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(effectiveLen * outputDim))
             {
-                return _singleThreadCPU.MSELossAndGradient(predictions, targets, effectiveLen);
+                return SingleThreadCPU.MSELossAndGradient(predictions, targets, effectiveLen);
             }
 
             var localLosses = new float[effectiveLen];
@@ -1737,7 +1789,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(seqLen * outputDim))
             {
-                return _singleThreadCPU.BackpropOutputProjection(dLogits, input, weights, weightGrad, biasGrad, seqLen, outputDim, embeddingDim);
+                return SingleThreadCPU.BackpropOutputProjection(dLogits, input, weights, weightGrad, biasGrad, seqLen, outputDim, embeddingDim);
             }
 
             // Thread-local accumulation for shared weightGrad/biasGrad
@@ -1800,7 +1852,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             if (!ShouldParallelize(seqLen * embeddingDim))
             {
-                _singleThreadCPU.BackpropInputProjection(dX, continuousInput, weightGrad, biasGrad, seqLen, embeddingDim, inputFeatureDim);
+                SingleThreadCPU.BackpropInputProjection(dX, continuousInput, weightGrad, biasGrad, seqLen, embeddingDim, inputFeatureDim);
                 return;
             }
 
@@ -1848,7 +1900,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         {
             if (!ShouldParallelize(seqLen * embeddingDim))
             {
-                _singleThreadCPU.AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, seqLen, embeddingDim);
+                SingleThreadCPU.AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, seqLen, embeddingDim);
                 return;
             }
 
@@ -1902,7 +1954,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(rows * cols))
             {
-                _singleThreadCPU.SigmoidInPlace(matrix);
+                SingleThreadCPU.SigmoidInPlace(matrix);
                 return;
             }
 
@@ -2056,7 +2108,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(n * embDim))
             {
-                _singleThreadCPU.ApplyContextTypeEmbedding(contextHidden, typeEmbedding, typeIndices);
+                SingleThreadCPU.ApplyContextTypeEmbedding(contextHidden, typeEmbedding, typeIndices);
                 return;
             }
 
@@ -2086,7 +2138,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(priceSeqLen * numKeys))
             {
-                return _singleThreadCPU.ComputeTimeDiffMatrix(priceSeqLen, keyArrivalTimes);
+                return SingleThreadCPU.ComputeTimeDiffMatrix(priceSeqLen, keyArrivalTimes);
             }
 
             var td = new float[priceSeqLen, numKeys];
@@ -2107,7 +2159,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(totalCtx * embDim))
             {
-                return _singleThreadCPU.ComputeMemoryAttentionScores(priceHidden, lastPos, contextHidden, totalCtx, scale);
+                return SingleThreadCPU.ComputeMemoryAttentionScores(priceHidden, lastPos, contextHidden, totalCtx, scale);
             }
 
             var scores = new float[totalCtx];
@@ -2137,7 +2189,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(seqLen * outputDim))
             {
-                return _singleThreadCPU.ProjectOutputBatch(hidden, outputProjection, outputBias, seqLen, outputDim);
+                return SingleThreadCPU.ProjectOutputBatch(hidden, outputProjection, outputBias, seqLen, outputDim);
             }
 
             var pred = new float[seqLen, outputDim];
@@ -2206,7 +2258,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(totalWork))
             {
-                return _singleThreadCPU.ContentAwareDecayForward(
+                return SingleThreadCPU.ContentAwareDecayForward(
                     queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef,
                     network, isTraining, dropoutRng);
             }
@@ -2441,7 +2493,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             if (!ShouldParallelize(total))
             {
-                _singleThreadCPU.Matrix3DScaleInPlace(matrix, scale);
+                SingleThreadCPU.Matrix3DScaleInPlace(matrix, scale);
                 return;
             }
 
@@ -2460,7 +2512,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             int total = d0 * d1 * d2;
 
             if (!ShouldParallelize(total))
-                return _singleThreadCPU.MatrixSquaredNorm3D(matrix);
+                return SingleThreadCPU.MatrixSquaredNorm3D(matrix);
 
             float sum = 0;
             object lockObj = new object();
@@ -2481,121 +2533,302 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
 
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+            _singleThreadCPU?.Dispose();
+        }
 
         public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask)
         {
-            throw new NotImplementedException();
+            int seqLenQ = Q?.GetLength(0) ?? 0;
+            int seqLenK = K?.GetLength(0) ?? 0;
+            int embeddingDim = Q?.GetLength(1) ?? 0;
+            long workUnits = (long)numHeads * seqLenQ * seqLenK * Math.Max(1, embeddingDim / Math.Max(1, numHeads));
+
+            // The bool[,] overload is mainly used by training/backprop. Delegate tiny/medium work
+            // to the single-thread implementation to avoid thread-pool overhead and to preserve
+            // the existing exact algorithm for masked attention backward.
+            if (!ShouldParallelize(workUnits))
+            {
+                return SingleThreadCPU.MultiHeadAttentionBackward(Q, K, V, dConcatenated, numHeads, scale, mask);
+            }
+
+            return SingleThreadCPU.MultiHeadAttentionBackward(Q, K, V, dConcatenated, numHeads, scale, mask);
         }
 
         public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null)
         {
-            throw new NotImplementedException();
+            if (!enableDecayBias)
+            {
+                int hd = PriceEmbeddingDim / PriceNumHeads;
+                float scale = 1.0f / MathF.Sqrt(hd);
+
+                float[][,] attentionWeights;
+                float[][,] scoresPreSoftmax;
+                var output = ContentAwareCrossAttentionForward(
+                    Q,
+                    K,
+                    V,
+                    PriceNumHeads,
+                    scale,
+                    decayBias: null,
+                    out attentionWeights,
+                    out scoresPreSoftmax);
+
+                bc.CrossAttentionWeights = attentionWeights;
+                bc.CrossScoresPreSoftmax = scoresPreSoftmax;
+                bc.DecayCache = null;
+                return output;
+            }
+
+            return ContentAwareCrossAttentionWithCache(
+                Q,
+                K,
+                V,
+                timeDiffs,
+                keyTimesFromRef,
+                queryEmbeddings,
+                keyEmbeddings,
+                block,
+                bc,
+                PriceEmbeddingDim,
+                PriceNumHeads,
+                isTraining,
+                dropoutRng);
         }
 
         public float[] ProjectGlobalFeatures(float[] globalFeatures, float[,] projection, float[] bias)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.ProjectGlobalFeatures(globalFeatures, projection, bias);
         }
 
         public float[,] EmbedTokenIds(int[] tokenIds, float[,] embedding, int embeddingDim)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.EmbedTokenIds(tokenIds, embedding, embeddingDim);
         }
 
         public float[] MeanPoolRows(float[,] matrix)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.MeanPoolRows(matrix);
         }
 
         public (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews) BuildMmtacContext(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] contextTypeEmbedding)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.BuildMmtacContext(newsHidden, newsTimes, globalToken, contextTypeEmbedding);
         }
 
         public (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence, float[,] regressionLogits, float[] rangeLogits, float[] qualityLogits) ProjectMmtacOutputHeads(float[,] hidden, float[,] regressionProjection, float[] regressionBias, float[,] rangeProjection, float[] rangeBias, float[,] qualityProjection, float[] qualityBias, float[,] directionProjection, float[] directionBias, float[,] midDirectionProjection, float[] midDirectionBias, float[,] confidenceProjection, float[] confidenceBias, bool useConfidenceHead)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.ProjectMmtacOutputHeads(
+                hidden,
+                regressionProjection,
+                regressionBias,
+                rangeProjection,
+                rangeBias,
+                qualityProjection,
+                qualityBias,
+                directionProjection,
+                directionBias,
+                midDirectionProjection,
+                midDirectionBias,
+                confidenceProjection,
+                confidenceBias,
+                useConfidenceHead);
         }
 
         public float[] SoftmaxVector(float[] scores)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.SoftmaxVector(scores);
         }
 
         public (float[,] dQ, float[,] dK, float[,] dV, float[,,] dDecayBias) BackpropTimeDecayedAttention(float[,] q, float[,] k, float[,] v, float[,] dOutput, float[][,] attentionWeights, float[,] timeDiffs, int embeddingDim, int numHeads)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.BackpropTimeDecayedAttention(q, k, v, dOutput, attentionWeights, timeDiffs, embeddingDim, numHeads);
         }
 
         public string[] PreTokenize(string text)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.PreTokenize(text);
         }
 
         public Dictionary<string, int> GetWordFrequencies(string[] texts, bool lowerCase)
         {
-            throw new NotImplementedException();
+            if (texts == null)
+            {
+                throw new ArgumentNullException(nameof(texts));
+            }
+
+            // The single-thread tokenizer path is faster for small corpora. For larger corpora,
+            // split by text and merge local dictionaries to avoid a global lock per token.
+            if (!ShouldParallelize(texts.Length * 32L))
+            {
+                return SingleThreadCPU.GetWordFrequencies(texts, lowerCase);
+            }
+
+            var global = new ConcurrentDictionary<string, int>();
+
+            Parallel.ForEach(
+                Partitioner.Create(0, texts.Length),
+                _parallelOptions,
+                range =>
+                {
+                    var local = new Dictionary<string, int>();
+
+                    for (int i = range.Item1; i < range.Item2; i++)
+                    {
+                        string text = texts[i] ?? string.Empty;
+                        string processedText = lowerCase ? text.ToLowerInvariant() : text;
+                        var words = SingleThreadCPU.PreTokenize(processedText);
+
+                        foreach (var word in words)
+                        {
+                            if (string.IsNullOrWhiteSpace(word))
+                            {
+                                continue;
+                            }
+
+                            string charSeq = ToCharacterSequence(word);
+                            local.TryGetValue(charSeq, out int old);
+                            local[charSeq] = old + 1;
+                        }
+                    }
+
+                    foreach (var kv in local)
+                    {
+                        global.AddOrUpdate(kv.Key, kv.Value, (_, old) => old + kv.Value);
+                    }
+                });
+
+            return new Dictionary<string, int>(global);
         }
 
         public HashSet<string> BuildCharacterVocabulary(Dictionary<string, int> wordFreqs)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.BuildCharacterVocabulary(wordFreqs);
         }
 
         public List<string> ApplyMerge(List<string> word, string left, string right)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.ApplyMerge(word, left, right);
         }
 
         public List<int> EncodeWord(string word, Dictionary<(string, string), int> mergePriority, Dictionary<string, int> vocabToId, int unkTokenId)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.EncodeWord(word, mergePriority, vocabToId, unkTokenId);
         }
 
         public Dictionary<(string left, string right), int> CountPairFrequencies(Dictionary<List<string>, int> words)
         {
-            throw new NotImplementedException();
+            if (words == null)
+            {
+                throw new ArgumentNullException(nameof(words));
+            }
+
+            if (!ShouldParallelize(words.Count * 8L))
+            {
+                return SingleThreadCPU.CountPairFrequencies(words);
+            }
+
+            var global = new ConcurrentDictionary<(string left, string right), int>();
+
+            Parallel.ForEach(
+                Partitioner.Create(words.ToArray(), loadBalance: true),
+                _parallelOptions,
+                () => new Dictionary<(string left, string right), int>(),
+                (kv, _, local) =>
+                {
+                    var word = kv.Key;
+                    int freq = kv.Value;
+
+                    for (int i = 0; i < word.Count - 1; i++)
+                    {
+                        var pair = (word[i], word[i + 1]);
+                        local.TryGetValue(pair, out int old);
+                        local[pair] = old + freq;
+                    }
+
+                    return local;
+                },
+                local =>
+                {
+                    foreach (var kv in local)
+                    {
+                        global.AddOrUpdate(kv.Key, kv.Value, (_, old) => old + kv.Value);
+                    }
+                });
+
+            return new Dictionary<(string left, string right), int>(global);
         }
 
         public ((string left, string right) pair, int frequency) SelectBestPair(Dictionary<(string left, string right), int> pairCounts, int minFrequency)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.SelectBestPair(pairCounts, minFrequency);
         }
 
         public Dictionary<List<string>, int> ApplyMergeToVocabulary(Dictionary<List<string>, int> words, string left, string right)
         {
-            throw new NotImplementedException();
+            if (words == null)
+            {
+                throw new ArgumentNullException(nameof(words));
+            }
+
+            if (!ShouldParallelize(words.Count * 8L))
+            {
+                return SingleThreadCPU.ApplyMergeToVocabulary(words, left, right);
+            }
+
+            var output = new ConcurrentDictionary<List<string>, int>(new ListEqualityComparer<string>());
+
+            Parallel.ForEach(
+                Partitioner.Create(words.ToArray(), loadBalance: true),
+                _parallelOptions,
+                kv =>
+                {
+                    var newWord = SingleThreadCPU.ApplyMerge(kv.Key, left, right);
+                    output.AddOrUpdate(newWord, kv.Value, (_, old) => old + kv.Value);
+                });
+
+            return new Dictionary<List<string>, int>(output, new ListEqualityComparer<string>());
         }
 
         public string DecodeTokens(int[] tokenIds, Dictionary<int, string> idToVocab, string unkToken, bool skipSpecialTokens)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.DecodeTokens(tokenIds, idToVocab, unkToken, skipSpecialTokens);
         }
 
         public int[] PadOrTruncate(int[] tokenIds, int maxLength, bool addSpecialTokens, int padTokenId, int endTokenId)
         {
-            throw new NotImplementedException();
+            return SingleThreadCPU.PadOrTruncate(tokenIds, maxLength, addSpecialTokens, padTokenId, endTokenId);
         }
 
         public void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads)
         {
-            throw new NotImplementedException();
+            SingleThreadCPU.ApplyRotaryPositionEmbeddingInPlace(matrix, numHeads, 10000f, inverse: false);
         }
 
         public void ApplyRotaryPositionEmbeddingBackwardInPlace(float[,] matrix, int numHeads)
         {
-            throw new NotImplementedException();
+            SingleThreadCPU.ApplyRotaryPositionEmbeddingInPlace(matrix, numHeads, 10000f, inverse: true);
         }
 
         public void ApplyRotaryPositionEmbeddingInPlace(float[,] matrix, int numHeads, float baseTheta, bool inverse)
         {
-            throw new NotImplementedException();
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            if (!ShouldParallelize((long)rows * cols))
+            {
+                SingleThreadCPU.ApplyRotaryPositionEmbeddingInPlace(matrix, numHeads, baseTheta, inverse);
+                return;
+            }
+
+            SingleThreadCPU.ApplyRotaryPositionEmbeddingInPlace(matrix, numHeads, baseTheta, inverse);
         }
 
         public void ApplyRotaryPositionEmbeddingHeadInPlace(float[,] matrix, int startCol, int headDim, float baseTheta, bool inverse)
         {
-            throw new NotImplementedException();
+            SingleThreadCPU.ApplyRotaryPositionEmbeddingHeadInPlace(matrix, startCol, headDim, baseTheta, inverse);
         }
+
     }
 }

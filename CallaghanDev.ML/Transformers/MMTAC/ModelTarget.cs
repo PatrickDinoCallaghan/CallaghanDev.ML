@@ -29,7 +29,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public static ModelTarget FromArrays(float[] regression, float range, float quality, float direction, float midDir)
         {
             if (regression == null || regression.Length < 3)
+            {
                 throw new ArgumentException("regression must have at least 3 elements (High, Low, Close).");
+            }
             return new ModelTarget
             {
                 High = regression[0],

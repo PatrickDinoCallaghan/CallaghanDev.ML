@@ -1,17 +1,15 @@
-﻿using CallaghanDev.ML.Enums;
 using ILGPU;
 using ILGPU.Runtime;
-using MathNet.Symbolics;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace CallaghanDev.ML.AccelerationManagers.GPU
 {
     public partial class AccelerationGPU : IAccelerationManager, IDisposable
     {
+        private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
+        private readonly Dictionary<(int outputDim, int inputDim, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
+
         private void InitSharedTensorKernels()
         {
             //Matrix Multiply
@@ -27,12 +25,14 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             //BatchDotProduct
             _batchDotKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(BatchDotKernel);
 
-            //SliceRows, ExtractRow and SetRow not GPU accellerated
+            //SliceRows, ExtractRow and SetRow
+            _sliceRowsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int>(SliceRowsKernel);
+            _extractRowKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int>(ExtractRowKernel);
+            _setRowKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int>(SetRowKernel);
 
-            //ZeroMatrix
+            //ZeroMatrix / ZeroVector
             _zeroMatrixKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>>(ZeroMatrixKernel);
-
-            //ZeroVector not GPU accellerated
+            _zeroVectorKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>>(ZeroVectorKernel);
 
             //MatrixAddInPlace
             _matAccumulateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(MatAccumulateKernel);
@@ -54,6 +54,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             if (c1 != r2)
             {
                 throw new ArgumentException($"Matrix dimensions don't match");
+            }
+
+            if (!ShouldUseGpu((long)r1 * c2 * c1, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.MatrixMultiply(A, B);
             }
 
             var key = (r1, c1, c2);
@@ -104,6 +109,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 throw new ArgumentException($"Matrix dimensions don't match for A*B^T");
             }
 
+            if (!ShouldUseGpu((long)r1 * r2 * c1, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.MatrixMultiplyTranspose(A, B);
+            }
+
             var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(r1, c1));
             var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(r2, c2));
             var bufC = _accelerator.Allocate2DDenseX<float>(new Index2D(r1, r2));
@@ -124,6 +134,22 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
         }
 
+
+        private static void MatMulTransposeKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> A, ArrayView2D<float, Stride2D.DenseX> B, ArrayView2D<float, Stride2D.DenseX> C)
+        {
+            int row = idx.X;
+            int col = idx.Y;
+            float sum = 0.0f;
+            int kCount = (int)A.Extent.Y;
+
+            for (int k = 0; k < kCount; k++)
+            {
+                sum += A[row, k] * B[col, k];
+            }
+
+            C[row, col] = sum;
+        }
+
         #endregion
 
         #region MatrixScale
@@ -133,6 +159,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         {
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.MatrixScale(matrix, scalar);
+            }
 
             var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
             try
@@ -168,6 +199,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             int rows = A.GetLength(0);
             int cols = A.GetLength(1);
 
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.MatrixAdd(A, B);
+            }
+
             var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
             var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
             var bufC = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
@@ -196,6 +232,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         {
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.MatrixAddBias(matrix, bias);
+            }
 
             var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
             var bufBias = _accelerator.Allocate1D<float>(cols);
@@ -250,6 +291,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             if (rowStart + rowCount > inputMatrix.GetLength(0))
             {
                 throw new ArgumentException("Invalid row slice.");
+            }
+
+            if (!ShouldUseGpu((long)rowCount * outputDim * inputDim, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.BatchDotProduct(weights, inputMatrix, rowStart, rowCount);
             }
 
             var key = (outputDim, inputDim, rowCount);
@@ -310,25 +356,188 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         #endregion
 
         #region SliceRows
-        //SliceRows is just a memory copy. Moving it to ILGPU usually costs meaning the transfer overhead will usually beat and GPU benifit, so we will just use multi thread slicing
+
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int> _sliceRowsKernel;
         public float[,] SliceRows(float[,] matrix, int startRow, int endRow)
         {
-            return _mutliThreadCPU.SliceRows(matrix, startRow, endRow);
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            if (startRow < 0 || endRow < startRow || endRow > rows)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startRow), "Invalid row range.");
+            }
+
+            int rowCount = endRow - startRow;
+
+            if (rowCount == 0)
+            {
+                return new float[0, cols];
+            }
+
+            if (!ShouldUseGpu((long)rowCount * cols))
+            {
+                return _mutliThreadCPU.SliceRows(matrix, startRow, endRow);
+            }
+
+            var bufMatrix = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, cols));
+
+            try
+            {
+                bufMatrix.CopyFromCPU(matrix);
+                _sliceRowsKernel(new Index2D(rowCount, cols), bufMatrix.View, bufResult.View, startRow);
+
+                var result = new float[rowCount, cols];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufMatrix.Dispose();
+                bufResult.Dispose();
+            }
         }
+
+        private static void SliceRowsKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView2D<float, Stride2D.DenseX> result, int startRow)
+        {
+            result[idx] = matrix[startRow + idx.X, idx.Y];
+        }
+
         #endregion
 
         #region ExtractRow
+
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int> _extractRowKernel;
         public float[] ExtractRow(float[,] matrix, int rowIndex, int cols)
         {
-            return _mutliThreadCPU.ExtractRow(matrix, rowIndex, cols);
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            int rows = matrix.GetLength(0);
+            int actualCols = matrix.GetLength(1);
+
+            if (rowIndex < 0 || rowIndex >= rows)
+            {
+                throw new ArgumentOutOfRangeException(nameof(rowIndex));
+            }
+
+            if (cols < 0 || cols > actualCols)
+            {
+                throw new ArgumentOutOfRangeException(nameof(cols));
+            }
+
+            if (cols == 0)
+            {
+                return Array.Empty<float>();
+            }
+
+            if (!ShouldUseGpu(cols))
+            {
+                return _mutliThreadCPU.ExtractRow(matrix, rowIndex, cols);
+            }
+
+            var bufMatrix = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, actualCols));
+            var bufResult = _accelerator.Allocate1D<float>(cols);
+
+            try
+            {
+                bufMatrix.CopyFromCPU(matrix);
+                _extractRowKernel(new Index1D(cols), bufMatrix.View, bufResult.View, rowIndex);
+
+                var result = new float[cols];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufMatrix.Dispose();
+                bufResult.Dispose();
+            }
         }
+
+        private static void ExtractRowKernel(Index1D col, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView1D<float, Stride1D.Dense> result, int rowIndex)
+        {
+            result[col] = matrix[rowIndex, col];
+        }
+
         #endregion
 
         #region SetRow
+
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int> _setRowKernel;
         public void SetRow(float[,] matrix, int rowIndex, float[] values, int cols)
         {
-            _mutliThreadCPU.SetRow(matrix, rowIndex, values, cols);
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            if (values == null)
+            {
+                throw new ArgumentNullException(nameof(values));
+            }
+
+            int rows = matrix.GetLength(0);
+            int actualCols = matrix.GetLength(1);
+
+            if (rowIndex < 0 || rowIndex >= rows)
+            {
+                throw new ArgumentOutOfRangeException(nameof(rowIndex));
+            }
+
+            if (cols < 0 || cols > actualCols || cols > values.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(cols));
+            }
+
+            if (cols == 0)
+            {
+                return;
+            }
+
+            if (!ShouldUseGpu(cols))
+            {
+                _mutliThreadCPU.SetRow(matrix, rowIndex, values, cols);
+                return;
+            }
+
+            var bufMatrix = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, actualCols));
+            var bufValues = _accelerator.Allocate1D<float>(cols);
+
+            try
+            {
+                var valueSlice = values;
+                if (values.Length != cols)
+                {
+                    valueSlice = new float[cols];
+                    Array.Copy(values, valueSlice, cols);
+                }
+
+                bufMatrix.CopyFromCPU(matrix);
+                bufValues.CopyFromCPU(valueSlice);
+                _setRowKernel(new Index1D(cols), bufMatrix.View, bufValues.View, rowIndex);
+                bufMatrix.CopyToCPU(matrix);
+            }
+            finally
+            {
+                bufMatrix.Dispose();
+                bufValues.Dispose();
+            }
         }
+
+        private static void SetRowKernel(Index1D col, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView1D<float, Stride1D.Dense> values, int rowIndex)
+        {
+            matrix[rowIndex, col] = values[col];
+        }
+
         #endregion
 
         #region ZeroMatrix
@@ -336,13 +545,24 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>> _zeroMatrixKernel;
         public void ZeroMatrix(float[,] matrix)
         {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
             int rows = matrix.GetLength(0);
             int cols = matrix.GetLength(1);
 
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                _mutliThreadCPU.ZeroMatrix(matrix);
+                return;
+            }
+
             var buf = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+
             try
             {
-                // No need to copy data to GPU afterall we are just going to zeroing it
                 _zeroMatrixKernel(new Index2D(rows, cols), buf.View);
                 buf.CopyToCPU(matrix);
             }
@@ -351,6 +571,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 buf.Dispose();
             }
         }
+
         private static void ZeroMatrixKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> mat)
         {
             mat[idx] = 0.0f;
@@ -360,9 +581,38 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         #region ZeroVector
 
+        private Action<Index1D, ArrayView1D<float, Stride1D.Dense>> _zeroVectorKernel;
         public void ZeroVector(float[] vector)
         {
-            _mutliThreadCPU.ZeroVector(vector);
+            if (vector == null)
+            {
+                throw new ArgumentNullException(nameof(vector));
+            }
+
+            int n = vector.Length;
+
+            if (!ShouldUseGpu(n))
+            {
+                _mutliThreadCPU.ZeroVector(vector);
+                return;
+            }
+
+            var buf = _accelerator.Allocate1D<float>(n);
+
+            try
+            {
+                _zeroVectorKernel(new Index1D(n), buf.View);
+                buf.CopyToCPU(vector);
+            }
+            finally
+            {
+                buf.Dispose();
+            }
+        }
+
+        private static void ZeroVectorKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> vector)
+        {
+            vector[i] = 0.0f;
         }
 
         #endregion
@@ -374,6 +624,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         {
             int rows = target.GetLength(0);
             int cols = target.GetLength(1);
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                _mutliThreadCPU.MatrixAddInPlace(target, source);
+                return;
+            }
 
             var bufTgt = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
             var bufSrc = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
@@ -404,6 +660,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         {
             int n = target.Length;
 
+            if (!ShouldUseGpu(n))
+            {
+                _mutliThreadCPU.VectorAccumulate(target, source);
+                return;
+            }
+
             var bufTgt = _accelerator.Allocate1D<float>(n);
             var bufSrc = _accelerator.Allocate1D<float>(n);
 
@@ -428,6 +690,26 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         }
 
         #endregion
+
+        private void DisposeSharedTensorBuffers()
+        {
+            foreach (var v in _matMulCache.Values)
+            {
+                v.a.Dispose();
+                v.b.Dispose();
+                v.c.Dispose();
+            }
+
+            foreach (var v in _batchDotCache.Values)
+            {
+                v.w.Dispose();
+                v.inp.Dispose();
+                v.res.Dispose();
+            }
+
+            _matMulCache.Clear();
+            _batchDotCache.Clear();
+        }
 
     }
 }

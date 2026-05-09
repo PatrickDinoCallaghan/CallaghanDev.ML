@@ -1,4 +1,4 @@
-﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Enums;
 using ILGPU;
 using ILGPU.Algorithms;
 using ILGPU.Runtime;
@@ -12,6 +12,9 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 {
     public partial class AccelerationGPU : IAccelerationManager, IDisposable
     {
+        private readonly Dictionary<int, (MemoryBuffer1D<float, Stride1D.Dense> cost, MemoryBuffer1D<float, Stride1D.Dense> der, MemoryBuffer1D<float, Stride1D.Dense> grad)> _outGradCache = new();
+        private readonly Dictionary<int, (MemoryBuffer1D<float, Stride1D.Dense> pre, MemoryBuffer1D<float, Stride1D.Dense> der, MemoryBuffer1D<float, Stride1D.Dense> delta)> _hidGradCache = new();
+
         private void InitNeuralNetworkKernels()
         {
             // CalculateDotProduct
@@ -52,6 +55,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             {
                 throw new ArgumentException($"Expected vector of length {cols}, got {vector.Length}");
             }
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.CalculateDotProduct(matrix, vector);
+            }
+
             if (!_dotCache.TryGetValue((rows, cols), out var bufs))
             {
                 bufs = (_accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)), _accelerator.Allocate1D<float>(cols), _accelerator.Allocate1D<float>(rows));
@@ -91,6 +100,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             if (bias.Length != n)
             {
                 throw new ArgumentException($"Expected bias length {n}, got {bias.Length}");
+            }
+
+            if (!ShouldUseGpu(n))
+            {
+                return _mutliThreadCPU.ActivateLayer(dot, bias, t);
             }
 
             var dotBuf = _accelerator.Allocate1D<float>(n);
@@ -146,7 +160,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                     break;
                 case ActivationType.Leakyrelu:
                     a = z > 0f ? z : 0.01f * z;
-                    d = z >= 0f ? 1f : 0.1f;
+                    d = z >= 0f ? 1f : 0.01f;
                     break;
                 default:
                     a = 1.0f / (1.0f + XMath.Exp(-z));
@@ -165,6 +179,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         public float[] CalculateOutputGradients(float[] cost, float[] derivative)
         {
             int n = cost.Length;
+
+            if (!ShouldUseGpu(n))
+            {
+                return _mutliThreadCPU.CalculateOutputGradients(cost, derivative);
+            }
+
             if (!_outGradCache.TryGetValue(n, out var bufs))
             {
                 _outGradCache[n] = bufs = (
@@ -195,21 +215,29 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         public float[] CalculateHiddenGradients(float[,] weights, float[] nextDeltas, float[] derivative)
         {
-            var pre = CalculateDotProductTransposed(weights, nextDeltas);
-            int cols = pre.Length;
-            if (!_hidGradCache.TryGetValue(cols, out var bufs))
+            int rows = weights.GetLength(0);
+            int cols = weights.GetLength(1);
+
+            if (!ShouldUseGpu((long)rows * cols, GPU_MATMUL_OP_THRESHOLD))
             {
-                _hidGradCache[cols] = bufs = (
-                    _accelerator.Allocate1D<float>(cols),
-                    _accelerator.Allocate1D<float>(cols),
-                    _accelerator.Allocate1D<float>(cols)
+                return _mutliThreadCPU.CalculateHiddenGradients(weights, nextDeltas, derivative);
+            }
+
+            var pre = CalculateDotProductTransposed(weights, nextDeltas);
+            int hiddenCount = pre.Length;
+            if (!_hidGradCache.TryGetValue(hiddenCount, out var bufs))
+            {
+                _hidGradCache[hiddenCount] = bufs = (
+                    _accelerator.Allocate1D<float>(hiddenCount),
+                    _accelerator.Allocate1D<float>(hiddenCount),
+                    _accelerator.Allocate1D<float>(hiddenCount)
                 );
             }
             bufs.pre.CopyFromCPU(pre);
             bufs.der.CopyFromCPU(derivative);
-            _hidGradKernel(new Index1D(cols), bufs.pre.View, bufs.der.View, bufs.delta.View);
+            _hidGradKernel(new Index1D(hiddenCount), bufs.pre.View, bufs.der.View, bufs.delta.View);
 
-            var result = new float[cols];
+            var result = new float[hiddenCount];
             bufs.delta.CopyToCPU(result);
             return result;
         }
@@ -266,6 +294,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         {
             int rows = weights.GetLength(0);
             int cols = weights.GetLength(1);
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.UpdateWeights(weights, deltas, prevActivations, learningRate, lambda);
+            }
+
             if (!_updWCache.TryGetValue((rows, cols), out var bufs))
             {
                 _updWCache[(rows, cols)] = bufs = (
@@ -310,6 +344,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         public float[] UpdateBias(float[] bias, float[] deltas, float learningRate)
         {
             int n = bias.Length;
+
+            if (!ShouldUseGpu(n))
+            {
+                return _mutliThreadCPU.UpdateBias(bias, deltas, learningRate);
+            }
+
             if (!_updBCache.TryGetValue(n, out var bufs))
             {
                 _updBCache[n] = bufs = (
@@ -332,6 +372,57 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             bias[i] -= learningRate * delta[i];
         }
         #endregion
+
+        private void DisposeNeuralNetworkBuffers()
+        {
+            foreach (var v in _dotCache.Values)
+            {
+                v.mat.Dispose();
+                v.vec.Dispose();
+                v.res.Dispose();
+            }
+
+            foreach (var v in _outGradCache.Values)
+            {
+                v.cost.Dispose();
+                v.der.Dispose();
+                v.grad.Dispose();
+            }
+
+            foreach (var v in _hidGradCache.Values)
+            {
+                v.pre.Dispose();
+                v.der.Dispose();
+                v.delta.Dispose();
+            }
+
+            foreach (var v in _dotTransposedCache.Values)
+            {
+                v.mat.Dispose();
+                v.vec.Dispose();
+                v.res.Dispose();
+            }
+
+            foreach (var v in _updWCache.Values)
+            {
+                v.w.Dispose();
+                v.d.Dispose();
+                v.pa.Dispose();
+            }
+
+            foreach (var v in _updBCache.Values)
+            {
+                v.b.Dispose();
+                v.d.Dispose();
+            }
+
+            _dotCache.Clear();
+            _outGradCache.Clear();
+            _hidGradCache.Clear();
+            _dotTransposedCache.Clear();
+            _updWCache.Clear();
+            _updBCache.Clear();
+        }
 
     }
 }
