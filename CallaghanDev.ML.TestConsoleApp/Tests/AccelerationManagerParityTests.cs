@@ -60,6 +60,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             (Test_InPlaceTensorPrimitives_AllBackendsMatch, "In-place tensor primitives: all backends match CPU"),
             (Test_NeuralNetworkHelpers_AllBackendsMatch, "Neural network helpers: all backends match CPU"),
             (Test_TransformerCore_AllBackendsMatch, "Transformer core: all backends match CPU"),
+            (Test_ScaledDotProductAttention_AllBackendsMatch, "Scaled dot-product attention: all backends match CPU"),
+            (Test_FusedQkvProjection_AllBackendsMatch, "Fused QKV projection/backprop: all backends match CPU"),
             (Test_TransformerCore_EdgeCases_AllBackendsMatch, "Transformer core edge cases: all backends match CPU"),
             (Test_TransformerTraining_AllBackendsMatch, "Transformer training: all backends match CPU"),
             (Test_TransformerSpecific_Mmtac_AllBackendsMatch, "Transformer-specific/MMTAC helpers: all backends match CPU"),
@@ -111,6 +113,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 nameof(IAccelerationManager.MultiHeadAttentionForward),
                 nameof(IAccelerationManager.MultiHeadAttentionBackward),
                 nameof(IAccelerationManager.FFNForwardBatch),
+                nameof(IAccelerationManager.ScaledDotProductAttention),
+                nameof(IAccelerationManager.ProjectQKV),
+                nameof(IAccelerationManager.BackpropQKV),
 
                 // Transformer training
                 nameof(IAccelerationManager.BackpropLinearProjection),
@@ -359,6 +364,229 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             CompareMatrixAll("FFNForwardBatch", _cpu.FFNForwardBatch(input, input.GetLength(0), input.GetLength(1), TinyForwardPass), m => m.FFNForwardBatch(Clone(input), input.GetLength(0), input.GetLength(1), TinyForwardPass));
         }
 
+        private void Test_ScaledDotProductAttention_AllBackendsMatch()
+        {
+            const int seqLen = 4;
+            const int keyLen = 5;
+            const int embeddingDim = 8;
+            const int heads = 2;
+
+            var qSelf = Matrix(seqLen, embeddingDim, 118);
+            var kSelf = Matrix(seqLen, embeddingDim, 119);
+            var vSelf = Matrix(seqLen, embeddingDim, 120);
+
+            CompareMatrixAll(
+                "ScaledDotProductAttention self/no mask",
+                _cpu.ScaledDotProductAttention(qSelf, kSelf, vSelf, heads, mask: null, causal: false),
+                m => m.ScaledDotProductAttention(Clone(qSelf), Clone(kSelf), Clone(vSelf), heads, mask: null, causal: false),
+                5e-3f);
+
+            var selfMask = new bool[,]
+            {
+                { true,  false, true,  false },
+                { true,  true,  false, false },
+                { false, true,  true,  false },
+                { true,  true,  true,  true  },
+            };
+
+            CompareMatrixAll(
+                "ScaledDotProductAttention self/explicit mask",
+                _cpu.ScaledDotProductAttention(qSelf, kSelf, vSelf, heads, selfMask, causal: false),
+                m => m.ScaledDotProductAttention(Clone(qSelf), Clone(kSelf), Clone(vSelf), heads, Clone(selfMask), causal: false),
+                5e-3f);
+
+            CompareMatrixAll(
+                "ScaledDotProductAttention self/causal flag",
+                _cpu.ScaledDotProductAttention(qSelf, kSelf, vSelf, heads, mask: null, causal: true),
+                m => m.ScaledDotProductAttention(Clone(qSelf), Clone(kSelf), Clone(vSelf), heads, mask: null, causal: true),
+                5e-3f);
+
+            var causalMask = _cpu.CreateCausalMask(seqLen);
+
+            var expectedCausalMask = _cpu.ScaledDotProductAttention(qSelf, kSelf, vSelf, heads, causalMask, causal: false);
+            var expectedCausalFlag = _cpu.ScaledDotProductAttention(qSelf, kSelf, vSelf, heads, mask: null, causal: true);
+
+            AssertClose(expectedCausalMask, expectedCausalFlag, CpuTolerance, "CPU: ScaledDotProductAttention causal flag should match explicit causal mask");
+
+            foreach (var backend in NonReferenceBackends(5e-3f))
+            {
+                var actualCausalMask = backend.Manager.ScaledDotProductAttention(Clone(qSelf), Clone(kSelf), Clone(vSelf), heads, Clone(causalMask), causal: false);
+                var actualCausalFlag = backend.Manager.ScaledDotProductAttention(Clone(qSelf), Clone(kSelf), Clone(vSelf), heads, mask: null, causal: true);
+
+                AssertClose(expectedCausalMask, actualCausalMask, backend.Tolerance, backend.Name + ": ScaledDotProductAttention explicit causal mask");
+                AssertClose(expectedCausalFlag, actualCausalFlag, backend.Tolerance, backend.Name + ": ScaledDotProductAttention causal flag");
+                AssertClose(actualCausalMask, actualCausalFlag, backend.Tolerance, backend.Name + ": ScaledDotProductAttention causal flag should match explicit causal mask");
+            }
+
+            var qCross = Matrix(seqLen, embeddingDim, 121);
+            var kCross = Matrix(keyLen, embeddingDim, 122);
+            var vCross = Matrix(keyLen, embeddingDim, 123);
+
+            var crossMask = new bool[,]
+            {
+                { true,  false, true,  false, true  },
+                { true,  true,  false, true,  false },
+                { false, true,  true,  false, true  },
+                { true,  false, false, true,  true  },
+            };
+
+            CompareMatrixAll(
+                "ScaledDotProductAttention cross/no mask",
+                _cpu.ScaledDotProductAttention(qCross, kCross, vCross, heads, mask: null, causal: false),
+                m => m.ScaledDotProductAttention(Clone(qCross), Clone(kCross), Clone(vCross), heads, mask: null, causal: false),
+                5e-3f);
+
+            CompareMatrixAll(
+                "ScaledDotProductAttention cross/non-square mask",
+                _cpu.ScaledDotProductAttention(qCross, kCross, vCross, heads, crossMask, causal: false),
+                m => m.ScaledDotProductAttention(Clone(qCross), Clone(kCross), Clone(vCross), heads, Clone(crossMask), causal: false),
+                5e-3f);
+
+            var allMaskedFirstRow = new bool[,]
+            {
+                { false, false, false, false, false },
+                { true,  true,  false, true,  false },
+                { false, true,  true,  false, true  },
+                { true,  false, false, true,  true  },
+            };
+
+            var expectedAllMasked = _cpu.ScaledDotProductAttention(qCross, kCross, vCross, heads, allMaskedFirstRow, causal: false);
+
+            CompareMatrixAll(
+                "ScaledDotProductAttention all-masked row",
+                expectedAllMasked,
+                m => m.ScaledDotProductAttention(Clone(qCross), Clone(kCross), Clone(vCross), heads, Clone(allMaskedFirstRow), causal: false),
+                5e-3f);
+
+            for (int j = 0; j < embeddingDim; j++)
+            {
+                AssertClose(0.0f, expectedAllMasked[0, j], CpuTolerance, $"CPU: ScaledDotProductAttention all-masked row output[0,{j}] should be zero");
+            }
+
+            AssertThrows<ArgumentException>(
+                () => _cpu.ScaledDotProductAttention(qCross, kCross, vCross, heads, mask: null, causal: true),
+                "CPU: ScaledDotProductAttention causal cross-attention should reject queryLen != keyLen");
+
+            foreach (var backend in NonReferenceBackends())
+            {
+                AssertThrows<ArgumentException>(
+                    () => backend.Manager.ScaledDotProductAttention(Clone(qCross), Clone(kCross), Clone(vCross), heads, mask: null, causal: true),
+                    backend.Name + ": ScaledDotProductAttention causal cross-attention should reject queryLen != keyLen");
+            }
+        }
+
+        private void Test_FusedQkvProjection_AllBackendsMatch()
+        {
+            const int rows = 6;
+            const int inputDim = 5;
+            const int outputDim = 8;
+
+            var input = Matrix(rows, inputDim, 124);
+            var wq = Matrix(outputDim, inputDim, 125);
+            var wk = Matrix(outputDim, inputDim, 126);
+            var wv = Matrix(outputDim, inputDim, 127);
+            var biasQ = Vector(outputDim, 128);
+            var biasK = Vector(outputDim, 129);
+            var biasV = Vector(outputDim, 130);
+
+            var expectedForward = ProjectQKVExpected(input, wq, biasQ, wk, biasK, wv, biasV);
+            var cpuForward = _cpu.ProjectQKV(Clone(input), Clone(wq), Clone(biasQ), Clone(wk), Clone(biasK), Clone(wv), Clone(biasV));
+
+            AssertClose(expectedForward.Q, cpuForward.Q, CpuTolerance, "CPU: ProjectQKV.Q");
+            AssertClose(expectedForward.K, cpuForward.K, CpuTolerance, "CPU: ProjectQKV.K");
+            AssertClose(expectedForward.V, cpuForward.V, CpuTolerance, "CPU: ProjectQKV.V");
+
+            foreach (var backend in NonReferenceBackends(5e-3f))
+            {
+                var actual = backend.Manager.ProjectQKV(Clone(input), Clone(wq), Clone(biasQ), Clone(wk), Clone(biasK), Clone(wv), Clone(biasV));
+                AssertClose(expectedForward.Q, actual.Q, backend.Tolerance, backend.Name + ": ProjectQKV.Q");
+                AssertClose(expectedForward.K, actual.K, backend.Tolerance, backend.Name + ": ProjectQKV.K");
+                AssertClose(expectedForward.V, actual.V, backend.Tolerance, backend.Name + ": ProjectQKV.V");
+            }
+
+            AssertClose(_cpu.MatrixAddBias(_cpu.BatchDotProduct(wq, input), biasQ), cpuForward.Q, CpuTolerance, "CPU: ProjectQKV.Q should match BatchDotProduct + MatrixAddBias");
+            AssertClose(_cpu.MatrixAddBias(_cpu.BatchDotProduct(wk, input), biasK), cpuForward.K, CpuTolerance, "CPU: ProjectQKV.K should match BatchDotProduct + MatrixAddBias");
+            AssertClose(_cpu.MatrixAddBias(_cpu.BatchDotProduct(wv, input), biasV), cpuForward.V, CpuTolerance, "CPU: ProjectQKV.V should match BatchDotProduct + MatrixAddBias");
+
+            var dQ = Matrix(rows, outputDim, 131);
+            var dK = Matrix(rows, outputDim, 132);
+            var dV = Matrix(rows, outputDim, 133);
+
+            var wqGradInitial = Matrix(outputDim, inputDim, 134);
+            var wkGradInitial = Matrix(outputDim, inputDim, 135);
+            var wvGradInitial = Matrix(outputDim, inputDim, 136);
+            var biasQGradInitial = Vector(outputDim, 137);
+            var biasKGradInitial = Vector(outputDim, 138);
+            var biasVGradInitial = Vector(outputDim, 139);
+
+            var expectedWQGrad = Clone(wqGradInitial);
+            var expectedWKGrad = Clone(wkGradInitial);
+            var expectedWVGrad = Clone(wvGradInitial);
+            var expectedBiasQGrad = Clone(biasQGradInitial);
+            var expectedBiasKGrad = Clone(biasKGradInitial);
+            var expectedBiasVGrad = Clone(biasVGradInitial);
+
+            var expectedDInput = BackpropQKVExpected(input, dQ, dK, dV, wq, wk, wv, expectedWQGrad, expectedBiasQGrad, expectedWKGrad, expectedBiasKGrad, expectedWVGrad, expectedBiasVGrad);
+
+            var cpuWQGrad = Clone(wqGradInitial);
+            var cpuWKGrad = Clone(wkGradInitial);
+            var cpuWVGrad = Clone(wvGradInitial);
+            var cpuBiasQGrad = Clone(biasQGradInitial);
+            var cpuBiasKGrad = Clone(biasKGradInitial);
+            var cpuBiasVGrad = Clone(biasVGradInitial);
+
+            var cpuDInput = _cpu.BackpropQKV(Clone(input), Clone(dQ), Clone(dK), Clone(dV), Clone(wq), Clone(wk), Clone(wv), cpuWQGrad, cpuBiasQGrad, cpuWKGrad, cpuBiasKGrad, cpuWVGrad, cpuBiasVGrad);
+
+            AssertClose(expectedDInput, cpuDInput, CpuTolerance, "CPU: BackpropQKV.dInput");
+            AssertClose(expectedWQGrad, cpuWQGrad, CpuTolerance, "CPU: BackpropQKV.WQGrad");
+            AssertClose(expectedWKGrad, cpuWKGrad, CpuTolerance, "CPU: BackpropQKV.WKGrad");
+            AssertClose(expectedWVGrad, cpuWVGrad, CpuTolerance, "CPU: BackpropQKV.WVGrad");
+            AssertClose(expectedBiasQGrad, cpuBiasQGrad, CpuTolerance, "CPU: BackpropQKV.biasQGrad");
+            AssertClose(expectedBiasKGrad, cpuBiasKGrad, CpuTolerance, "CPU: BackpropQKV.biasKGrad");
+            AssertClose(expectedBiasVGrad, cpuBiasVGrad, CpuTolerance, "CPU: BackpropQKV.biasVGrad");
+
+            var oldWQGrad = Clone(wqGradInitial);
+            var oldWKGrad = Clone(wkGradInitial);
+            var oldWVGrad = Clone(wvGradInitial);
+            var oldBiasQGrad = Clone(biasQGradInitial);
+            var oldBiasKGrad = Clone(biasKGradInitial);
+            var oldBiasVGrad = Clone(biasVGradInitial);
+            var oldDInput = Zeros(rows, inputDim);
+            _cpu.BackpropLinearProjection(input, dQ, wq, oldWQGrad, oldBiasQGrad, oldDInput);
+            _cpu.BackpropLinearProjection(input, dK, wk, oldWKGrad, oldBiasKGrad, oldDInput);
+            _cpu.BackpropLinearProjection(input, dV, wv, oldWVGrad, oldBiasVGrad, oldDInput);
+            AssertClose(oldDInput, cpuDInput, CpuTolerance, "CPU: BackpropQKV.dInput should match three BackpropLinearProjection calls");
+            AssertClose(oldWQGrad, cpuWQGrad, CpuTolerance, "CPU: BackpropQKV.WQGrad should match old path");
+            AssertClose(oldWKGrad, cpuWKGrad, CpuTolerance, "CPU: BackpropQKV.WKGrad should match old path");
+            AssertClose(oldWVGrad, cpuWVGrad, CpuTolerance, "CPU: BackpropQKV.WVGrad should match old path");
+            AssertClose(oldBiasQGrad, cpuBiasQGrad, CpuTolerance, "CPU: BackpropQKV.biasQGrad should match old path");
+            AssertClose(oldBiasKGrad, cpuBiasKGrad, CpuTolerance, "CPU: BackpropQKV.biasKGrad should match old path");
+            AssertClose(oldBiasVGrad, cpuBiasVGrad, CpuTolerance, "CPU: BackpropQKV.biasVGrad should match old path");
+
+            foreach (var backend in NonReferenceBackends(5e-3f))
+            {
+                var actualWQGrad = Clone(wqGradInitial);
+                var actualWKGrad = Clone(wkGradInitial);
+                var actualWVGrad = Clone(wvGradInitial);
+                var actualBiasQGrad = Clone(biasQGradInitial);
+                var actualBiasKGrad = Clone(biasKGradInitial);
+                var actualBiasVGrad = Clone(biasVGradInitial);
+
+                var actualDInput = backend.Manager.BackpropQKV(Clone(input), Clone(dQ), Clone(dK), Clone(dV), Clone(wq), Clone(wk), Clone(wv), actualWQGrad, actualBiasQGrad, actualWKGrad, actualBiasKGrad, actualWVGrad, actualBiasVGrad);
+
+                AssertClose(expectedDInput, actualDInput, backend.Tolerance, backend.Name + ": BackpropQKV.dInput");
+                AssertClose(expectedWQGrad, actualWQGrad, backend.Tolerance, backend.Name + ": BackpropQKV.WQGrad");
+                AssertClose(expectedWKGrad, actualWKGrad, backend.Tolerance, backend.Name + ": BackpropQKV.WKGrad");
+                AssertClose(expectedWVGrad, actualWVGrad, backend.Tolerance, backend.Name + ": BackpropQKV.WVGrad");
+                AssertClose(expectedBiasQGrad, actualBiasQGrad, backend.Tolerance, backend.Name + ": BackpropQKV.biasQGrad");
+                AssertClose(expectedBiasKGrad, actualBiasKGrad, backend.Tolerance, backend.Name + ": BackpropQKV.biasKGrad");
+                AssertClose(expectedBiasVGrad, actualBiasVGrad, backend.Tolerance, backend.Name + ": BackpropQKV.biasVGrad");
+            }
+
+            AssertThrows<ArgumentException>(() => _cpu.ProjectQKV(Matrix(rows, inputDim + 1, 140), Clone(wq), Clone(biasQ), Clone(wk), Clone(biasK), Clone(wv), Clone(biasV)), "CPU: ProjectQKV should reject input width mismatch");
+            AssertThrows<ArgumentException>(() => _cpu.BackpropQKV(Clone(input), Matrix(rows, outputDim + 1, 141), Clone(dK), Clone(dV), Clone(wq), Clone(wk), Clone(wv), Clone(wqGradInitial), Clone(biasQGradInitial), Clone(wkGradInitial), Clone(biasKGradInitial), Clone(wvGradInitial), Clone(biasVGradInitial)), "CPU: BackpropQKV should reject dQ width mismatch");
+        }
+
         private void Test_TransformerCore_EdgeCases_AllBackendsMatch()
         {
             var edgeScores = new float[,]
@@ -375,12 +603,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 { false, true,  false },
             };
 
-            CompareMatrixAll(
-                "Softmax edge/all-masked rows",
-                _cpu.Softmax(edgeScores, edgeMask),
-                m => m.Softmax(Clone(edgeScores), Clone(edgeMask)),
-                5e-3f);
-
+            CompareMatrixAll("Softmax edge/all-masked rows", _cpu.Softmax(edgeScores, edgeMask), m => m.Softmax(Clone(edgeScores), Clone(edgeMask)), 5e-3f);
             CompareBoolMatrixAll("CreateCausalMask zero length", _cpu.CreateCausalMask(0), m => m.CreateCausalMask(0));
             CompareBoolMatrixAll("CreateCausalMask single", _cpu.CreateCausalMask(1), m => m.CreateCausalMask(1));
 
@@ -398,25 +621,12 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 { false, true,  true,  false, true  },
             };
 
-            CompareMatrixAll(
-                "MultiHeadAttentionForward non-square mask",
-                _cpu.MultiHeadAttentionForward(q, k, v, heads, scale, crossMask),
-                m => m.MultiHeadAttentionForward(Clone(q), Clone(k), Clone(v), heads, scale, Clone(crossMask)),
-                5e-3f);
+            CompareMatrixAll("MultiHeadAttentionForward non-square mask", _cpu.MultiHeadAttentionForward(q, k, v, heads, scale, crossMask), m => m.MultiHeadAttentionForward(Clone(q), Clone(k), Clone(v), heads, scale, Clone(crossMask)), 5e-3f);
 
             var expectedBack = _cpu.MultiHeadAttentionBackward(q, k, v, dConcat, heads, scale, crossMask);
-
             foreach (var backend in NonReferenceBackends(5e-3f))
             {
-                var actual = backend.Manager.MultiHeadAttentionBackward(
-                    Clone(q),
-                    Clone(k),
-                    Clone(v),
-                    Clone(dConcat),
-                    heads,
-                    scale,
-                    Clone(crossMask));
-
+                var actual = backend.Manager.MultiHeadAttentionBackward(Clone(q), Clone(k), Clone(v), Clone(dConcat), heads, scale, Clone(crossMask));
                 AssertClose(expectedBack.dQ, actual.dQ, backend.Tolerance, backend.Name + ": MultiHeadAttentionBackward non-square mask.dQ");
                 AssertClose(expectedBack.dK, actual.dK, backend.Tolerance, backend.Name + ": MultiHeadAttentionBackward non-square mask.dK");
                 AssertClose(expectedBack.dV, actual.dV, backend.Tolerance, backend.Name + ": MultiHeadAttentionBackward non-square mask.dV");
@@ -620,7 +830,43 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 AssertClose(expectedHeads.qualityLogits, actual.qualityLogits, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads.qualityLogits");
             }
 
+            var expectedHeadsNoConfidence = _cpu.ProjectMmtacOutputHeads(
+                hidden,
+                Matrix(3, 5, 168), Vector(3, 169),
+                Matrix(1, 5, 170), Vector(1, 171),
+                Matrix(1, 5, 172), Vector(1, 173),
+                Matrix(1, 5, 174), Vector(1, 175),
+                Matrix(1, 5, 176), Vector(1, 177),
+                Matrix(1, 5, 178), Vector(1, 179),
+                useConfidenceHead: false);
+
+            foreach (var backend in NonReferenceBackends(5e-3f))
+            {
+                var actual = backend.Manager.ProjectMmtacOutputHeads(
+                    Clone(hidden),
+                    Matrix(3, 5, 168), Vector(3, 169),
+                    Matrix(1, 5, 170), Vector(1, 171),
+                    Matrix(1, 5, 172), Vector(1, 173),
+                    Matrix(1, 5, 174), Vector(1, 175),
+                    Matrix(1, 5, 176), Vector(1, 177),
+                    Matrix(1, 5, 178), Vector(1, 179),
+                    useConfidenceHead: false);
+
+                AssertClose(expectedHeadsNoConfidence.regression, actual.regression, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).regression");
+                AssertClose(expectedHeadsNoConfidence.range, actual.range, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).range");
+                AssertClose(expectedHeadsNoConfidence.quality, actual.quality, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).quality");
+                AssertClose(expectedHeadsNoConfidence.direction, actual.direction, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).direction");
+                AssertClose(expectedHeadsNoConfidence.midDirection, actual.midDirection, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).midDirection");
+                Assert(
+                    expectedHeadsNoConfidence.confidence == null && actual.confidence == null,
+                    backend.Name + ": ProjectMmtacOutputHeads(no confidence).confidence should be null");
+                AssertClose(expectedHeadsNoConfidence.regressionLogits, actual.regressionLogits, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).regressionLogits");
+                AssertClose(expectedHeadsNoConfidence.rangeLogits, actual.rangeLogits, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).rangeLogits");
+                AssertClose(expectedHeadsNoConfidence.qualityLogits, actual.qualityLogits, backend.Tolerance, backend.Name + ": ProjectMmtacOutputHeads(no confidence).qualityLogits");
+            }
+
             CompareVectorAll("SoftmaxVector", _cpu.SoftmaxVector(new[] { -1f, 0.5f, 2f, -0.25f }), m => m.SoftmaxVector(new[] { -1f, 0.5f, 2f, -0.25f }));
+            CompareVectorAll("SoftmaxVector stable large values", _cpu.SoftmaxVector(new[] { 1000f, 999f, 998f }), m => m.SoftmaxVector(new[] { 1000f, 999f, 998f }), 5e-3f);
         }
 
         private void Test_ContentAwareCrossAttentionForward_AllBackendsMatch()
@@ -671,87 +917,21 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             var timeDiffs = new float[,]
             {
-        { 0f, 1f, 2f, 3f },
-        { 0f, 0f, 1f, 2f },
-        { 0f, 0f, 0f, 1f },
+                { 0f, 1f, 2f, 3f },
+                { 0f, 0f, 1f, 2f },
+                { 0f, 0f, 0f, 1f },
             };
 
             var keyTimes = new[] { -3f, -2f, -1f, 0f };
 
-            var expected = _cpu.ContentAwareDecayForward(
-                q,
-                k,
-                timeDiffs,
-                keyTimes,
-                network,
-                isTraining: false,
-                dropoutRng: null);
+            var expected = _cpu.ContentAwareDecayForward(q, k, timeDiffs, keyTimes, network, isTraining: false, dropoutRng: null);
 
             foreach (var backend in NonReferenceBackends(8e-3f))
             {
-                var actual = backend.Manager.ContentAwareDecayForward(
-                    Clone(q),
-                    Clone(k),
-                    Clone(timeDiffs),
-                    Clone(keyTimes),
-                    network,
-                    isTraining: false,
-                    dropoutRng: null);
-
-                AssertClose(
-                    expected.decayBias,
-                    actual.decayBias,
-                    backend.Tolerance,
-                    backend.Name + ": ContentAwareDecayForward.decayBias");
+                var actual = backend.Manager.ContentAwareDecayForward(Clone(q), Clone(k), Clone(timeDiffs), Clone(keyTimes), network, isTraining: false, dropoutRng: null);
+                AssertClose(expected.decayBias, actual.decayBias, backend.Tolerance, backend.Name + ": ContentAwareDecayForward.decayBias");
             }
         }
-
-        private bool TryCreateContentAwareDecayNetwork(out ContentAwareDecayNetwork network, out string reason)
-        {
-            network = null;
-            reason = null;
-
-            Type t = typeof(ContentAwareDecayNetwork);
-            var failures = new List<string>();
-
-            foreach (var ctor in t.GetConstructors().OrderBy(c => c.GetParameters().Length))
-            {
-                if (!TryBuildConstructorArgs(ctor, out object[] args, out string argReason))
-                {
-                    failures.Add($"{ctor}: {argReason}");
-                    continue;
-                }
-
-                try
-                {
-                    var candidate = (ContentAwareDecayNetwork)ctor.Invoke(args);
-                    string invalidReason = ValidateContentAwareDecayNetwork(candidate);
-
-                    if (invalidReason == null)
-                    {
-                        network = candidate;
-                        return true;
-                    }
-
-                    failures.Add($"{ctor}: constructed invalid network: {invalidReason}");
-                }
-                catch (TargetInvocationException ex) when (ex.InnerException != null)
-                {
-                    failures.Add($"{ctor}: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-                }
-                catch (Exception ex)
-                {
-                    failures.Add($"{ctor}: {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-
-            reason = failures.Count == 0
-                ? "no public constructor found"
-                : string.Join(" | ", failures.Take(5));
-
-            return false;
-        }
-
 
         private void Test_ContentAwareCrossAttentionWithCache_OptionalAllBackendsMatch()
         {
@@ -763,10 +943,6 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             int seq = 3;
             int ctx = 4;
-
-            // Must satisfy:
-            //   embeddingDim % heads == 0
-            //   (embeddingDim / heads) must be even for RoPE
             int ed = 8;
             int heads = 2;
 
@@ -776,9 +952,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             var timeDiffs = new float[,]
             {
-        { 0f, 1f, 2f, 3f },
-        { 0f, 0f, 1f, 2f },
-        { 0f, 0f, 0f, 1f },
+                { 0f, 1f, 2f, 3f },
+                { 0f, 0f, 1f, 2f },
+                { 0f, 0f, 0f, 1f },
             };
 
             var keyTimes = new[] { -3f, -2f, -1f, 0f };
@@ -786,67 +962,29 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             var keyEmb = Matrix(ctx, ed, 90);
 
             var expectedBc = new BlockCache();
-            var expected = _cpu.ContentAwareCrossAttentionWithCache(
-                q,
-                k,
-                v,
-                timeDiffs,
-                keyTimes,
-                queryEmb,
-                keyEmb,
-                block,
-                expectedBc,
-                ed,
-                heads,
-                enableDecayBias: false,
-                isTraining: false,
-                dropoutRng: null);
+            var expected = _cpu.ContentAwareCrossAttentionWithCache(q, k, v, timeDiffs, keyTimes, queryEmb, keyEmb, block, expectedBc, ed, heads, enableDecayBias: false, isTraining: false, dropoutRng: null);
 
             foreach (var backend in NonReferenceBackends(8e-3f))
             {
                 var bc = new BlockCache();
-
-                var actual = backend.Manager.ContentAwareCrossAttentionWithCache(
-                    Clone(q),
-                    Clone(k),
-                    Clone(v),
-                    Clone(timeDiffs),
-                    Clone(keyTimes),
-                    Clone(queryEmb),
-                    Clone(keyEmb),
-                    block,
-                    bc,
-                    ed,
-                    heads,
-                    enableDecayBias: false,
-                    isTraining: false,
-                    dropoutRng: null);
+                var actual = backend.Manager.ContentAwareCrossAttentionWithCache(Clone(q), Clone(k), Clone(v), Clone(timeDiffs), Clone(keyTimes), Clone(queryEmb), Clone(keyEmb), block, bc, ed, heads, enableDecayBias: false, isTraining: false, dropoutRng: null);
 
                 AssertClose(expected, actual, backend.Tolerance, backend.Name + ": ContentAwareCrossAttentionWithCache.output");
 
                 if (expectedBc.CrossAttentionWeights != null && bc.CrossAttentionWeights != null)
                 {
-                    AssertAttentionWeights(
-                        expectedBc.CrossAttentionWeights,
-                        bc.CrossAttentionWeights,
-                        backend.Tolerance,
-                        backend.Name + ": ContentAwareCrossAttentionWithCache.cache.CrossAttentionWeights");
+                    AssertAttentionWeights(expectedBc.CrossAttentionWeights, bc.CrossAttentionWeights, backend.Tolerance, backend.Name + ": ContentAwareCrossAttentionWithCache.cache.CrossAttentionWeights");
                 }
 
                 if (expectedBc.CrossScoresPreSoftmax != null && bc.CrossScoresPreSoftmax != null)
                 {
-                    AssertAttentionWeights(
-                        expectedBc.CrossScoresPreSoftmax,
-                        bc.CrossScoresPreSoftmax,
-                        backend.Tolerance,
-                        backend.Name + ": ContentAwareCrossAttentionWithCache.cache.CrossScoresPreSoftmax");
+                    AssertAttentionWeights(expectedBc.CrossScoresPreSoftmax, bc.CrossScoresPreSoftmax, backend.Tolerance, backend.Name + ": ContentAwareCrossAttentionWithCache.cache.CrossScoresPreSoftmax");
                 }
 
-                Assert(
-                    expectedBc.DecayCache == null && bc.DecayCache == null,
-                    backend.Name + ": ContentAwareCrossAttentionWithCache.DecayCache should be null when enableDecayBias is false");
+                Assert(expectedBc.DecayCache == null && bc.DecayCache == null, backend.Name + ": ContentAwareCrossAttentionWithCache.DecayCache should be null when enableDecayBias is false");
             }
         }
+
         private void Test_BackpropTimeDecayedAttention_AllBackendsMatch()
         {
             int seq = 3;
@@ -1047,27 +1185,14 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             var scores = Matrix(rows, cols, 105);
             var mask = PeriodicMask(rows, cols);
 
-            AssertClose(
-                _cpu.Softmax(scores),
-                gpu.Softmax(Clone(scores)),
-                8e-3f,
-                name + ": true GPU Softmax no mask");
-
-            AssertClose(
-                _cpu.Softmax(scores, mask),
-                gpu.Softmax(Clone(scores), Clone(mask)),
-                8e-3f,
-                name + ": true GPU Softmax mask");
+            AssertClose(_cpu.Softmax(scores), gpu.Softmax(Clone(scores)), 8e-3f, name + ": true GPU Softmax no mask");
+            AssertClose(_cpu.Softmax(scores, mask), gpu.Softmax(Clone(scores), Clone(mask)), 8e-3f, name + ": true GPU Softmax mask");
 
             var input = Matrix(rows, cols, 106);
             var gamma = PositiveVector(cols, 107);
             var beta = Vector(cols, 108);
 
-            AssertClose(
-                _cpu.LayerNorm(input, gamma, beta),
-                gpu.LayerNorm(Clone(input), Clone(gamma), Clone(beta)),
-                8e-3f,
-                name + ": true GPU LayerNorm");
+            AssertClose(_cpu.LayerNorm(input, gamma, beta), gpu.LayerNorm(Clone(input), Clone(gamma), Clone(beta)), 8e-3f, name + ": true GPU LayerNorm");
 
             var expectedForward = _cpu.LayerNormForward(input, gamma, beta);
             var actualForward = gpu.LayerNormForward(Clone(input), Clone(gamma), Clone(beta));
@@ -1078,21 +1203,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertClose(expectedForward.normalized, actualForward.normalized, 8e-3f, name + ": true GPU LayerNormForward.normalized");
 
             var dOut = Matrix(rows, cols, 109);
-            var expectedBackward = _cpu.LayerNormBackward(
-                dOut,
-                expectedForward.normalized,
-                gamma,
-                input,
-                expectedForward.means,
-                expectedForward.variances);
-
-            var actualBackward = gpu.LayerNormBackward(
-                Clone(dOut),
-                Clone(expectedForward.normalized),
-                Clone(gamma),
-                Clone(input),
-                Clone(expectedForward.means),
-                Clone(expectedForward.variances));
+            var expectedBackward = _cpu.LayerNormBackward(dOut, expectedForward.normalized, gamma, input, expectedForward.means, expectedForward.variances);
+            var actualBackward = gpu.LayerNormBackward(Clone(dOut), Clone(expectedForward.normalized), Clone(gamma), Clone(input), Clone(expectedForward.means), Clone(expectedForward.variances));
 
             AssertClose(expectedBackward.dInput, actualBackward.dInput, 1.5e-2f, name + ": true GPU LayerNormBackward.dInput");
             AssertClose(expectedBackward.dGamma, actualBackward.dGamma, 2.5e-2f, name + ": true GPU LayerNormBackward.dGamma");
@@ -1107,19 +1219,70 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             var v = Matrix(seq, embeddingDim, 112);
             float scale = 1.0f / MathF.Sqrt(embeddingDim / mhaHeads);
 
-            AssertClose(
-                _cpu.MultiHeadAttentionForward(q, k, v, mhaHeads, scale),
-                gpu.MultiHeadAttentionForward(Clone(q), Clone(k), Clone(v), mhaHeads, scale),
-                8e-3f,
-                name + ": true GPU MultiHeadAttentionForward no mask");
+            AssertClose(_cpu.MultiHeadAttentionForward(q, k, v, mhaHeads, scale), gpu.MultiHeadAttentionForward(Clone(q), Clone(k), Clone(v), mhaHeads, scale), 8e-3f, name + ": true GPU MultiHeadAttentionForward no mask");
 
             var causal = _cpu.CreateCausalMask(seq);
 
-            AssertClose(
-                _cpu.MultiHeadAttentionForward(q, k, v, mhaHeads, scale, causal),
-                gpu.MultiHeadAttentionForward(Clone(q), Clone(k), Clone(v), mhaHeads, scale, Clone(causal)),
-                8e-3f,
-                name + ": true GPU MultiHeadAttentionForward causal mask");
+            AssertClose(_cpu.MultiHeadAttentionForward(q, k, v, mhaHeads, scale, causal), gpu.MultiHeadAttentionForward(Clone(q), Clone(k), Clone(v), mhaHeads, scale, Clone(causal)), 8e-3f, name + ": true GPU MultiHeadAttentionForward causal mask");
+
+            AssertClose(_cpu.ScaledDotProductAttention(q, k, v, mhaHeads, mask: null, causal: false), gpu.ScaledDotProductAttention(Clone(q), Clone(k), Clone(v), mhaHeads, mask: null, causal: false), 8e-3f, name + ": true GPU ScaledDotProductAttention no mask");
+            AssertClose(_cpu.ScaledDotProductAttention(q, k, v, mhaHeads, Clone(causal), causal: false), gpu.ScaledDotProductAttention(Clone(q), Clone(k), Clone(v), mhaHeads, Clone(causal), causal: false), 8e-3f, name + ": true GPU ScaledDotProductAttention explicit causal mask");
+            AssertClose(_cpu.ScaledDotProductAttention(q, k, v, mhaHeads, mask: null, causal: true), gpu.ScaledDotProductAttention(Clone(q), Clone(k), Clone(v), mhaHeads, mask: null, causal: true), 8e-3f, name + ": true GPU ScaledDotProductAttention causal flag");
+
+            const int qkvRows = 192;
+            const int qkvInputDim = 128;
+            const int qkvOutputDim = 128;
+
+            var qkvInput = Matrix(qkvRows, qkvInputDim, 142);
+            var qkvWQ = Matrix(qkvOutputDim, qkvInputDim, 143);
+            var qkvWK = Matrix(qkvOutputDim, qkvInputDim, 144);
+            var qkvWV = Matrix(qkvOutputDim, qkvInputDim, 145);
+            var qkvBiasQ = Vector(qkvOutputDim, 146);
+            var qkvBiasK = Vector(qkvOutputDim, 147);
+            var qkvBiasV = Vector(qkvOutputDim, 148);
+
+            var expectedQkv = _cpu.ProjectQKV(qkvInput, qkvWQ, qkvBiasQ, qkvWK, qkvBiasK, qkvWV, qkvBiasV);
+            var actualQkv = gpu.ProjectQKV(Clone(qkvInput), Clone(qkvWQ), Clone(qkvBiasQ), Clone(qkvWK), Clone(qkvBiasK), Clone(qkvWV), Clone(qkvBiasV));
+
+            AssertClose(expectedQkv.Q, actualQkv.Q, 8e-3f, name + ": true GPU ProjectQKV.Q");
+            AssertClose(expectedQkv.K, actualQkv.K, 8e-3f, name + ": true GPU ProjectQKV.K");
+            AssertClose(expectedQkv.V, actualQkv.V, 8e-3f, name + ": true GPU ProjectQKV.V");
+
+            var qkvDQ = Matrix(qkvRows, qkvOutputDim, 149);
+            var qkvDK = Matrix(qkvRows, qkvOutputDim, 150);
+            var qkvDV = Matrix(qkvRows, qkvOutputDim, 151);
+            var qkvWQGradInitial = Matrix(qkvOutputDim, qkvInputDim, 152);
+            var qkvWKGradInitial = Matrix(qkvOutputDim, qkvInputDim, 153);
+            var qkvWVGradInitial = Matrix(qkvOutputDim, qkvInputDim, 154);
+            var qkvBiasQGradInitial = Vector(qkvOutputDim, 155);
+            var qkvBiasKGradInitial = Vector(qkvOutputDim, 156);
+            var qkvBiasVGradInitial = Vector(qkvOutputDim, 157);
+
+            var expectedWQGrad = Clone(qkvWQGradInitial);
+            var expectedWKGrad = Clone(qkvWKGradInitial);
+            var expectedWVGrad = Clone(qkvWVGradInitial);
+            var expectedBiasQGrad = Clone(qkvBiasQGradInitial);
+            var expectedBiasKGrad = Clone(qkvBiasKGradInitial);
+            var expectedBiasVGrad = Clone(qkvBiasVGradInitial);
+
+            var expectedDInput = _cpu.BackpropQKV(qkvInput, qkvDQ, qkvDK, qkvDV, qkvWQ, qkvWK, qkvWV, expectedWQGrad, expectedBiasQGrad, expectedWKGrad, expectedBiasKGrad, expectedWVGrad, expectedBiasVGrad);
+
+            var actualWQGrad = Clone(qkvWQGradInitial);
+            var actualWKGrad = Clone(qkvWKGradInitial);
+            var actualWVGrad = Clone(qkvWVGradInitial);
+            var actualBiasQGrad = Clone(qkvBiasQGradInitial);
+            var actualBiasKGrad = Clone(qkvBiasKGradInitial);
+            var actualBiasVGrad = Clone(qkvBiasVGradInitial);
+
+            var actualDInput = gpu.BackpropQKV(Clone(qkvInput), Clone(qkvDQ), Clone(qkvDK), Clone(qkvDV), Clone(qkvWQ), Clone(qkvWK), Clone(qkvWV), actualWQGrad, actualBiasQGrad, actualWKGrad, actualBiasKGrad, actualWVGrad, actualBiasVGrad);
+
+            AssertClose(expectedDInput, actualDInput, 1.5e-2f, name + ": true GPU BackpropQKV.dInput");
+            AssertClose(expectedWQGrad, actualWQGrad, 1.5e-2f, name + ": true GPU BackpropQKV.WQGrad");
+            AssertClose(expectedWKGrad, actualWKGrad, 1.5e-2f, name + ": true GPU BackpropQKV.WKGrad");
+            AssertClose(expectedWVGrad, actualWVGrad, 1.5e-2f, name + ": true GPU BackpropQKV.WVGrad");
+            AssertClose(expectedBiasQGrad, actualBiasQGrad, 1.5e-2f, name + ": true GPU BackpropQKV.biasQGrad");
+            AssertClose(expectedBiasKGrad, actualBiasKGrad, 1.5e-2f, name + ": true GPU BackpropQKV.biasKGrad");
+            AssertClose(expectedBiasVGrad, actualBiasVGrad, 1.5e-2f, name + ": true GPU BackpropQKV.biasVGrad");
         }
 
         private void Test_GpuConcreteHelperKernels_OptionalMatchCpu()
@@ -1145,17 +1308,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             var expectedBiasPos = AddBiasAndPositionExpected(projected, bias, positional, seqLen, embeddingDim);
 
-            AssertClose(
-                expectedBiasPos,
-                gpu.AddBiasAndPositionalEncoding(Clone(projected), Clone(bias), Clone(positional), seqLen, embeddingDim),
-                5e-3f,
-                name + ": true GPU AddBiasAndPositionalEncoding");
-
-            AssertClose(
-                expectedBiasPos,
-                gpu.EmbedWithBiasAndPositional(Clone(projected), Clone(bias), Clone(positional), seqLen, embeddingDim),
-                5e-3f,
-                name + ": true GPU EmbedWithBiasAndPositional");
+            AssertClose(expectedBiasPos, gpu.AddBiasAndPositionalEncoding(Clone(projected), Clone(bias), Clone(positional), seqLen, embeddingDim), 5e-3f, name + ": true GPU AddBiasAndPositionalEncoding");
+            AssertClose(expectedBiasPos, gpu.EmbedWithBiasAndPositional(Clone(projected), Clone(bias), Clone(positional), seqLen, embeddingDim), 5e-3f, name + ": true GPU EmbedWithBiasAndPositional");
 
             var tokenEmbedding = Matrix(128, embeddingDim, 116);
             var tokenIds = new int[seqLen];
@@ -1164,27 +1318,18 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 tokenIds[i] = i % tokenEmbedding.GetLength(0);
             }
 
-            AssertClose(
-                EmbedTokensWithPositionExpected(tokenEmbedding, tokenIds, positional, seqLen, embeddingDim),
-                gpu.EmbedTokensWithPosition(Clone(tokenEmbedding), Clone(tokenIds), Clone(positional), seqLen, embeddingDim),
-                5e-3f,
-                name + ": true GPU EmbedTokensWithPosition");
+            AssertClose(EmbedTokensWithPositionExpected(tokenEmbedding, tokenIds, positional, seqLen, embeddingDim), gpu.EmbedTokensWithPosition(Clone(tokenEmbedding), Clone(tokenIds), Clone(positional), seqLen, embeddingDim), 5e-3f, name + ": true GPU EmbedTokensWithPosition");
 
             var hidden = Matrix(1024, embeddingDim, 117);
             var offsets = new int[seqLen];
             var counts = new int[seqLen];
-
             for (int i = 0; i < seqLen; i++)
             {
                 offsets[i] = i * 2;
                 counts[i] = i % 5 == 0 ? 0 : 2;
             }
 
-            AssertClose(
-                MeanPoolRowsExpected(hidden, offsets, counts, seqLen, embeddingDim),
-                gpu.MeanPoolRows(Clone(hidden), Clone(offsets), Clone(counts), seqLen, embeddingDim),
-                5e-3f,
-                name + ": true GPU MeanPoolRows grouped");
+            AssertClose(MeanPoolRowsExpected(hidden, offsets, counts, seqLen, embeddingDim), gpu.MeanPoolRows(Clone(hidden), Clone(offsets), Clone(counts), seqLen, embeddingDim), 5e-3f, name + ": true GPU MeanPoolRows grouped");
         }
 
         private sealed class Backend
@@ -1199,6 +1344,44 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             public string Name { get; }
             public IAccelerationManager Manager { get; }
             public float Tolerance { get; }
+        }
+
+        private sealed class ListEqualityComparer<T> : IEqualityComparer<List<T>>
+        {
+            public bool Equals(List<T> x, List<T> y)
+            {
+                if (ReferenceEquals(x, y)) return true;
+                if (x == null || y == null || x.Count != y.Count) return false;
+
+                var comparer = EqualityComparer<T>.Default;
+                for (int i = 0; i < x.Count; i++)
+                {
+                    if (!comparer.Equals(x[i], y[i]))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            public int GetHashCode(List<T> obj)
+            {
+                if (obj == null) return 0;
+
+                unchecked
+                {
+                    int hash = 17;
+                    var comparer = EqualityComparer<T>.Default;
+
+                    foreach (var item in obj)
+                    {
+                        hash = hash * 31 + (item == null ? 0 : comparer.GetHashCode(item));
+                    }
+
+                    return hash;
+                }
+            }
         }
 
         private IEnumerable<Backend> NonReferenceBackends(float? customTolerance = null)
@@ -1304,51 +1487,62 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             return output;
         }
 
+        private bool TryCreateContentAwareDecayNetwork(out ContentAwareDecayNetwork network, out string reason)
+        {
+            network = null;
+            reason = null;
+
+            Type t = typeof(ContentAwareDecayNetwork);
+            var failures = new List<string>();
+
+            foreach (var ctor in t.GetConstructors().OrderBy(c => c.GetParameters().Length))
+            {
+                if (!TryBuildConstructorArgs(ctor, out object[] args, out string argReason))
+                {
+                    failures.Add($"{ctor}: {argReason}");
+                    continue;
+                }
+
+                try
+                {
+                    var candidate = (ContentAwareDecayNetwork)ctor.Invoke(args);
+                    string invalidReason = ValidateContentAwareDecayNetwork(candidate);
+
+                    if (invalidReason == null)
+                    {
+                        network = candidate;
+                        return true;
+                    }
+
+                    failures.Add($"{ctor}: constructed invalid network: {invalidReason}");
+                }
+                catch (TargetInvocationException ex) when (ex.InnerException != null)
+                {
+                    failures.Add($"{ctor}: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{ctor}: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            reason = failures.Count == 0 ? "no public constructor found" : string.Join(" | ", failures.Take(5));
+            return false;
+        }
 
         private static string ValidateContentAwareDecayNetwork(ContentAwareDecayNetwork network)
         {
-            if (network == null)
-            {
-                return "network was null";
-            }
-
-            if (network.ContentDim <= 0)
-            {
-                return $"ContentDim must be positive, got {network.ContentDim}";
-            }
-
-            if (network.NumHeads <= 0)
-            {
-                return $"NumHeads must be positive, got {network.NumHeads}";
-            }
-
-            if (network.ProjectionDim <= 0)
-            {
-                return $"ProjectionDim must be positive, got {network.ProjectionDim}";
-            }
-
-            if (network.HiddenDim <= 0)
-            {
-                return $"HiddenDim must be positive, got {network.HiddenDim}";
-            }
-
-            if (network.MLPInputDim <= 0)
-            {
-                return $"MLPInputDim must be positive, got {network.MLPInputDim}";
-            }
-
-            if (network.NumTimeBases <= 0)
-            {
-                return $"NumTimeBases must be positive, got {network.NumTimeBases}";
-            }
-
-            if (network.TimeRawDim <= 0)
-            {
-                return $"TimeRawDim must be positive, got {network.TimeRawDim}";
-            }
-
+            if (network == null) return "network was null";
+            if (network.ContentDim <= 0) return $"ContentDim must be positive, got {network.ContentDim}";
+            if (network.NumHeads <= 0) return $"NumHeads must be positive, got {network.NumHeads}";
+            if (network.ProjectionDim <= 0) return $"ProjectionDim must be positive, got {network.ProjectionDim}";
+            if (network.HiddenDim <= 0) return $"HiddenDim must be positive, got {network.HiddenDim}";
+            if (network.MLPInputDim <= 0) return $"MLPInputDim must be positive, got {network.MLPInputDim}";
+            if (network.NumTimeBases <= 0) return $"NumTimeBases must be positive, got {network.NumTimeBases}";
+            if (network.TimeRawDim <= 0) return $"TimeRawDim must be positive, got {network.TimeRawDim}";
             return null;
         }
+
         private bool TryBuildConstructorArgs(ConstructorInfo ctor, out object[] args, out string reason)
         {
             var parameters = ctor.GetParameters();
@@ -1364,119 +1558,42 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
                 if (pt == typeof(int))
                 {
-                    if (lower.Contains("head") && lower.Contains("dim"))
-                    {
-                        args[i] = 4;
-                    }
-                    else if (lower.Contains("head"))
-                    {
-                        args[i] = 2;
-                    }
-                    else if (
-                        lower.Contains("content") ||
-                        lower.Contains("embed") ||
-                        lower.Contains("embedding") ||
-                        lower.Contains("model") ||
-                        lower.Contains("dim") ||
-                        lower.Contains("dimension"))
-                    {
-                        args[i] = 8;
-                    }
-                    else if (lower.Contains("projection") || lower.Contains("proj"))
-                    {
-                        args[i] = 4;
-                    }
-                    else if (lower.Contains("hidden"))
-                    {
-                        args[i] = 16;
-                    }
-                    else if (lower.Contains("feed") || lower.Contains("ffn") || lower.Contains("mlp"))
-                    {
-                        args[i] = 16;
-                    }
-                    else if (lower.Contains("basis") || lower.Contains("bases"))
-                    {
-                        args[i] = 4;
-                    }
-                    else if (lower.Contains("raw"))
-                    {
-                        args[i] = 4;
-                    }
-                    else if (lower.Contains("vocab"))
-                    {
-                        args[i] = 32;
-                    }
-                    else if (lower.Contains("sequence") || lower.Contains("seq") || lower.Contains("context") || lower.Contains("memory"))
-                    {
-                        args[i] = 8;
-                    }
-                    else if (lower.Contains("time") || lower.Contains("base"))
-                    {
-                        args[i] = 4;
-                    }
-                    else
-                    {
-                        args[i] = 2;
-                    }
-
+                    if (lower.Contains("head") && lower.Contains("dim")) args[i] = 4;
+                    else if (lower.Contains("head")) args[i] = 2;
+                    else if (lower.Contains("content") || lower.Contains("embed") || lower.Contains("embedding") || lower.Contains("model") || lower.Contains("dim") || lower.Contains("dimension")) args[i] = 8;
+                    else if (lower.Contains("projection") || lower.Contains("proj")) args[i] = 4;
+                    else if (lower.Contains("hidden")) args[i] = 16;
+                    else if (lower.Contains("feed") || lower.Contains("ffn") || lower.Contains("mlp")) args[i] = 16;
+                    else if (lower.Contains("basis") || lower.Contains("bases")) args[i] = 4;
+                    else if (lower.Contains("raw")) args[i] = 4;
+                    else if (lower.Contains("vocab")) args[i] = 32;
+                    else if (lower.Contains("sequence") || lower.Contains("seq") || lower.Contains("context") || lower.Contains("memory")) args[i] = 8;
+                    else if (lower.Contains("time") || lower.Contains("base")) args[i] = 4;
+                    else args[i] = 2;
                     continue;
                 }
 
                 if (pt == typeof(float))
                 {
-                    if (lower.Contains("dropout"))
-                    {
-                        args[i] = 0f;
-                    }
-                    else if (lower.Contains("normalization") || lower.Contains("norm") || lower.Contains("hour"))
-                    {
-                        args[i] = 24f;
-                    }
-                    else if (p.HasDefaultValue && p.DefaultValue != DBNull.Value && p.DefaultValue != null)
-                    {
-                        args[i] = p.DefaultValue;
-                    }
-                    else
-                    {
-                        args[i] = 0f;
-                    }
-
+                    if (lower.Contains("dropout")) args[i] = 0f;
+                    else if (lower.Contains("normalization") || lower.Contains("norm") || lower.Contains("hour")) args[i] = 24f;
+                    else if (p.HasDefaultValue && p.DefaultValue != DBNull.Value && p.DefaultValue != null) args[i] = p.DefaultValue;
+                    else args[i] = 0f;
                     continue;
                 }
 
                 if (pt == typeof(double))
                 {
-                    if (lower.Contains("dropout"))
-                    {
-                        args[i] = 0d;
-                    }
-                    else if (lower.Contains("normalization") || lower.Contains("norm") || lower.Contains("hour"))
-                    {
-                        args[i] = 24d;
-                    }
-                    else if (p.HasDefaultValue && p.DefaultValue != DBNull.Value && p.DefaultValue != null)
-                    {
-                        args[i] = p.DefaultValue;
-                    }
-                    else
-                    {
-                        args[i] = 0d;
-                    }
-
+                    if (lower.Contains("dropout")) args[i] = 0d;
+                    else if (lower.Contains("normalization") || lower.Contains("norm") || lower.Contains("hour")) args[i] = 24d;
+                    else if (p.HasDefaultValue && p.DefaultValue != DBNull.Value && p.DefaultValue != null) args[i] = p.DefaultValue;
+                    else args[i] = 0d;
                     continue;
                 }
 
                 if (pt == typeof(bool))
                 {
-                    if (p.HasDefaultValue && p.DefaultValue != DBNull.Value && p.DefaultValue != null)
-                    {
-                        args[i] = p.DefaultValue;
-                    }
-                    else
-                    {
-                        args[i] = false;
-                    }
-
+                    args[i] = p.HasDefaultValue && p.DefaultValue != DBNull.Value && p.DefaultValue != null ? p.DefaultValue : false;
                     continue;
                 }
 
@@ -1516,6 +1633,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             return true;
         }
+
         private bool TryCreateTacamtBlock(out TacamtBlock block, out string reason)
         {
             block = null;
@@ -1535,10 +1653,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 try
                 {
                     block = (TacamtBlock)ctor.Invoke(args);
-                    if (block != null)
-                    {
-                        return true;
-                    }
+                    if (block != null) return true;
                 }
                 catch (Exception ex)
                 {
@@ -1550,12 +1665,28 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             return false;
         }
 
-        private void AssertClose(float expected, float actual, float tolerance, string label)
+        private void AssertThrows<TException>(Action action, string label) where TException : Exception
         {
-            if (float.IsNaN(expected) && float.IsNaN(actual))
+            try
+            {
+                action();
+            }
+            catch (TException)
             {
                 return;
             }
+            catch (Exception ex)
+            {
+                Assert(false, $"{label}: expected {typeof(TException).Name}, got {ex.GetType().Name}: {ex.Message}");
+                return;
+            }
+
+            Assert(false, $"{label}: expected {typeof(TException).Name}, but no exception was thrown");
+        }
+
+        private void AssertClose(float expected, float actual, float tolerance, string label)
+        {
+            if (float.IsNaN(expected) && float.IsNaN(actual)) return;
 
             if (float.IsInfinity(expected) || float.IsInfinity(actual))
             {
@@ -1565,9 +1696,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             float scale = MathF.Max(1f, MathF.Abs(expected));
             float diff = MathF.Abs(expected - actual);
-
-            Assert(diff <= tolerance * scale,
-                $"{label}: expected {expected}, got {actual}, diff {diff}, tolerance {tolerance}");
+            Assert(diff <= tolerance * scale, $"{label}: expected {expected}, got {actual}, diff {diff}, tolerance {tolerance}");
         }
 
         private void AssertClose(float[] expected, float[] actual, float tolerance, string label)
@@ -1643,7 +1772,6 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private void AssertDictionaryEqual(Dictionary<string, int> expected, Dictionary<string, int> actual, string label)
         {
             Assert(expected.Count == actual.Count, $"{label}: count mismatch {expected.Count} vs {actual.Count}");
-
             foreach (var kv in expected)
             {
                 Assert(actual.TryGetValue(kv.Key, out int value), $"{label}: missing key {kv.Key}");
@@ -1654,7 +1782,6 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private void AssertPairDictionaryEqual(Dictionary<(string left, string right), int> expected, Dictionary<(string left, string right), int> actual, string label)
         {
             Assert(expected.Count == actual.Count, $"{label}: count mismatch {expected.Count} vs {actual.Count}");
-
             foreach (var kv in expected)
             {
                 Assert(actual.TryGetValue(kv.Key, out int value), $"{label}: missing key {kv.Key}");
@@ -1665,12 +1792,78 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private void AssertWordDictionaryEqual(Dictionary<List<string>, int> expected, Dictionary<List<string>, int> actual, string label)
         {
             Assert(expected.Count == actual.Count, $"{label}: count mismatch {expected.Count} vs {actual.Count}");
-
             foreach (var kv in expected)
             {
                 bool found = actual.Any(a => a.Value == kv.Value && a.Key.SequenceEqual(kv.Key));
                 Assert(found, $"{label}: missing merged word [{string.Join(" ", kv.Key)}] => {kv.Value}");
             }
+        }
+
+        private static (float[,] Q, float[,] K, float[,] V) ProjectQKVExpected(float[,] input, float[,] wq, float[] biasQ, float[,] wk, float[] biasK, float[,] wv, float[] biasV)
+        {
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+            int outputDim = wq.GetLength(0);
+            var q = new float[rows, outputDim];
+            var k = new float[rows, outputDim];
+            var v = new float[rows, outputDim];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float qSum = biasQ[o];
+                    float kSum = biasK[o];
+                    float vSum = biasV[o];
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+                        qSum += wq[o, d] * x;
+                        kSum += wk[o, d] * x;
+                        vSum += wv[o, d] * x;
+                    }
+
+                    q[i, o] = qSum;
+                    k[i, o] = kSum;
+                    v[i, o] = vSum;
+                }
+            }
+
+            return (q, k, v);
+        }
+
+        private static float[,] BackpropQKVExpected(float[,] input, float[,] dQ, float[,] dK, float[,] dV, float[,] wq, float[,] wk, float[,] wv, float[,] wqGrad, float[] biasQGrad, float[,] wkGrad, float[] biasKGrad, float[,] wvGrad, float[] biasVGrad)
+        {
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+            int outputDim = dQ.GetLength(1);
+            var dInput = new float[rows, inputDim];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float dq = dQ[i, o];
+                    float dk = dK[i, o];
+                    float dv = dV[i, o];
+
+                    biasQGrad[o] += dq;
+                    biasKGrad[o] += dk;
+                    biasVGrad[o] += dv;
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+                        wqGrad[o, d] += dq * x;
+                        wkGrad[o, d] += dk * x;
+                        wvGrad[o, d] += dv * x;
+                        dInput[i, d] += dq * wq[o, d] + dk * wk[o, d] + dv * wv[o, d];
+                    }
+                }
+            }
+
+            return dInput;
         }
 
         private static float[,] Matrix(int rows, int cols, int seed)
@@ -1730,31 +1923,23 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private static bool[,] PeriodicMask(int rows, int cols)
         {
             var mask = new bool[rows, cols];
-
             for (int i = 0; i < rows; i++)
             {
                 bool any = false;
-
                 for (int j = 0; j < cols; j++)
                 {
                     bool value = j == 0 || ((i * 31 + j * 17) % 7) != 0;
                     mask[i, j] = value;
                     any |= value;
                 }
-
-                if (!any)
-                {
-                    mask[i, 0] = true;
-                }
+                if (!any) mask[i, 0] = true;
             }
-
             return mask;
         }
 
         private static float[,] AddBiasAndPositionExpected(float[,] projected, float[] bias, float[,] positionalEncoding, int seqLen, int embeddingDim)
         {
             var result = new float[seqLen, embeddingDim];
-
             for (int i = 0; i < seqLen; i++)
             {
                 for (int j = 0; j < embeddingDim; j++)
@@ -1762,64 +1947,48 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     result[i, j] = projected[i, j] + bias[j] + positionalEncoding[i, j];
                 }
             }
-
             return result;
         }
 
         private static float[,] EmbedTokensWithPositionExpected(float[,] tokenEmbedding, int[] tokenIds, float[,] positionalEncoding, int seqLen, int embeddingDim)
         {
             var result = new float[seqLen, embeddingDim];
-
             for (int i = 0; i < seqLen; i++)
             {
                 int tokenId = tokenIds[i];
-
                 for (int j = 0; j < embeddingDim; j++)
                 {
                     result[i, j] = tokenEmbedding[tokenId, j] + positionalEncoding[i, j];
                 }
             }
-
             return result;
         }
 
         private static float[,] MeanPoolRowsExpected(float[,] hidden, int[] storyOffsets, int[] storyCounts, int numStories, int embeddingDim)
         {
             var result = new float[numStories, embeddingDim];
-
             for (int s = 0; s < numStories; s++)
             {
                 int start = storyOffsets[s];
                 int count = storyCounts[s];
-
-                if (count <= 0)
-                {
-                    continue;
-                }
+                if (count <= 0) continue;
 
                 for (int d = 0; d < embeddingDim; d++)
                 {
                     float sum = 0.0f;
-
                     for (int i = start; i < start + count; i++)
                     {
                         sum += hidden[i, d];
                     }
-
                     result[s, d] = sum / count;
                 }
             }
-
             return result;
         }
 
         private static float[,] Clone(float[,] input)
         {
-            if (input == null)
-            {
-                return null;
-            }
-
+            if (input == null) return null;
             var output = new float[input.GetLength(0), input.GetLength(1)];
             Array.Copy(input, output, input.Length);
             return output;
@@ -1827,11 +1996,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private static float[] Clone(float[] input)
         {
-            if (input == null)
-            {
-                return null;
-            }
-
+            if (input == null) return null;
             var output = new float[input.Length];
             Array.Copy(input, output, input.Length);
             return output;
@@ -1839,11 +2004,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private static int[] Clone(int[] input)
         {
-            if (input == null)
-            {
-                return null;
-            }
-
+            if (input == null) return null;
             var output = new int[input.Length];
             Array.Copy(input, output, input.Length);
             return output;
@@ -1851,11 +2012,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private static bool[,] Clone(bool[,] input)
         {
-            if (input == null)
-            {
-                return null;
-            }
-
+            if (input == null) return null;
             var output = new bool[input.GetLength(0), input.GetLength(1)];
             Array.Copy(input, output, input.Length);
             return output;
@@ -1863,11 +2020,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private static float[,,] Clone(float[,,] input)
         {
-            if (input == null)
-            {
-                return null;
-            }
-
+            if (input == null) return null;
             var output = new float[input.GetLength(0), input.GetLength(1), input.GetLength(2)];
             Array.Copy(input, output, input.Length);
             return output;
@@ -1875,11 +2028,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private static float[][,] Clone(float[][,] input)
         {
-            if (input == null)
-            {
-                return null;
-            }
-
+            if (input == null) return null;
             var output = new float[input.Length][,];
             for (int i = 0; i < input.Length; i++)
             {

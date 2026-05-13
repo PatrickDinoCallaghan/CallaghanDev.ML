@@ -150,9 +150,18 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         {
             _trainConfig.Validate();
 
-            if (inputs == null) throw new ArgumentNullException(nameof(inputs));
-            if (targets == null) throw new ArgumentNullException(nameof(targets));
-            if (timestamps == null) throw new ArgumentNullException(nameof(timestamps));
+            if (inputs == null)
+            {
+                throw new ArgumentNullException(nameof(inputs));
+            }
+            if (targets == null)
+            {
+                throw new ArgumentNullException(nameof(targets));
+            }
+            if (timestamps == null)
+            {
+                throw new ArgumentNullException(nameof(timestamps));
+            }
             if (inputs.Length != targets.Length || inputs.Length != timestamps.Length)
             {
                 throw new ArgumentException("inputs, targets, and timestamps must all have the same length.");
@@ -170,25 +179,28 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             {
                 float lr = ComputeLR(ep);
                 if (_trainConfig.Verbose)
+                {
                     Console.WriteLine($"\n=== Epoch {ep + 1}/{_trainConfig.Epochs} ===");
-
+                }
                 _model.ClearAllMemory();
                 float epochLoss = 0f;
                 int validCount = 0;
 
-                int[] ordered = Enumerable.Range(0, n)
-                    .OrderBy(i => timestamps[i])
-                    .ToArray();
+                int[] ordered = Enumerable.Range(0, n).OrderBy(i => timestamps[i]).ToArray();
 
                 foreach (int idx in ordered)
                 {
                     var inp = inputs[idx];
                     if (inp?.PriceSequence == null)
+                    {
                         continue;
+                    }
 
                     int sl = inp.PriceSequence.GetLength(0);
                     if (sl < 2)
+                    {
                         continue;
+                    }
 
                     double currentTs = timestamps[idx];
 
@@ -221,7 +233,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         {
                             var v = new float[embDim];
                             for (int d = 0; d < embDim; d++)
+                            {
                                 v[d] = e.HiddenState[d];
+                            }
 
                             ctxH.Add(v);
                             ctxT.Add(-(float)((currentTs - e.AbsoluteTimestamp) * invTime));
@@ -282,7 +296,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                             {
                                 int cd = Math.Min(embDim, ctxH[ci].Length);
                                 for (int d = 0; d < cd; d++)
+                                {
                                     combinedHidden[ci, d] = ctxH[ci][d];
+                                }
 
                                 combinedTimes[ci] = ctxT[ci];
                             }
@@ -298,15 +314,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         cache.TextFinalHidden = combinedHidden;
                         cache.StoryArrivalTimes = combinedTimes;
 
-                        var ph = _model.ForwardPriceDecoderWithCache(
-                            priceInp,
-                            0,
-                            priceInp.GetLength(0),
-                            combinedHidden,
-                            combinedTimes,
-                            cache,
-                            true,
-                            _dropoutRng);
+                        var ph = _model.ForwardPriceDecoderWithCache(priceInp, 0, priceInp.GetLength(0), combinedHidden, combinedTimes, cache, true, _dropoutRng);
 
                         cache.PriceFinalHidden = ph;
 
@@ -326,7 +334,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                             var ra = tgt.ToRegressionArray();
 
                             for (int j = 0; j < rDim; j++)
+                            {
                                 tgtReg[t, j] = ra[j];
+                            }
 
                             tgtRange[t, 0] = tgt.Range;
                             tgtQuality[t, 0] = tgt.Quality;
@@ -541,21 +551,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Backward pass
         // 
 
-        private float BackwardPass(
-            float[,] reg,
-            float[,] range,
-            float[,] quality,
-            float[,] dir,
-            float[,] midDir,
-            float[,] conf,
-            float[,] tgtReg,
-            float[,] tgtRange,
-            float[,] tgtQuality,
-            float[,] tgtDir,
-            float[,] tgtMid,
-            float[] prevClose,
-            float[] confTgt,
-            MmtacForwardCache cache)
+        private float BackwardPass(float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf, float[,] tgtReg, float[,] tgtRange, float[,] tgtQuality, float[,] tgtDir, float[,] tgtMid, float[] prevClose, float[] confTgt, MmtacForwardCache cache)
         {
             if (cache == null)
                 throw new ArgumentNullException(nameof(cache));
@@ -1469,11 +1465,17 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         private ModelPrediction PredictWithCurrentMemoryNoCommit(MultimodalInput input, double currentAbsoluteTimestamp, double timeUnitsPerPosition = 1.0)
         {
             if (input == null)
+            {
                 throw new ArgumentNullException(nameof(input));
+            }
             if (input.PriceSequence == null)
+            {
                 throw new ArgumentNullException(nameof(input.PriceSequence));
+            }
             if (timeUnitsPerPosition == 0.0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(timeUnitsPerPosition), "Must be non-zero.");
+            }
 
             int embDim = _config.Price.EmbeddingDim;
             var ctxH = new List<float[]>();
@@ -1481,6 +1483,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             var ctxTypes = new List<int>();
 
             int numGlobal = 0;
+
             if (_config.Global.GlobalFeatureDim > 0 && input.GlobalFeatures != null)
             {
                 var globalToken = _model.EmbedGlobalFeatures(input.GlobalFeatures);
@@ -1495,7 +1498,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
                 var v = new float[embDim];
                 for (int d = 0; d < embDim; d++)
+                {
                     v[d] = e.HiddenState[d];
+                }
 
                 ctxH.Add(v);
                 ctxT.Add(relTime);
@@ -1505,11 +1510,15 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             if (input.NewsStories != null && input.NewsStories.Length > 0)
             {
                 var (newStoryHidden, newStoryTimes) = _model.EncodeStoriesForMemory(input.NewsStories);
+
                 for (int i = 0; i < newStoryTimes.Length; i++)
                 {
                     var v = new float[embDim];
+
                     for (int d = 0; d < embDim; d++)
+                    {
                         v[d] = newStoryHidden[i, d];
+                    }
 
                     ctxH.Add(v);
                     ctxT.Add(newStoryTimes[i]);
@@ -1521,8 +1530,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             {
                 float relTime = -(float)((currentAbsoluteTimestamp - e.AbsoluteTimestamp) / timeUnitsPerPosition);
                 var v = new float[embDim];
+
                 for (int d = 0; d < embDim; d++)
+                {
                     v[d] = e.HiddenState[d];
+                }
 
                 ctxH.Add(v);
                 ctxT.Add(relTime);
@@ -1541,7 +1553,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 {
                     int copyDim = Math.Min(embDim, ctxH[i].Length);
                     for (int d = 0; d < copyDim; d++)
+                    {
                         contextHidden[i, d] = ctxH[i][d];
+                    }
 
                     contextTimes[i] = ctxT[i];
                 }
@@ -1565,30 +1579,59 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 Confidence = conf != null ? conf[last, 0] : 1f
             };
         }
+
         #region Gradient utilities
 
         private void AccumulateDecayGrads(ContentAwareDecayGradients tgt, ContentAwareDecayGradients src)
         {
-            int nh = src.B2Grad.Length, cd = src.QueryProjectionGrad.GetLength(2),
-                pd = src.QueryProjectionGrad.GetLength(1), hd = src.B1Grad.GetLength(1),
-                mid = src.W1Grad.GetLength(2), ntb = src.TimeLogFreqGrad.GetLength(1),
-                rawDim = src.TimeProjGrad.GetLength(2);
+            int nh = src.B2Grad.Length, cd = src.QueryProjectionGrad.GetLength(2);
+            int pd = src.QueryProjectionGrad.GetLength(1), hd = src.B1Grad.GetLength(1);
+            int mid = src.W1Grad.GetLength(2), ntb = src.TimeLogFreqGrad.GetLength(1);
+            int rawDim = src.TimeProjGrad.GetLength(2);
+
             for (int h = 0; h < nh; h++)
             {
                 tgt.LogBaseDecayRateGrad[h] += src.LogBaseDecayRateGrad[h];
                 tgt.B2Grad[h] += src.B2Grad[h];
                 for (int p = 0; p < pd; p++)
                 {
-                    for (int d = 0; d < cd; d++) { tgt.QueryProjectionGrad[h, p, d] += src.QueryProjectionGrad[h, p, d]; tgt.KeyProjectionGrad[h, p, d] += src.KeyProjectionGrad[h, p, d]; }
+                    for (int d = 0; d < cd; d++)
+                    {
+                        tgt.QueryProjectionGrad[h, p, d] += src.QueryProjectionGrad[h, p, d];
+                        tgt.KeyProjectionGrad[h, p, d] += src.KeyProjectionGrad[h, p, d];
+                    }
+
                     tgt.QueryProjectionBiasGrad[h, p] += src.QueryProjectionBiasGrad[h, p];
                     tgt.KeyProjectionBiasGrad[h, p] += src.KeyProjectionBiasGrad[h, p];
-                    for (int r = 0; r < rawDim; r++) tgt.TimeProjGrad[h, p, r] += src.TimeProjGrad[h, p, r];
+
+                    for (int r = 0; r < rawDim; r++)
+                    {
+                        tgt.TimeProjGrad[h, p, r] += src.TimeProjGrad[h, p, r];
+                    }
+
                     tgt.TimeProjBiasGrad[h, p] += src.TimeProjBiasGrad[h, p];
-                    for (int q = 0; q < pd; q++) tgt.MemAttnOutputWGrad[h, p, q] += src.MemAttnOutputWGrad[h, p, q];
+
+                    for (int q = 0; q < pd; q++)
+                    {
+                        tgt.MemAttnOutputWGrad[h, p, q] += src.MemAttnOutputWGrad[h, p, q];
+                    }
+
                     tgt.MemAttnOutputBGrad[h, p] += src.MemAttnOutputBGrad[h, p];
                 }
-                for (int bIdx = 0; bIdx < ntb; bIdx++) tgt.TimeLogFreqGrad[h, bIdx] += src.TimeLogFreqGrad[h, bIdx];
-                for (int j = 0; j < hd; j++) { tgt.B1Grad[h, j] += src.B1Grad[h, j]; tgt.W2Grad[h, j] += src.W2Grad[h, j]; for (int k = 0; k < mid; k++) tgt.W1Grad[h, j, k] += src.W1Grad[h, j, k]; }
+                for (int bIdx = 0; bIdx < ntb; bIdx++)
+                {
+                    tgt.TimeLogFreqGrad[h, bIdx] += src.TimeLogFreqGrad[h, bIdx];
+                }
+                for (int j = 0; j < hd; j++)
+                {
+                    tgt.B1Grad[h, j] += src.B1Grad[h, j];
+                    tgt.W2Grad[h, j] += src.W2Grad[h, j];
+
+                    for (int k = 0; k < mid; k++)
+                    {
+                        tgt.W1Grad[h, j, k] += src.W1Grad[h, j, k];
+                    }
+                }
             }
         }
 
@@ -2754,37 +2797,14 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         #endregion
         #endregion
 
-        public void TrainSequentialFromWindowEndTimestamps(
-    MultimodalInput[] inputs,
-    ModelTarget[][] targets,
-    double[] windowEndTimestamps,
-    double timeUnitsPerPosition = 1.0,
-    int maxNewsMemory = 100,
-    int maxPriceMemory = 200,
-    float[][] confTargets = null)
+        public void TrainSequentialFromWindowEndTimestamps(MultimodalInput[] inputs, ModelTarget[][] targets, double[] windowEndTimestamps, double timeUnitsPerPosition = 1.0, int maxNewsMemory = 100, int maxPriceMemory = 200, float[][] confTargets = null)
         {
-            var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(
-                inputs,
-                windowEndTimestamps,
-                timeUnitsPerPosition);
+            var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(inputs, windowEndTimestamps, timeUnitsPerPosition);
 
-            TrainSequential(
-                inputs,
-                targets,
-                windowStartTimestamps,
-                timeUnitsPerPosition,
-                maxNewsMemory,
-                maxPriceMemory,
-                confTargets);
+            TrainSequential(inputs, targets, windowStartTimestamps, timeUnitsPerPosition, maxNewsMemory, maxPriceMemory, confTargets);
         }
 
-        public float ValidateSequentialFromWindowEndTimestamps(
-            MultimodalInput[] inputs,
-            ModelTarget[][] targets,
-            double[] windowEndTimestamps,
-            double timeUnitsPerPosition = 1.0,
-            int maxNewsMemory = 100,
-            int maxPriceMemory = 200)
+        public float ValidateSequentialFromWindowEndTimestamps(MultimodalInput[] inputs, ModelTarget[][] targets, double[] windowEndTimestamps, double timeUnitsPerPosition = 1.0, int maxNewsMemory = 100, int maxPriceMemory = 200)
         {
             var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(
                 inputs,
@@ -2800,13 +2820,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 maxPriceMemory);
         }
 
-        public float ValidateSequentialAlignedFromWindowEndTimestamps(
-            MultimodalInput[] inputs,
-            ModelTarget[][] targets,
-            double[] windowEndTimestamps,
-            double timeUnitsPerPosition = 1.0,
-            int maxNewsMemory = 100,
-            int maxPriceMemory = 200)
+        public float ValidateSequentialAlignedFromWindowEndTimestamps(MultimodalInput[] inputs, ModelTarget[][] targets, double[] windowEndTimestamps, double timeUnitsPerPosition = 1.0, int maxNewsMemory = 100, int maxPriceMemory = 200)
         {
             var windowStartTimestamps = ConvertWindowEndTimestampsToWindowStart(
                 inputs,
@@ -2822,10 +2836,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 maxPriceMemory);
         }
 
-        private static double[] ConvertWindowEndTimestampsToWindowStart(
-            MultimodalInput[] inputs,
-            double[] windowEndTimestamps,
-            double timeUnitsPerPosition)
+        private static double[] ConvertWindowEndTimestampsToWindowStart(MultimodalInput[] inputs, double[] windowEndTimestamps, double timeUnitsPerPosition)
         {
             if (inputs == null)
                 throw new ArgumentNullException(nameof(inputs));

@@ -77,24 +77,12 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         /// Explicit-parameter constructor. Takes only what TransformerBlock
         /// actually uses - no throwaway TransformerConfig needed at call sites.
         /// </summary>
-        public TransformerBlock(
-            int embeddingDim,
-            int numHeads,
-            int feedForwardDim,
-            ActivationType ffnActivationType,
-            CostFunctionType costFunction,
-            ActivationDistribution activationDistribution,
-            float l2RegulationLamda,
-            float gradientClippingThreshold,
-            AccelerationType accelerationType,
-            int accelerationDeviceId,
-            IAccelerationManager accel,
-            Random random = null)
-            : base(embeddingDim, numHeads, accel)
+        public TransformerBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivationType, CostFunctionType costFunction, ActivationDistribution activationDistribution, float l2RegulationLamda, float gradientClippingThreshold, AccelerationType accelerationType, int accelerationDeviceId, IAccelerationManager accel, Random random = null) : base(embeddingDim, numHeads, accel)
         {
             if (embeddingDim % numHeads != 0)
-                throw new InvalidOperationException(
-                    $"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
+            {
+                throw new InvalidOperationException($"EmbeddingDim ({embeddingDim}) must be divisible by NumHeads ({numHeads})");
+            }
 
             SelfAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
 

@@ -141,6 +141,14 @@ namespace CallaghanDev.ML.AccelerationManagers
         (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask);
 
         float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn);
+
+        float[,] ScaledDotProductAttention(float[,] q, float[,] k, float[,] v, int numHeads, bool[,] mask = null, bool causal = false);
+
+        (float[,] Q, float[,] K, float[,] V) ProjectQKV(float[,] input, float[,] WQ, float[] biasQ, float[,] WK, float[] biasK, float[,] WV, float[] biasV);
+
+        float[,] BackpropQKV(float[,] input, float[,] dQ, float[,] dK, float[,] dV, float[,] WQ, float[,] WK, float[,] WV, float[,] WQGrad, float[] biasQGrad, float[,] WKGrad, float[] biasKGrad, float[,] WVGrad, float[] biasVGrad);
+
+
         #endregion
 
         #region Transformer training

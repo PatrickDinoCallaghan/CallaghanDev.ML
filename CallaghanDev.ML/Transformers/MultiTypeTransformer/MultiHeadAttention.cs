@@ -60,8 +60,14 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         private float[,] InitWeights(int rows, int cols, Random random)
         {
-            if (rows <= 0) throw new ArgumentOutOfRangeException(nameof(rows));
-            if (cols <= 0) throw new ArgumentOutOfRangeException(nameof(cols));
+            if (rows <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(rows));
+            }
+            if (cols <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(cols));
+            }
 
             var weights = new float[rows, cols];
             float std = MathF.Sqrt(2.0f / (rows + cols));
@@ -82,7 +88,10 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         public float[,] Forward(float[,] input, bool[,] mask = null)
         {
-            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+            }
             ValidateInputWidth(input, nameof(input));
 
             int seqLen = input.GetLength(0);
@@ -99,8 +108,14 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         public float[,] Forward(float[,] query, float[,] keyValue, bool[,] mask = null)
         {
-            if (query == null) throw new ArgumentNullException(nameof(query));
-            if (keyValue == null) throw new ArgumentNullException(nameof(keyValue));
+            if (query == null)
+            {
+                throw new ArgumentNullException(nameof(query));
+            }
+            if (keyValue == null)
+            {
+                throw new ArgumentNullException(nameof(keyValue));
+            }
             ValidateInputWidth(query, nameof(query));
             ValidateInputWidth(keyValue, nameof(keyValue));
 
@@ -120,87 +135,37 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         private float[,] AttentionCore(float[,] Q, float[,] K, float[,] V, bool[,] mask)
         {
-            int queryLen = Q.GetLength(0);
-            int keyLen = K.GetLength(0);
-            var concatenated = new float[queryLen, _embeddingDim];
-            float scale = 1.0f / MathF.Sqrt(_headDim);
-
-            for (int head = 0; head < _numHeads; head++)
-            {
-                int offset = head * _headDim;
-
-                for (int q = 0; q < queryLen; q++)
-                {
-                    var scores = new float[keyLen];
-                    float max = float.NegativeInfinity;
-
-                    for (int k = 0; k < keyLen; k++)
-                    {
-                        if (mask != null && !mask[q, k])
-                        {
-                            scores[k] = float.NegativeInfinity;
-                            continue;
-                        }
-
-                        float dot = 0f;
-                        for (int d = 0; d < _headDim; d++)
-                            dot += Q[q, offset + d] * K[k, offset + d];
-
-                        float score = dot * scale;
-                        scores[k] = score;
-                        if (score > max) max = score;
-                    }
-
-                    if (float.IsNegativeInfinity(max))
-                        continue; // Entire row masked: output remains zero before WO/BiasO.
-
-                    var weights = new float[keyLen];
-                    float sum = 0f;
-                    for (int k = 0; k < keyLen; k++)
-                    {
-                        if (float.IsNegativeInfinity(scores[k]))
-                        {
-                            weights[k] = 0f;
-                            continue;
-                        }
-
-                        float w = MathF.Exp(scores[k] - max);
-                        weights[k] = w;
-                        sum += w;
-                    }
-
-                    if (sum <= 0f || float.IsNaN(sum) || float.IsInfinity(sum))
-                        continue;
-
-                    float invSum = 1.0f / sum;
-                    for (int d = 0; d < _headDim; d++)
-                    {
-                        float value = 0f;
-                        for (int k = 0; k < keyLen; k++)
-                            value += weights[k] * invSum * V[k, offset + d];
-
-                        concatenated[q, offset + d] = value;
-                    }
-                }
-            }
+            var concatenated = _accel.ScaledDotProductAttention(Q, K, V, _numHeads, mask, causal: false);
 
             return MatMulWithBias(concatenated, WO, BiasO);
         }
-
         private float[,] MatMulWithBias(float[,] input, float[,] weights, float[] bias)
         {
-            if (input == null) throw new ArgumentNullException(nameof(input));
-            if (weights == null) throw new ArgumentNullException(nameof(weights));
-            if (bias == null) throw new ArgumentNullException(nameof(bias));
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+            }
+            if (weights == null)
+            {
+                throw new ArgumentNullException(nameof(weights));
+            }
+            if (bias == null)
+            {
+                throw new ArgumentNullException(nameof(bias));
+            }
 
             int inputDim = input.GetLength(1);
             int weightInputDim = weights.GetLength(1);
             int outputDim = weights.GetLength(0);
 
             if (inputDim != weightInputDim)
+            {
                 throw new ArgumentException($"Input width {inputDim} does not match weight input width {weightInputDim}.");
+            }
             if (bias.Length != outputDim)
+            {
                 throw new ArgumentException($"Bias length {bias.Length} does not match output dimension {outputDim}.", nameof(bias));
+            }
 
             return _accel.MatrixAddBias(_accel.BatchDotProduct(weights, input), bias);
         }
@@ -208,20 +173,29 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private void ValidateInputWidth(float[,] matrix, string name)
         {
             if (matrix.GetLength(1) != _embeddingDim)
+            {
                 throw new ArgumentException($"{name} width must be {_embeddingDim}, got {matrix.GetLength(1)}.", name);
+            }
         }
 
         private static void ValidateNonEmptySequence(int length, string name)
         {
             if (length <= 0)
+            {
                 throw new ArgumentException("Sequence length must be at least 1.", name);
+            }
         }
 
         private static void ValidateMask(bool[,] mask, int expectedRows, int expectedCols)
         {
-            if (mask == null) return;
+            if (mask == null)
+            {
+                return;
+            } 
             if (mask.GetLength(0) != expectedRows || mask.GetLength(1) != expectedCols)
+            {
                 throw new ArgumentException($"Mask shape must be [{expectedRows},{expectedCols}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));
+            }
         }
     }
 }

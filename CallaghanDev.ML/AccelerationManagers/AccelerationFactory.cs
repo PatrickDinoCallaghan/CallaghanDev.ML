@@ -1,6 +1,7 @@
 ﻿using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.Configuration;
+using ILGPU.Runtime;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,27 +17,31 @@ namespace CallaghanDev.ML.AccelerationManagers
     /// </summary>
     public static class AccelerationFactory
     {
-        public static IAccelerationManager Create(RuntimeConfig runtime)
+        public static IAccelerationManager Create(RuntimeConfig runtime, bool WithLogging = true)
         {
             if (runtime == null)
             {
                 throw new ArgumentNullException(nameof(runtime));
             }
 
-            switch (runtime.AccelerationType)
+            return Create(runtime.AccelerationType, runtime.AccelerationDeviceId, WithLogging);
+        }
+
+        public static IAccelerationManager Create(AccelerationType type, int AccelerationDeviceId = 0,  bool WithLogging= false)
+        {
+            switch (type)
             {
                 case AccelerationType.GPU:
                 case AccelerationType.CUDA:
-                    return new AccelerationGPU(runtime.AccelerationType, runtime.AccelerationDeviceId);
+                    return WithLogging == true ? new AccelerationGPU(type, AccelerationDeviceId) : new AccelerationGPU(type, AccelerationDeviceId).WithDebugLogging(type.ToString());
 
                 case AccelerationType.CPU:
-                    return new AccelerationCPU();
+                    return WithLogging == true ? new AccelerationCPU() : new AccelerationCPU().WithDebugLogging(type.ToString());
 
                 case AccelerationType.MultiThreadCPU:
-                    return new AccelerationMutliThreadCPU();
-
+                    return WithLogging == true ? new AccelerationMutliThreadCPU() : new AccelerationMutliThreadCPU().WithDebugLogging(type.ToString());
                 default:
-                    throw new NotSupportedException($"Unsupported AccelerationType: {runtime.AccelerationType}");
+                    throw new NotSupportedException($"Unsupported AccelerationType: {type}");
             }
         }
     }

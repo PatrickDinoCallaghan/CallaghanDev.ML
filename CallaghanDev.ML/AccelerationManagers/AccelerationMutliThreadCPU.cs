@@ -1473,6 +1473,236 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
+
+        public unsafe float[,] ScaledDotProductAttention(float[,] q, float[,] k, float[,] v, int numHeads, bool[,] mask = null, bool causal = false)
+        {
+            if (q == null)
+            {
+                throw new ArgumentNullException(nameof(q));
+            }
+            if (k == null)
+            {
+                throw new ArgumentNullException(nameof(k));
+            }
+            if (v == null)
+            {
+                throw new ArgumentNullException(nameof(v));
+            }
+
+            if (numHeads <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(numHeads));
+            } 
+
+            int queryLen = q.GetLength(0);
+            int keyLen = k.GetLength(0);
+            int valueLen = v.GetLength(0);
+            int embeddingDim = q.GetLength(1);
+
+            if (queryLen <= 0)
+            {
+                throw new ArgumentException("Q must contain at least one row.", nameof(q));
+            }
+
+            if (keyLen <= 0)
+            {
+                throw new ArgumentException("K must contain at least one row.", nameof(k));
+            }
+
+            if (embeddingDim <= 0)
+            {
+                throw new ArgumentException("Q must contain at least one column.", nameof(q));
+            }
+
+            if (k.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("K width must match Q width.", nameof(k));
+            }
+
+            if (v.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("V width must match Q width.", nameof(v));
+            }
+
+            if (valueLen != keyLen)
+            {
+                throw new ArgumentException("V row count must match K row count.", nameof(v));
+            }
+
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dimension must be divisible by numHeads.", nameof(numHeads));
+            }
+
+            if (mask != null && (mask.GetLength(0) != queryLen || mask.GetLength(1) != keyLen))
+            {
+                throw new ArgumentException($"Mask shape must be [{queryLen},{keyLen}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));
+            }
+
+            if (causal && queryLen != keyLen)
+            {
+                throw new ArgumentException("The simple causal path assumes queryLen == keyLen. Use an explicit mask for cross-attention or cached decoding.");
+            }
+
+            int headDim = embeddingDim / numHeads;
+            float scale = 1.0f / MathF.Sqrt(headDim);
+
+            long workUnits = (long)numHeads * queryLen * keyLen * headDim;
+
+            if (!ShouldParallelize(workUnits))
+            {
+                return SingleThreadCPU.ScaledDotProductAttention(q, k, v, numHeads, mask, causal);
+            }
+
+            int totalWorkItems = numHeads * queryLen;
+            int vecSize = Vector<float>.Count;
+            int headVecEnd = headDim - (headDim % vecSize);
+
+            var output = new float[queryLen, embeddingDim];
+
+            fixed (float* qFixed = q)
+            fixed (float* kFixed = k)
+            fixed (float* vFixed = v)
+            fixed (float* outputFixed = output)
+            {
+                nint qBase = (nint)qFixed;
+                nint kBase = (nint)kFixed;
+                nint vBase = (nint)vFixed;
+                nint outputBase = (nint)outputFixed;
+
+                Parallel.For(0, totalWorkItems, _parallelOptions, () => ArrayPool<float>.Shared.Rent(keyLen), (workIndex, loopState, scores) =>
+                    {
+                        float* pQ = (float*)qBase;
+                        float* pK = (float*)kBase;
+                        float* pV = (float*)vBase;
+                        float* pOut = (float*)outputBase;
+
+                        int head = workIndex / queryLen;
+                        int qIndex = workIndex - head * queryLen;
+                        int offset = head * headDim;
+
+                        int usableKeyLen = causal ? Math.Min(qIndex + 1, keyLen) : keyLen;
+
+                        float* qRow = pQ + qIndex * embeddingDim + offset;
+                        float* outRow = pOut + qIndex * embeddingDim + offset;
+
+                        float maxScore = float.NegativeInfinity;
+
+                        for (int keyIndex = 0; keyIndex < usableKeyLen; keyIndex++)
+                        {
+                            if (mask != null && !mask[qIndex, keyIndex])
+                            {
+                                scores[keyIndex] = float.NegativeInfinity;
+                                continue;
+                            }
+
+                            float* kRow = pK + keyIndex * embeddingDim + offset;
+
+                            float dot = 0.0f;
+                            int d = 0;
+
+                            for (; d < headVecEnd; d += vecSize)
+                            {
+                                var qVec = new Vector<float>(new ReadOnlySpan<float>(qRow + d, vecSize));
+                                var kVec = new Vector<float>(new ReadOnlySpan<float>(kRow + d, vecSize));
+
+                                dot += Vector.Dot(qVec, kVec);
+                            }
+
+                            for (; d < headDim; d++)
+                            {
+                                dot += qRow[d] * kRow[d];
+                            }
+
+                            float score = dot * scale;
+                            scores[keyIndex] = score;
+
+                            if (score > maxScore)
+                            {
+                                maxScore = score;
+                            }
+                        }
+
+                        if (float.IsNegativeInfinity(maxScore))
+                        {
+                            return scores;
+                        }
+
+                        float sumExp = 0.0f;
+
+                        for (int keyIndex = 0; keyIndex < usableKeyLen; keyIndex++)
+                        {
+                            float score = scores[keyIndex];
+
+                            if (float.IsNegativeInfinity(score))
+                            {
+                                scores[keyIndex] = 0.0f;
+                                continue;
+                            }
+
+                            float exp = MathF.Exp(score - maxScore);
+                            scores[keyIndex] = exp;
+                            sumExp += exp;
+                        }
+
+                        if (sumExp <= 0.0f || float.IsNaN(sumExp) || float.IsInfinity(sumExp))
+                        {
+                            return scores;
+                        }
+
+                        float invSumExp = 1.0f / sumExp;
+
+                        int clearD = 0;
+                        Vector<float> zero = Vector<float>.Zero;
+
+                        for (; clearD < headVecEnd; clearD += vecSize)
+                        {
+                            zero.CopyTo(new Span<float>(outRow + clearD, vecSize));
+                        }
+
+                        for (; clearD < headDim; clearD++)
+                        {
+                            outRow[clearD] = 0.0f;
+                        }
+
+                        for (int keyIndex = 0; keyIndex < usableKeyLen; keyIndex++)
+                        {
+                            float weight = scores[keyIndex] * invSumExp;
+
+                            if (weight == 0.0f)
+                            {
+                                continue;
+                            }
+
+                            float* vRow = pV + keyIndex * embeddingDim + offset;
+                            var weightVec = new Vector<float>(weight);
+
+                            int d = 0;
+
+                            for (; d < headVecEnd; d += vecSize)
+                            {
+                                var current = new Vector<float>(new ReadOnlySpan<float>(outRow + d, vecSize));
+                                var valueVec = new Vector<float>(new ReadOnlySpan<float>(vRow + d, vecSize));
+
+                                (current + weightVec * valueVec).CopyTo(new Span<float>(outRow + d, vecSize));
+                            }
+
+                            for (; d < headDim; d++)
+                            {
+                                outRow[d] += weight * vRow[d];
+                            }
+                        }
+
+                        return scores;
+                    },
+                    scores =>
+                    {
+                        ArrayPool<float>.Shared.Return(scores);
+                    });
+            }
+
+            return output;
+        }
         #endregion
 
         #region BackpropLinearProjection
@@ -2830,5 +3060,544 @@ namespace CallaghanDev.ML.AccelerationManagers
             SingleThreadCPU.ApplyRotaryPositionEmbeddingHeadInPlace(matrix, startCol, headDim, baseTheta, inverse);
         }
 
+        #region Fused QKV Projection
+
+        public unsafe (float[,] Q, float[,] K, float[,] V) ProjectQKV(
+            float[,] input,
+            float[,] WQ,
+            float[] biasQ,
+            float[,] WK,
+            float[] biasK,
+            float[,] WV,
+            float[] biasV)
+        {
+            var shape = ValidateProjectQKVInputs(
+                input,
+                WQ,
+                biasQ,
+                WK,
+                biasK,
+                WV,
+                biasV);
+
+            int rows = shape.Rows;
+            int inputDim = shape.InputDim;
+            int outputDim = shape.OutputDim;
+
+            long workUnits = 3L * rows * outputDim * inputDim;
+
+            if (!ShouldParallelize(workUnits))
+            {
+                return ProjectQKVSequentialNoValidate(
+                    input,
+                    WQ,
+                    biasQ,
+                    WK,
+                    biasK,
+                    WV,
+                    biasV,
+                    rows,
+                    inputDim,
+                    outputDim);
+            }
+
+            var Q = new float[rows, outputDim];
+            var K = new float[rows, outputDim];
+            var V = new float[rows, outputDim];
+
+            int vecSize = Vector<float>.Count;
+            int vecEnd = inputDim - (inputDim % vecSize);
+
+            fixed (float* inputFixed = input)
+            fixed (float* wqFixed = WQ)
+            fixed (float* wkFixed = WK)
+            fixed (float* wvFixed = WV)
+            fixed (float* biasQFixed = biasQ)
+            fixed (float* biasKFixed = biasK)
+            fixed (float* biasVFixed = biasV)
+            fixed (float* qFixed = Q)
+            fixed (float* kFixed = K)
+            fixed (float* vFixed = V)
+            {
+                nint inputBase = (nint)inputFixed;
+                nint wqBase = (nint)wqFixed;
+                nint wkBase = (nint)wkFixed;
+                nint wvBase = (nint)wvFixed;
+                nint biasQBase = (nint)biasQFixed;
+                nint biasKBase = (nint)biasKFixed;
+                nint biasVBase = (nint)biasVFixed;
+                nint qBase = (nint)qFixed;
+                nint kBase = (nint)kFixed;
+                nint vBase = (nint)vFixed;
+
+                Parallel.For(0, rows, _parallelOptions, row =>
+                {
+                    float* pInput = (float*)inputBase;
+                    float* pWQ = (float*)wqBase;
+                    float* pWK = (float*)wkBase;
+                    float* pWV = (float*)wvBase;
+                    float* pBiasQ = (float*)biasQBase;
+                    float* pBiasK = (float*)biasKBase;
+                    float* pBiasV = (float*)biasVBase;
+                    float* pQ = (float*)qBase;
+                    float* pK = (float*)kBase;
+                    float* pV = (float*)vBase;
+
+                    float* inputRow = pInput + row * inputDim;
+                    float* qRow = pQ + row * outputDim;
+                    float* kRow = pK + row * outputDim;
+                    float* vRow = pV + row * outputDim;
+
+                    for (int o = 0; o < outputDim; o++)
+                    {
+                        float qSum = pBiasQ[o];
+                        float kSum = pBiasK[o];
+                        float vSum = pBiasV[o];
+
+                        float* wqRow = pWQ + o * inputDim;
+                        float* wkRow = pWK + o * inputDim;
+                        float* wvRow = pWV + o * inputDim;
+
+                        int d = 0;
+
+                        for (; d < vecEnd; d += vecSize)
+                        {
+                            var xVec = new Vector<float>(new ReadOnlySpan<float>(inputRow + d, vecSize));
+
+                            var wqVec = new Vector<float>(new ReadOnlySpan<float>(wqRow + d, vecSize));
+                            var wkVec = new Vector<float>(new ReadOnlySpan<float>(wkRow + d, vecSize));
+                            var wvVec = new Vector<float>(new ReadOnlySpan<float>(wvRow + d, vecSize));
+
+                            qSum += Vector.Dot(xVec, wqVec);
+                            kSum += Vector.Dot(xVec, wkVec);
+                            vSum += Vector.Dot(xVec, wvVec);
+                        }
+
+                        for (; d < inputDim; d++)
+                        {
+                            float x = inputRow[d];
+
+                            qSum += wqRow[d] * x;
+                            kSum += wkRow[d] * x;
+                            vSum += wvRow[d] * x;
+                        }
+
+                        qRow[o] = qSum;
+                        kRow[o] = kSum;
+                        vRow[o] = vSum;
+                    }
+                });
+            }
+
+            return (Q, K, V);
+        }
+
+        public unsafe float[,] BackpropQKV(
+            float[,] input,
+            float[,] dQ,
+            float[,] dK,
+            float[,] dV,
+            float[,] WQ,
+            float[,] WK,
+            float[,] WV,
+            float[,] WQGrad,
+            float[] biasQGrad,
+            float[,] WKGrad,
+            float[] biasKGrad,
+            float[,] WVGrad,
+            float[] biasVGrad)
+        {
+            var shape = ValidateBackpropQKVInputs(
+                input,
+                dQ,
+                dK,
+                dV,
+                WQ,
+                WK,
+                WV,
+                WQGrad,
+                biasQGrad,
+                WKGrad,
+                biasKGrad,
+                WVGrad,
+                biasVGrad);
+
+            int rows = shape.Rows;
+            int inputDim = shape.InputDim;
+            int outputDim = shape.OutputDim;
+
+            long workUnits = 6L * rows * inputDim * outputDim;
+
+            if (!ShouldParallelize(workUnits))
+            {
+                return BackpropQKVSequentialNoValidate(
+                    input,
+                    dQ,
+                    dK,
+                    dV,
+                    WQ,
+                    WK,
+                    WV,
+                    WQGrad,
+                    biasQGrad,
+                    WKGrad,
+                    biasKGrad,
+                    WVGrad,
+                    biasVGrad,
+                    rows,
+                    inputDim,
+                    outputDim);
+            }
+
+            var dInput = new float[rows, inputDim];
+
+            int vecSize = Vector<float>.Count;
+            int vecEnd = inputDim - (inputDim % vecSize);
+
+            fixed (float* inputFixed = input)
+            fixed (float* dQFixed = dQ)
+            fixed (float* dKFixed = dK)
+            fixed (float* dVFixed = dV)
+            fixed (float* wqFixed = WQ)
+            fixed (float* wkFixed = WK)
+            fixed (float* wvFixed = WV)
+            fixed (float* wqGradFixed = WQGrad)
+            fixed (float* wkGradFixed = WKGrad)
+            fixed (float* wvGradFixed = WVGrad)
+            fixed (float* biasQGradFixed = biasQGrad)
+            fixed (float* biasKGradFixed = biasKGrad)
+            fixed (float* biasVGradFixed = biasVGrad)
+            fixed (float* dInputFixed = dInput)
+            {
+                nint inputBase = (nint)inputFixed;
+                nint dQBase = (nint)dQFixed;
+                nint dKBase = (nint)dKFixed;
+                nint dVBase = (nint)dVFixed;
+                nint wqBase = (nint)wqFixed;
+                nint wkBase = (nint)wkFixed;
+                nint wvBase = (nint)wvFixed;
+                nint wqGradBase = (nint)wqGradFixed;
+                nint wkGradBase = (nint)wkGradFixed;
+                nint wvGradBase = (nint)wvGradFixed;
+                nint biasQGradBase = (nint)biasQGradFixed;
+                nint biasKGradBase = (nint)biasKGradFixed;
+                nint biasVGradBase = (nint)biasVGradFixed;
+                nint dInputBase = (nint)dInputFixed;
+
+                // dInput = dQ * WQ + dK * WK + dV * WV
+                Parallel.For(0, rows, _parallelOptions, row =>
+                {
+                    float* pDQ = (float*)dQBase;
+                    float* pDK = (float*)dKBase;
+                    float* pDV = (float*)dVBase;
+                    float* pWQ = (float*)wqBase;
+                    float* pWK = (float*)wkBase;
+                    float* pWV = (float*)wvBase;
+                    float* pDInput = (float*)dInputBase;
+
+                    float* dInputRow = pDInput + row * inputDim;
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float sum = 0.0f;
+
+                        for (int o = 0; o < outputDim; o++)
+                        {
+                            int gradIndex = row * outputDim + o;
+                            int weightIndex = o * inputDim + d;
+
+                            sum += pDQ[gradIndex] * pWQ[weightIndex]
+                                 + pDK[gradIndex] * pWK[weightIndex]
+                                 + pDV[gradIndex] * pWV[weightIndex];
+                        }
+
+                        dInputRow[d] = sum;
+                    }
+                });
+
+                // Gradients. Parallelized by output row, so no two threads write the same
+                // WQGrad/WKGrad/WVGrad row or bias element.
+                Parallel.For(0, outputDim, _parallelOptions, o =>
+                {
+                    float* pInput = (float*)inputBase;
+                    float* pDQ = (float*)dQBase;
+                    float* pDK = (float*)dKBase;
+                    float* pDV = (float*)dVBase;
+
+                    float* pWQGrad = (float*)wqGradBase;
+                    float* pWKGrad = (float*)wkGradBase;
+                    float* pWVGrad = (float*)wvGradBase;
+
+                    float* pBiasQGrad = (float*)biasQGradBase;
+                    float* pBiasKGrad = (float*)biasKGradBase;
+                    float* pBiasVGrad = (float*)biasVGradBase;
+
+                    float* wqGradRow = pWQGrad + o * inputDim;
+                    float* wkGradRow = pWKGrad + o * inputDim;
+                    float* wvGradRow = pWVGrad + o * inputDim;
+
+                    float bq = 0.0f;
+                    float bk = 0.0f;
+                    float bv = 0.0f;
+
+                    for (int row = 0; row < rows; row++)
+                    {
+                        float dq = pDQ[row * outputDim + o];
+                        float dk = pDK[row * outputDim + o];
+                        float dv = pDV[row * outputDim + o];
+
+                        bq += dq;
+                        bk += dk;
+                        bv += dv;
+
+                        float* inputRow = pInput + row * inputDim;
+
+                        var dqVec = new Vector<float>(dq);
+                        var dkVec = new Vector<float>(dk);
+                        var dvVec = new Vector<float>(dv);
+
+                        int d = 0;
+
+                        for (; d < vecEnd; d += vecSize)
+                        {
+                            var xVec = new Vector<float>(new ReadOnlySpan<float>(inputRow + d, vecSize));
+
+                            var qGradVec = new Vector<float>(new ReadOnlySpan<float>(wqGradRow + d, vecSize));
+                            var kGradVec = new Vector<float>(new ReadOnlySpan<float>(wkGradRow + d, vecSize));
+                            var vGradVec = new Vector<float>(new ReadOnlySpan<float>(wvGradRow + d, vecSize));
+
+                            (qGradVec + dqVec * xVec).CopyTo(new Span<float>(wqGradRow + d, vecSize));
+                            (kGradVec + dkVec * xVec).CopyTo(new Span<float>(wkGradRow + d, vecSize));
+                            (vGradVec + dvVec * xVec).CopyTo(new Span<float>(wvGradRow + d, vecSize));
+                        }
+
+                        for (; d < inputDim; d++)
+                        {
+                            float x = inputRow[d];
+
+                            wqGradRow[d] += dq * x;
+                            wkGradRow[d] += dk * x;
+                            wvGradRow[d] += dv * x;
+                        }
+                    }
+
+                    pBiasQGrad[o] += bq;
+                    pBiasKGrad[o] += bk;
+                    pBiasVGrad[o] += bv;
+                });
+            }
+
+            return dInput;
+        }
+
+        private static (float[,] Q, float[,] K, float[,] V) ProjectQKVSequentialNoValidate(
+            float[,] input,
+            float[,] WQ,
+            float[] biasQ,
+            float[,] WK,
+            float[] biasK,
+            float[,] WV,
+            float[] biasV,
+            int rows,
+            int inputDim,
+            int outputDim)
+        {
+            var Q = new float[rows, outputDim];
+            var K = new float[rows, outputDim];
+            var V = new float[rows, outputDim];
+
+            for (int row = 0; row < rows; row++)
+            {
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float qSum = biasQ[o];
+                    float kSum = biasK[o];
+                    float vSum = biasV[o];
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[row, d];
+
+                        qSum += WQ[o, d] * x;
+                        kSum += WK[o, d] * x;
+                        vSum += WV[o, d] * x;
+                    }
+
+                    Q[row, o] = qSum;
+                    K[row, o] = kSum;
+                    V[row, o] = vSum;
+                }
+            }
+
+            return (Q, K, V);
+        }
+
+        private static float[,] BackpropQKVSequentialNoValidate(
+            float[,] input,
+            float[,] dQ,
+            float[,] dK,
+            float[,] dV,
+            float[,] WQ,
+            float[,] WK,
+            float[,] WV,
+            float[,] WQGrad,
+            float[] biasQGrad,
+            float[,] WKGrad,
+            float[] biasKGrad,
+            float[,] WVGrad,
+            float[] biasVGrad,
+            int rows,
+            int inputDim,
+            int outputDim)
+        {
+            var dInput = new float[rows, inputDim];
+
+            for (int row = 0; row < rows; row++)
+            {
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float dq = dQ[row, o];
+                    float dk = dK[row, o];
+                    float dv = dV[row, o];
+
+                    biasQGrad[o] += dq;
+                    biasKGrad[o] += dk;
+                    biasVGrad[o] += dv;
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[row, d];
+
+                        WQGrad[o, d] += dq * x;
+                        WKGrad[o, d] += dk * x;
+                        WVGrad[o, d] += dv * x;
+
+                        dInput[row, d] += dq * WQ[o, d]
+                                        + dk * WK[o, d]
+                                        + dv * WV[o, d];
+                    }
+                }
+            }
+
+            return dInput;
+        }
+
+        private static (int Rows, int InputDim, int OutputDim) ValidateProjectQKVInputs(
+            float[,] input,
+            float[,] WQ,
+            float[] biasQ,
+            float[,] WK,
+            float[] biasK,
+            float[,] WV,
+            float[] biasV)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (WQ == null) throw new ArgumentNullException(nameof(WQ));
+            if (WK == null) throw new ArgumentNullException(nameof(WK));
+            if (WV == null) throw new ArgumentNullException(nameof(WV));
+            if (biasQ == null) throw new ArgumentNullException(nameof(biasQ));
+            if (biasK == null) throw new ArgumentNullException(nameof(biasK));
+            if (biasV == null) throw new ArgumentNullException(nameof(biasV));
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+
+            if (rows <= 0)
+                throw new ArgumentException("Input must contain at least one row.", nameof(input));
+
+            if (inputDim <= 0)
+                throw new ArgumentException("Input must contain at least one column.", nameof(input));
+
+            int qOut = WQ.GetLength(0);
+            int kOut = WK.GetLength(0);
+            int vOut = WV.GetLength(0);
+
+            if (qOut <= 0)
+                throw new ArgumentException("WQ must contain at least one output row.", nameof(WQ));
+
+            if (qOut != kOut || qOut != vOut)
+                throw new ArgumentException("WQ, WK and WV output dimensions must match.");
+
+            if (WQ.GetLength(1) != inputDim)
+                throw new ArgumentException("WQ input dimension must match input width.", nameof(WQ));
+
+            if (WK.GetLength(1) != inputDim)
+                throw new ArgumentException("WK input dimension must match input width.", nameof(WK));
+
+            if (WV.GetLength(1) != inputDim)
+                throw new ArgumentException("WV input dimension must match input width.", nameof(WV));
+
+            if (biasQ.Length != qOut)
+                throw new ArgumentException("biasQ length must match WQ output dimension.", nameof(biasQ));
+
+            if (biasK.Length != qOut)
+                throw new ArgumentException("biasK length must match WK output dimension.", nameof(biasK));
+
+            if (biasV.Length != qOut)
+                throw new ArgumentException("biasV length must match WV output dimension.", nameof(biasV));
+
+            return (rows, inputDim, qOut);
+        }
+
+        private static (int Rows, int InputDim, int OutputDim) ValidateBackpropQKVInputs(
+            float[,] input,
+            float[,] dQ,
+            float[,] dK,
+            float[,] dV,
+            float[,] WQ,
+            float[,] WK,
+            float[,] WV,
+            float[,] WQGrad,
+            float[] biasQGrad,
+            float[,] WKGrad,
+            float[] biasKGrad,
+            float[,] WVGrad,
+            float[] biasVGrad)
+        {
+            if (dQ == null) throw new ArgumentNullException(nameof(dQ));
+            if (dK == null) throw new ArgumentNullException(nameof(dK));
+            if (dV == null) throw new ArgumentNullException(nameof(dV));
+            if (WQGrad == null) throw new ArgumentNullException(nameof(WQGrad));
+            if (WKGrad == null) throw new ArgumentNullException(nameof(WKGrad));
+            if (WVGrad == null) throw new ArgumentNullException(nameof(WVGrad));
+            if (biasQGrad == null) throw new ArgumentNullException(nameof(biasQGrad));
+            if (biasKGrad == null) throw new ArgumentNullException(nameof(biasKGrad));
+            if (biasVGrad == null) throw new ArgumentNullException(nameof(biasVGrad));
+
+            var shape = ValidateProjectQKVInputs(
+                input,
+                WQ,
+                biasQGrad,
+                WK,
+                biasKGrad,
+                WV,
+                biasVGrad);
+
+            int rows = shape.Rows;
+            int inputDim = shape.InputDim;
+            int outputDim = shape.OutputDim;
+
+            if (dQ.GetLength(0) != rows || dQ.GetLength(1) != outputDim)
+                throw new ArgumentException($"dQ shape must be [{rows},{outputDim}].", nameof(dQ));
+
+            if (dK.GetLength(0) != rows || dK.GetLength(1) != outputDim)
+                throw new ArgumentException($"dK shape must be [{rows},{outputDim}].", nameof(dK));
+
+            if (dV.GetLength(0) != rows || dV.GetLength(1) != outputDim)
+                throw new ArgumentException($"dV shape must be [{rows},{outputDim}].", nameof(dV));
+
+            if (WQGrad.GetLength(0) != outputDim || WQGrad.GetLength(1) != inputDim)
+                throw new ArgumentException($"WQGrad shape must be [{outputDim},{inputDim}].", nameof(WQGrad));
+
+            if (WKGrad.GetLength(0) != outputDim || WKGrad.GetLength(1) != inputDim)
+                throw new ArgumentException($"WKGrad shape must be [{outputDim},{inputDim}].", nameof(WKGrad));
+
+            if (WVGrad.GetLength(0) != outputDim || WVGrad.GetLength(1) != inputDim)
+                throw new ArgumentException($"WVGrad shape must be [{outputDim},{inputDim}].", nameof(WVGrad));
+
+            return shape;
+        }
+
+        #endregion
     }
 }

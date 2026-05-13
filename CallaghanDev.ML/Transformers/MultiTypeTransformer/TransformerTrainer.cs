@@ -42,28 +42,42 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         public void Train(int[][] sequences, int[][] validationSequences = null)
         {
             if (!_modelConfig.Data.UsesDiscreteTokens)
+            {
                 throw new InvalidOperationException($"Use TrainContinuous() for {_modelConfig.Data.DataType}.");
+            }
             if (sequences == null)
+            {
                 throw new ArgumentNullException(nameof(sequences));
+            }
             if (_trainConfig.BatchSize <= 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(_trainConfig.BatchSize), "BatchSize must be positive.");
+            }
             if (_trainConfig.Epochs < 0)
+            {
                 throw new ArgumentOutOfRangeException(nameof(_trainConfig.Epochs), "Epochs must be non-negative.");
+            }
 
             var validSequences = sequences.Where(seq => seq != null && seq.Length >= 2).ToArray();
 
             if (validSequences.Length == 0)
+            {
                 throw new ArgumentException("No valid sequences to train on. All sequences must contain at least 2 tokens.", nameof(sequences));
+            }
 
             if (validSequences.Length < sequences.Length && _trainConfig.Verbose)
+            {
                 Console.WriteLine($"Filtered out {sequences.Length - validSequences.Length} sequences that were too short.");
+            }
 
             float currentLR = _trainConfig.LearningRate;
 
             for (int epoch = 0; epoch < _trainConfig.Epochs; epoch++)
             {
                 if (_trainConfig.Verbose)
+                {
                     Console.WriteLine($"\n=== Epoch {epoch + 1}/{_trainConfig.Epochs} ===");
+                }
 
                 var shuffled = ShuffleArray(validSequences);
                 float epochLoss = 0f;
@@ -87,7 +101,9 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                     {
                         float valLoss = Validate(validationSequences);
                         if (_trainConfig.Verbose)
+                        {
                             Console.WriteLine($"Batch {numBatches}: Train Loss = {batchLoss:F4}, Val Loss = {valLoss:F4}");
+                        }
                     }
                     else if (_trainConfig.Verbose && numBatches % 10 == 0)
                     {
@@ -96,13 +112,17 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                 }
 
                 if (_trainConfig.Verbose)
+                {
                     Console.WriteLine($"Epoch {epoch + 1} Average Loss: {(numBatches > 0 ? epochLoss / numBatches : 0):F4}");
+                }
 
                 if (_trainConfig.UseLearningRateDecay)
                 {
                     currentLR *= _trainConfig.LearningRateDecay;
                     if (_trainConfig.Verbose)
+                    {
                         Console.WriteLine($"Learning rate: {currentLR:F6}");
+                    }
                 }
             }
         }
@@ -186,7 +206,6 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             }
         }
 
-
         private float TrainBatchDiscrete(int[][] batch, float learningRate)
         {
             ZeroAllGradients();
@@ -196,13 +215,17 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             foreach (var sequence in batch)
             {
                 if (sequence == null || sequence.Length < 2)
+                {
                     continue;
+                }
 
                 var input = sequence.Take(sequence.Length - 1).ToArray();
                 var target = sequence.Skip(1).ToArray();
 
                 if (!TokensAreValid(input) || !TokensAreValid(target))
+                {
                     continue;
+                }
 
                 try
                 {
@@ -338,14 +361,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private float[,] ForwardWithCacheDiscrete(int[] tokenIds, ForwardCache cache)
         {
             int seqLen = tokenIds.Length;
-            var embedded = new float[seqLen, _modelConfig.EmbeddingDim];
 
-            for (int i = 0; i < seqLen; i++)
-            {
-                int tokenId = tokenIds[i];
-                for (int j = 0; j < _modelConfig.EmbeddingDim; j++)
-                    embedded[i, j] = _model.TokenEmbedding[tokenId, j];
-            }
+            var embedded = _accel.EmbedTokenIds(tokenIds, _model.TokenEmbedding, _modelConfig.EmbeddingDim);
 
             cache.EmbeddedInput = embedded;
             cache.TokenIds = tokenIds;
@@ -357,8 +374,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private float[,] ForwardWithCacheContinuous(float[,] inputSequence, ForwardCache cache)
         {
             int seqLen = inputSequence.GetLength(0);
-            var projected = _accel.BatchDotProduct(_model.InputProjection, inputSequence);
-            var embedded = _accel.MatrixAddBias(projected, _model.InputProjectionBias);
+
+            var embedded = _accel.ProjectOutputBatch(inputSequence, _model.InputProjection, _model.InputProjectionBias, seqLen, _modelConfig.EmbeddingDim);
 
             cache.EmbeddedInput = embedded;
             cache.TokenIds = null;
@@ -368,33 +385,42 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         }
         private float[,] ForwardFromEmbeddingWithCache(float[,] embedded, int seqLen, ForwardCache cache)
         {
-            bool[,] mask = _modelConfig.UseDecoderOnly ? _accel.CreateCausalMask(seqLen) : null;
+            bool selfCausal = _modelConfig.UseDecoderOnly;
+
+            // Important:
+            // Do not allocate a causal bool[,] mask when the accelerator can handle
+            // causal attention internally.
+            bool[,] selfMask = null;
+
             var x = embedded;
 
             for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
             {
                 cache.LayerInputs.Add(x);
+
                 var block = _model.Blocks[layer];
 
                 var attnCache = cache.AttentionCaches[layer];
                 attnCache.Input = x;
-                var attnOutput = AttentionForwardWithCache(block.Attention, x, mask, attnCache);
+
+                var attnOutput = AttentionForwardWithCache(block.Attention, x, selfMask, selfCausal, attnCache);
+
                 var attnResidual = _accel.MatrixAdd(x, attnOutput);
 
                 var ln1Cache = cache.LN1Caches[layer];
                 var (normed1, ln1Means, ln1Vars, ln1Normalized) = _accel.LayerNormForward(attnResidual, block.LN1Gamma, block.LN1Beta);
-                ln1Cache.Input = attnResidual; ln1Cache.Mean = ln1Means; ln1Cache.Variance = ln1Vars; ln1Cache.Normalized = ln1Normalized;
 
-                var ffnInputRows = new float[seqLen][];
-                var ffOutput = new float[seqLen, _modelConfig.EmbeddingDim];
+                ln1Cache.Input = attnResidual;
+                ln1Cache.Mean = ln1Means;
+                ln1Cache.Variance = ln1Vars;
+                ln1Cache.Normalized = ln1Normalized;
 
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var inputRow = _accel.ExtractRow(normed1, i, _modelConfig.EmbeddingDim);
-                    ffnInputRows[i] = inputRow;
-                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-                    _accel.SetRow(ffOutput, i, outputRow, _modelConfig.EmbeddingDim);
-                }
+                // Cache rows for FFN backprop.
+                // This avoids repeated ExtractRow calls in the forward path.
+                var ffnInputRows = CopyRowsToJagged(normed1);
+
+                var ffOutput = _accel.FFNForwardBatch(normed1, seqLen, _modelConfig.EmbeddingDim, block.FeedForwardNetwork.ForwardPassOnly);
+
                 cache.FFNInputs.Add(ffnInputRows);
                 cache.FFNOutputs.Add(ffOutput);
 
@@ -402,7 +428,11 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
                 var ln2Cache = cache.LN2Caches[layer];
                 var (normed2, ln2Means, ln2Vars, ln2Normalized) = _accel.LayerNormForward(ffResidual, block.LN2Gamma, block.LN2Beta);
-                ln2Cache.Input = ffResidual; ln2Cache.Mean = ln2Means; ln2Cache.Variance = ln2Vars; ln2Cache.Normalized = ln2Normalized;
+
+                ln2Cache.Input = ffResidual;
+                ln2Cache.Mean = ln2Means;
+                ln2Cache.Variance = ln2Vars;
+                ln2Cache.Normalized = ln2Normalized;
 
                 x = normed2;
             }
@@ -410,8 +440,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             cache.FinalHiddenStates = x;
             return ProjectToOutput(x);
         }
-
-
+        /*
         private float BackwardPassCrossEntropy(float[,] logits, int[] targets, ForwardCache cache)
         {
             int effectiveLen = Math.Min(logits.GetLength(0), targets.Length);
@@ -434,7 +463,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             BackpropFromOutput(dOutput, cache);
             return loss;
-        }
+        }*/
         private void BackpropFromOutput(float[,] dOutput, ForwardCache cache)
         {
             var dX = _accel.BackpropOutputProjection(
@@ -501,51 +530,44 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         {
             var attention = _model.Blocks[layerIdx].Attention;
             var grads = _gradients.AttentionGrads[layerIdx];
+
             int seqLen = dOut.GetLength(0);
             int embeddingDim = _modelConfig.EmbeddingDim;
             int numHeads = _modelConfig.NumHeads;
             int headDim = embeddingDim / numHeads;
 
             var dConcatenated = new float[seqLen, embeddingDim];
-            _accel.BackpropLinearProjection(
-                cache.AttentionOutput,
-                dOut,
-                attention.WO,
-                grads.WO_Grad,
-                grads.BiasO_Grad,
-                dConcatenated);
+
+            _accel.BackpropLinearProjection(cache.AttentionOutput, dOut, attention.WO, grads.WO_Grad, grads.BiasO_Grad, dConcatenated);
 
             float scale = 1.0f / MathF.Sqrt(headDim);
-            bool[,] mask = _modelConfig.UseDecoderOnly ? _accel.CreateCausalMask(seqLen) : null;
 
-            var (dQFull, dKFull, dVFull) = _accel.MultiHeadAttentionBackward(
-                cache.Q,
-                cache.K,
-                cache.V,
-                dConcatenated,
-                numHeads,
-                scale,
-                mask);
+            (float[,] dQFull, float[,] dKFull, float[,] dVFull) attentionBack;
+
+            if (_modelConfig.UseDecoderOnly)
+            {
+                // Avoid allocating CreateCausalMask(seqLen) during every backward pass.
+                attentionBack = _accel.MultiHeadAttentionBackward(cache.Q, cache.K, cache.V, dConcatenated, numHeads, scale, useDecoderMask: true);
+            }
+            else
+            {
+                attentionBack = _accel.MultiHeadAttentionBackward(cache.Q, cache.K, cache.V, dConcatenated, numHeads, scale, (bool[,])null);
+            }
+
+            var dQFull = attentionBack.dQFull;
+            var dKFull = attentionBack.dKFull;
+            var dVFull = attentionBack.dVFull;
 
             _rotaryPositionEmbedding.ApplyBackwardInPlace(dQFull, dKFull, numHeads);
 
-            var dInput = new float[seqLen, embeddingDim];
-            _accel.BackpropLinearProjection(cache.Input, dQFull, attention.WQ, grads.WQ_Grad, grads.BiasQ_Grad, dInput);
-            _accel.BackpropLinearProjection(cache.Input, dKFull, attention.WK, grads.WK_Grad, grads.BiasK_Grad, dInput);
-            _accel.BackpropLinearProjection(cache.Input, dVFull, attention.WV, grads.WV_Grad, grads.BiasV_Grad, dInput);
-
-            return dInput;
+            return _accel.BackpropQKV(cache.Input, dQFull, dKFull, dVFull,  attention.WQ, attention.WK,  attention.WV, grads.WQ_Grad, grads.BiasQ_Grad, grads.WK_Grad, grads.BiasK_Grad, grads.WV_Grad, grads.BiasV_Grad);
         }
-
-        private float[,] AttentionForwardWithCache(MultiHeadAttention attention, float[,] input, bool[,] mask, AttentionCache cache)
+        private float[,] AttentionForwardWithCache(MultiHeadAttention attention, float[,] input, bool[,] mask, bool causal, AttentionCache cache)
         {
+            int seqLen = input.GetLength(0);
             int embeddingDim = _modelConfig.EmbeddingDim;
             int numHeads = _modelConfig.NumHeads;
-            int headDim = embeddingDim / numHeads;
-
-            var Q = _accel.MatrixAddBias(_accel.BatchDotProduct(attention.WQ, input), attention.BiasQ);
-            var K = _accel.MatrixAddBias(_accel.BatchDotProduct(attention.WK, input), attention.BiasK);
-            var V = _accel.MatrixAddBias(_accel.BatchDotProduct(attention.WV, input), attention.BiasV);
+            var (Q, K, V) = _accel.ProjectQKV(input, attention.WQ, attention.BiasQ, attention.WK, attention.BiasK, attention.WV, attention.BiasV);
 
             _rotaryPositionEmbedding.ApplyInPlace(Q, K, numHeads);
 
@@ -553,50 +575,83 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             cache.K = K;
             cache.V = V;
 
-            float scale = 1.0f / MathF.Sqrt(headDim);
-            var concatenated = _accel.MultiHeadAttentionForward(Q, K, V, numHeads, scale, mask);
+            var concatenated = _accel.ScaledDotProductAttention(Q, K, V, numHeads, mask, causal: _modelConfig.UseDecoderOnly && mask == null);
+
             cache.AttentionOutput = concatenated;
 
-            return _accel.MatrixAddBias(_accel.BatchDotProduct(attention.WO, concatenated), attention.BiasO);
+            return _accel.ProjectOutputBatch( concatenated, attention.WO, attention.BiasO, seqLen, embeddingDim);
         }
-
         public float Validate(int[][] validationSequences)
         {
-            float totalLoss = 0;
-            int count = 0;
-            int outputDim = _modelConfig.EffectiveOutputDim;
+            if (validationSequences == null)
+            {
+                throw new ArgumentNullException(nameof(validationSequences));
+            }
+
+            float totalLoss = 0.0f;
+            int totalTokens = 0;
 
             foreach (var sequence in validationSequences)
             {
-                if (sequence.Length < 2) continue;
+                if (sequence == null || sequence.Length < 2)
+                {
+                    continue;
+                }
+
                 var input = sequence.Take(sequence.Length - 1).ToArray();
                 var target = sequence.Skip(1).ToArray();
-                var logits = _model.Forward(input);
 
-                for (int i = 0; i < Math.Min(logits.GetLength(0), target.Length); i++)
+                if (!TokensAreValid(input) || !TokensAreValid(target))
                 {
-                    float max = float.NegativeInfinity;
-                    for (int j = 0; j < outputDim; j++) max = Math.Max(max, logits[i, j]);
-                    float sum = 0;
-                    for (int j = 0; j < outputDim; j++) sum += MathF.Exp(logits[i, j] - max);
-                    float prob = MathF.Exp(logits[i, target[i]] - max) / sum;
-                    totalLoss -= MathF.Log(prob + 1e-10f);
-                    count++;
+                    continue;
                 }
+
+                var logits = _model.Forward(input);
+                int effectiveLen = Math.Min(logits.GetLength(0), target.Length);
+
+                if (effectiveLen <= 0)
+                {
+                    continue;
+                }
+
+                var result = _accel.CrossEntropyLossAndGradient(logits, target, effectiveLen);
+
+                if (!IsFinite(result.loss))
+                {
+                    continue;
+                }
+
+                totalLoss += result.loss * effectiveLen;
+                totalTokens += effectiveLen;
             }
-            return count > 0 ? totalLoss / count : 0;
+
+            return totalTokens > 0 ? totalLoss / totalTokens : 0.0f;
         }
-   
         public float ValidateContinuous(float[][,] inputs, float[][,] regressionTargets = null, int[][] classTargets = null)
         {
-            float totalLoss = 0;
-            int count = 0;
+            if (inputs == null)
+            {
+                throw new ArgumentNullException(nameof(inputs));
+            }
+
+            float totalLoss = 0.0f;
+            int totalItems = 0;
 
             for (int idx = 0; idx < inputs.Length; idx++)
             {
                 var inputSeq = inputs[idx];
+
+                if (inputSeq == null)
+                {
+                    continue;
+                }
+
                 int seqLen = inputSeq.GetLength(0);
-                if (seqLen < 2) continue;
+
+                if (seqLen < 2)
+                {
+                    continue;
+                }
 
                 var inputSlice = _accel.SliceRows(inputSeq, 0, seqLen - 1);
                 var output = _model.Forward(inputSlice);
@@ -604,36 +659,60 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
                 if (_modelConfig.Data.DataType == TransformerDataType.TimeSeriesRegression)
                 {
-                    var targetSlice = _accel.SliceRows(regressionTargets[idx], 1, seqLen);
-                    int outputDim = _modelConfig.OutputDim;
-                    for (int i = 0; i < effectiveLen; i++)
+                    if (regressionTargets == null || regressionTargets[idx] == null)
                     {
-                        for (int j = 0; j < outputDim; j++)
-                        {
-                            float diff = output[i, j] - targetSlice[i, j];
-                            totalLoss += diff * diff;
-                        }
-                        count++;
+                        continue;
                     }
+
+                    var targetSlice = _accel.SliceRows(regressionTargets[idx], 1, seqLen);
+                    effectiveLen = Math.Min(effectiveLen, targetSlice.GetLength(0));
+
+                    if (effectiveLen <= 0)
+                    {
+                        continue;
+                    }
+
+                    var result = _accel.MSELossAndGradient(output,targetSlice, effectiveLen);
+
+                    if (!IsFinite(result.loss))
+                    {
+                        continue;
+                    }
+
+                    // MSELossAndGradient returns average over effectiveLen * outputDim.
+                    totalLoss += result.loss * effectiveLen;
+                    totalItems += effectiveLen;
                 }
                 else
                 {
-                    int outputDim = _modelConfig.OutputDim;
-                    var targetSlice = classTargets[idx].Skip(1).Take(seqLen - 1).ToArray();
-                    for (int i = 0; i < Math.Min(effectiveLen, targetSlice.Length); i++)
+                    if (classTargets == null || classTargets[idx] == null)
                     {
-                        float max = float.NegativeInfinity;
-                        for (int j = 0; j < outputDim; j++) max = Math.Max(max, output[i, j]);
-                        float sum = 0;
-                        for (int j = 0; j < outputDim; j++) sum += MathF.Exp(output[i, j] - max);
-                        totalLoss -= MathF.Log(MathF.Exp(output[i, targetSlice[i]] - max) / sum + 1e-10f);
-                        count++;
+                        continue;
                     }
+
+                    var targetSlice = classTargets[idx].Skip(1).Take(seqLen - 1).ToArray();
+
+                    effectiveLen = Math.Min(effectiveLen, targetSlice.Length);
+
+                    if (effectiveLen <= 0)
+                    {
+                        continue;
+                    }
+
+                    var result = _accel.CrossEntropyLossAndGradient(output, targetSlice, effectiveLen);
+
+                    if (!IsFinite(result.loss))
+                    {
+                        continue;
+                    }
+
+                    totalLoss += result.loss * effectiveLen;
+                    totalItems += effectiveLen;
                 }
             }
-            return count > 0 ? totalLoss / count : 0;
-        }
 
+            return totalItems > 0 ? totalLoss / totalItems : 0.0f;
+        }
         private void UpdateParameters(float learningRate)
         {
             if (_modelConfig.Data.UsesDiscreteTokens)
@@ -749,18 +828,25 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private void ZeroAllGradients()
         {
             _gradients.Zero();
+
             for (int layer = 0; layer < _modelConfig.NumLayers; layer++)
             {
-                foreach (var wg in _ffnWeightGrads[layer]) _accel.ZeroMatrix(wg);
-                foreach (var bg in _ffnBiasGrads[layer]) Array.Clear(bg, 0, bg.Length);
+                foreach (var wg in _ffnWeightGrads[layer])
+                {
+                    _accel.ZeroMatrix(wg);
+                }
+
+                foreach (var bg in _ffnBiasGrads[layer])
+                {
+                    _accel.ZeroVector(bg);
+                }
             }
         }
 
         private float[,] ProjectToOutput(float[,] hidden)
         {
-            return _accel.MatrixAddBias(_accel.BatchDotProduct(_model.OutputProjection, hidden), _model.OutputBias);
+            return _accel.ProjectOutputBatch(hidden, _model.OutputProjection, _model.OutputBias, hidden.GetLength(0), _modelConfig.EffectiveOutputDim);
         }
-
         private T[] ShuffleArray<T>(T[] data)
         {
             return Enumerable.Range(0, data.Length).OrderBy(x => _random.Next()).Select(i => data[i]).ToArray();
@@ -824,6 +910,29 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                         return false;
 
             return true;
+        }
+
+        private static float[][] CopyRowsToJagged(float[,] matrix)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            int bytesPerRow = cols * sizeof(float);
+
+            var result = new float[rows][];
+
+            for (int i = 0; i < rows; i++)
+            {
+                var row = new float[cols];
+                Buffer.BlockCopy(matrix, i * bytesPerRow, row, 0, bytesPerRow);
+                result[i] = row;
+            }
+
+            return result;
         }
     }
 }

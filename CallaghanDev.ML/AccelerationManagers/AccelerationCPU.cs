@@ -153,7 +153,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             if (inputMatrix == null)
             {
                 throw new ArgumentNullException(nameof(inputMatrix));
-            } 
+            }
 
             if (rowStart < 0 || rowCount < 0)
             {
@@ -1078,7 +1078,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return mask;
         }
-
+ 
         #region MultiHeadAttentionForward
 
         [Obsolete]
@@ -1151,7 +1151,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             if (V == null)
             {
                 throw new ArgumentNullException(nameof(V));
-            } 
+            }
 
             int seqLenQ = Q.GetLength(0);
             int seqLenK = K.GetLength(0);
@@ -1276,6 +1276,169 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         #endregion
 
+
+        public float[,] ScaledDotProductAttention(float[,] q, float[,] k, float[,] v, int numHeads, bool[,] mask = null, bool causal = false)
+        {
+            if (q == null)
+            {
+                throw new ArgumentNullException(nameof(q));
+            }
+            if (k == null)
+            {
+                throw new ArgumentNullException(nameof(k));
+            }
+            if (v == null)
+            {
+                throw new ArgumentNullException(nameof(v));
+            }
+            if (numHeads <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(numHeads));
+            }
+
+            int queryLen = q.GetLength(0);
+            int keyLen = k.GetLength(0);
+            int valueLen = v.GetLength(0);
+            int embeddingDim = q.GetLength(1);
+
+            if (queryLen <= 0)
+            {
+                throw new ArgumentException("Q must contain at least one row.", nameof(q));
+            }
+            if (keyLen <= 0)
+            {
+                throw new ArgumentException("K must contain at least one row.", nameof(k));
+            }
+            if (embeddingDim <= 0)
+            {
+                throw new ArgumentException("Q must contain at least one column.", nameof(q));
+            }
+
+            if (k.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("K width must match Q width.", nameof(k));
+            }
+
+            if (v.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("V width must match Q width.", nameof(v));
+            }
+
+            if (valueLen != keyLen)
+            {
+                throw new ArgumentException("V row count must match K row count.", nameof(v));
+            }
+
+            if (embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dimension must be divisible by numHeads.", nameof(numHeads));
+            }
+
+            if (mask != null && (mask.GetLength(0) != queryLen || mask.GetLength(1) != keyLen))
+            {
+                throw new ArgumentException($"Mask shape must be [{queryLen},{keyLen}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));
+            }
+
+            if (causal && queryLen != keyLen)
+            {
+                throw new ArgumentException("The simple causal path assumes queryLen == keyLen. Use an explicit mask for cross-attention or cached decoding.");
+            }
+
+            int headDim = embeddingDim / numHeads;
+            float scale = 1.0f / MathF.Sqrt(headDim);
+
+            var output = new float[queryLen, embeddingDim];
+            float[] scores = ArrayPool<float>.Shared.Rent(keyLen);
+
+            try
+            {
+                for (int head = 0; head < numHeads; head++)
+                {
+                    int offset = head * headDim;
+
+                    for (int qIndex = 0; qIndex < queryLen; qIndex++)
+                    {
+                        int usableKeyLen = causal ? Math.Min(qIndex + 1, keyLen) : keyLen;
+
+                        float maxScore = float.NegativeInfinity;
+
+                        for (int keyIndex = 0; keyIndex < usableKeyLen; keyIndex++)
+                        {
+                            if (mask != null && !mask[qIndex, keyIndex])
+                            {
+                                scores[keyIndex] = float.NegativeInfinity;
+                                continue;
+                            }
+
+                            float dot = 0.0f;
+
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                dot += q[qIndex, offset + d] * k[keyIndex, offset + d];
+                            }
+
+                            float score = dot * scale;
+                            scores[keyIndex] = score;
+
+                            if (score > maxScore)
+                            {
+                                maxScore = score;
+                            }
+                        }
+
+                        if (float.IsNegativeInfinity(maxScore))
+                        {
+                            continue;
+                        }
+
+                        float sumExp = 0.0f;
+
+                        for (int keyIndex = 0; keyIndex < usableKeyLen; keyIndex++)
+                        {
+                            float score = scores[keyIndex];
+
+                            if (float.IsNegativeInfinity(score))
+                            {
+                                scores[keyIndex] = 0.0f;
+                                continue;
+                            }
+
+                            float exp = MathF.Exp(score - maxScore);
+                            scores[keyIndex] = exp;
+                            sumExp += exp;
+                        }
+
+                        if (sumExp <= 0.0f || float.IsNaN(sumExp) || float.IsInfinity(sumExp))
+                        {
+                            continue;
+                        }
+
+                        float invSumExp = 1.0f / sumExp;
+
+                        for (int keyIndex = 0; keyIndex < usableKeyLen; keyIndex++)
+                        {
+                            float weight = scores[keyIndex] * invSumExp;
+
+                            if (weight == 0.0f)
+                            {
+                                continue;
+                            }
+
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                output[qIndex, offset + d] += weight * v[keyIndex, offset + d];
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(scores);
+            }
+
+            return output;
+        }
         /*
         public (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackward(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool useDecoderMask = false)
         {
@@ -1491,7 +1654,158 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             return result;
         }
+        #region Fused QKV Projection
 
+        public (float[,] Q, float[,] K, float[,] V) ProjectQKV(float[,] input, float[,] WQ, float[] biasQ, float[,] WK, float[] biasK, float[,] WV, float[] biasV)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (WQ == null) throw new ArgumentNullException(nameof(WQ));
+            if (WK == null) throw new ArgumentNullException(nameof(WK));
+            if (WV == null) throw new ArgumentNullException(nameof(WV));
+            if (biasQ == null) throw new ArgumentNullException(nameof(biasQ));
+            if (biasK == null) throw new ArgumentNullException(nameof(biasK));
+            if (biasV == null) throw new ArgumentNullException(nameof(biasV));
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+
+            int qDim = WQ.GetLength(0);
+            int kDim = WK.GetLength(0);
+            int vDim = WV.GetLength(0);
+
+            if (WQ.GetLength(1) != inputDim)
+                throw new ArgumentException("WQ input dimension does not match input width.", nameof(WQ));
+
+            if (WK.GetLength(1) != inputDim)
+                throw new ArgumentException("WK input dimension does not match input width.", nameof(WK));
+
+            if (WV.GetLength(1) != inputDim)
+                throw new ArgumentException("WV input dimension does not match input width.", nameof(WV));
+
+            if (biasQ.Length != qDim)
+                throw new ArgumentException("biasQ length does not match WQ output dimension.", nameof(biasQ));
+
+            if (biasK.Length != kDim)
+                throw new ArgumentException("biasK length does not match WK output dimension.", nameof(biasK));
+
+            if (biasV.Length != vDim)
+                throw new ArgumentException("biasV length does not match WV output dimension.", nameof(biasV));
+
+            if (qDim != kDim || qDim != vDim)
+                throw new ArgumentException("Q, K and V output dimensions must match.");
+
+            var Q = new float[rows, qDim];
+            var K = new float[rows, kDim];
+            var V = new float[rows, vDim];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int o = 0; o < qDim; o++)
+                {
+                    float qSum = biasQ[o];
+                    float kSum = biasK[o];
+                    float vSum = biasV[o];
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+
+                        qSum += WQ[o, d] * x;
+                        kSum += WK[o, d] * x;
+                        vSum += WV[o, d] * x;
+                    }
+
+                    Q[i, o] = qSum;
+                    K[i, o] = kSum;
+                    V[i, o] = vSum;
+                }
+            }
+
+            return (Q, K, V);
+        }
+
+        public float[,] BackpropQKV(float[,] input, float[,] dQ, float[,] dK, float[,] dV, float[,] WQ, float[,] WK, float[,] WV, float[,] WQGrad, float[] biasQGrad, float[,] WKGrad, float[] biasKGrad, float[,] WVGrad, float[] biasVGrad)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (dQ == null) throw new ArgumentNullException(nameof(dQ));
+            if (dK == null) throw new ArgumentNullException(nameof(dK));
+            if (dV == null) throw new ArgumentNullException(nameof(dV));
+            if (WQ == null) throw new ArgumentNullException(nameof(WQ));
+            if (WK == null) throw new ArgumentNullException(nameof(WK));
+            if (WV == null) throw new ArgumentNullException(nameof(WV));
+            if (WQGrad == null) throw new ArgumentNullException(nameof(WQGrad));
+            if (WKGrad == null) throw new ArgumentNullException(nameof(WKGrad));
+            if (WVGrad == null) throw new ArgumentNullException(nameof(WVGrad));
+            if (biasQGrad == null) throw new ArgumentNullException(nameof(biasQGrad));
+            if (biasKGrad == null) throw new ArgumentNullException(nameof(biasKGrad));
+            if (biasVGrad == null) throw new ArgumentNullException(nameof(biasVGrad));
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+
+            int qDim = WQ.GetLength(0);
+            int kDim = WK.GetLength(0);
+            int vDim = WV.GetLength(0);
+
+            if (qDim != kDim || qDim != vDim)
+                throw new ArgumentException("Q, K and V dimensions must match.");
+
+            int outputDim = qDim;
+
+            if (WQ.GetLength(1) != inputDim || WK.GetLength(1) != inputDim || WV.GetLength(1) != inputDim)
+                throw new ArgumentException("Q/K/V weight input dimensions must match input width.");
+
+            if (dQ.GetLength(0) != rows || dK.GetLength(0) != rows || dV.GetLength(0) != rows)
+                throw new ArgumentException("dQ, dK and dV row counts must match input row count.");
+
+            if (dQ.GetLength(1) != outputDim || dK.GetLength(1) != outputDim || dV.GetLength(1) != outputDim)
+                throw new ArgumentException("dQ, dK and dV widths must match Q/K/V output dimension.");
+
+            if (WQGrad.GetLength(0) != outputDim || WQGrad.GetLength(1) != inputDim)
+                throw new ArgumentException("WQGrad shape mismatch.", nameof(WQGrad));
+
+            if (WKGrad.GetLength(0) != outputDim || WKGrad.GetLength(1) != inputDim)
+                throw new ArgumentException("WKGrad shape mismatch.", nameof(WKGrad));
+
+            if (WVGrad.GetLength(0) != outputDim || WVGrad.GetLength(1) != inputDim)
+                throw new ArgumentException("WVGrad shape mismatch.", nameof(WVGrad));
+
+            if (biasQGrad.Length != outputDim || biasKGrad.Length != outputDim || biasVGrad.Length != outputDim)
+                throw new ArgumentException("Q/K/V bias gradient lengths must match output dimension.");
+
+            var dInput = new float[rows, inputDim];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float dq = dQ[i, o];
+                    float dk = dK[i, o];
+                    float dv = dV[i, o];
+
+                    biasQGrad[o] += dq;
+                    biasKGrad[o] += dk;
+                    biasVGrad[o] += dv;
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+
+                        WQGrad[o, d] += dq * x;
+                        WKGrad[o, d] += dk * x;
+                        WVGrad[o, d] += dv * x;
+
+                        dInput[i, d] += dq * WQ[o, d]
+                                      + dk * WK[o, d]
+                                      + dv * WV[o, d];
+                    }
+                }
+            }
+
+            return dInput;
+        }
+
+        #endregion
         #endregion
 
         #region Transformer training
