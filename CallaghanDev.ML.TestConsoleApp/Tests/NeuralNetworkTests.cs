@@ -16,6 +16,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             CountNumber++;
             Run(Tests(), $"{CountNumber} * Neural Network");
         }
+        AccelerationType _accelerationType;
+        public NeuralNetworkTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
 
         private (Action test, string name)[] Tests() => new (Action test, string name)[]
         {
@@ -41,7 +46,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertLearnsTruthTable(
                 testName: "XOR",
                 networkFactory: () => NewBinaryNetwork(
-                    accelerationType: AccelerationType.CPU,
+                    accelerationType: _accelerationType,
                     activationType: ActivationType.Leakyrelu,
                     hiddenLayers: 1,
                     hiddenLayerWidth: 4,
@@ -70,7 +75,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 inputCount: 2,
                 inputMin: -maxTheta,
                 inputMax: maxTheta,
-                accelerationType: AccelerationType.CPU,
+                accelerationType: _accelerationType,
                 hiddenLayers: 2,
                 hiddenLayerWidth: 16,
                 outputCount: 1,
@@ -117,7 +122,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertLearnsTruthTable(
                 testName: "AND GPU-labelled original config",
                 networkFactory: () => NewBinaryNetwork(
-                    accelerationType: AccelerationType.CPU,
+                    accelerationType: _accelerationType,
                     activationType: ActivationType.Tanh,
                     hiddenLayers: 1,
                     hiddenLayerWidth: 4,
@@ -144,7 +149,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertLearnsTruthTable(
                 testName: "AND CPU",
                 networkFactory: () => NewBinaryNetwork(
-                    accelerationType: AccelerationType.CPU,
+                    accelerationType: _accelerationType,
                     activationType: ActivationType.Tanh,
                     hiddenLayers: 1,
                     hiddenLayerWidth: 4,
@@ -171,7 +176,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertLearnsTruthTable(
                 testName: "OR",
                 networkFactory: () => NewBinaryNetwork(
-                    accelerationType: AccelerationType.CPU,
+                    accelerationType: _accelerationType,
                     activationType: ActivationType.Tanh,
                     hiddenLayers: 1,
                     hiddenLayerWidth: 4,
@@ -214,7 +219,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     inputCount: 784,
                     inputMin: 0f,
                     inputMax: 1f,
-                    accelerationType: AccelerationType.GPU,
+                    accelerationType: _accelerationType,
                     hiddenLayers: 10,
                     hiddenLayerWidth: 784,
                     outputCount: 10,
@@ -231,7 +236,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                     inputCount: 784,
                     inputMin: 0f,
                     inputMax: 1f,
-                    accelerationType: AccelerationType.CPU,
+                    accelerationType: _accelerationType,
                     hiddenLayers: 10,
                     hiddenLayerWidth: 784,
                     outputCount: 10,

@@ -30,13 +30,13 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private Action<Index3D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int> _timeDecayedDWeightsDvKernel;
         private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>> _timeDecayedDotWeightKernel;
         private Action<Index3D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, float, int> _timeDecayedDqDkBiasKernel;
-
         private void InitTransformerTrainingKernels()
         {
             _matScaleInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, float>(MatScaleInPlaceKernel);
             _vecScaleInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, float>(VecScaleInPlaceKernel);
             _matUpdateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, float>(MatUpdateKernel);
             _vecUpdateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(VecUpdateKernel);
+            _vecUpdateClampedKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float, float, float>(VecUpdateClampedKernel);
             _embedTokensKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(EmbedTokensKernel);
             _addBiasPosKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(AddBiasPosKernel);
             _sigmoidInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>>(SigmoidInPlaceKernel);
@@ -1118,5 +1118,49 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         }
 
         #endregion
+
+
+        private Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float, float, float> _vecUpdateClampedKernel;
+        private static void VecUpdateClampedKernel(Index1D i, ArrayView1D<float, Stride1D.Dense> weights, ArrayView1D<float, Stride1D.Dense> gradients, float learningRate, float minValue, float maxValue)
+        {
+            float value = weights[i] - learningRate * gradients[i];
+
+            if (value < minValue)
+            {
+                value = minValue;
+            }
+            else if (value > maxValue)
+            {
+                value = maxValue;
+            }
+
+            weights[i] = value;
+        }
+
+        public void VectorUpdateClamped(float[] weights, float[] gradients, float learningRate, float minValue, float maxValue)
+        {
+            int n = weights.Length;
+
+            if (!ShouldUseGpu(n))
+            {
+                _mutliThreadCPU.VectorUpdateClamped(weights, gradients, learningRate, minValue, maxValue);
+                return;
+            }
+
+            var bufW = _accelerator.Allocate1D<float>(n);
+            var bufG = _accelerator.Allocate1D<float>(n);
+            try
+            {
+                bufW.CopyFromCPU(weights);
+                bufG.CopyFromCPU(gradients);
+                _vecUpdateClampedKernel(new Index1D(n), bufW.View, bufG.View, learningRate, minValue, maxValue);
+                bufW.CopyToCPU(weights);
+            }
+            finally
+            {
+                bufW.Dispose();
+                bufG.Dispose();
+            }
+        }
     }
 }

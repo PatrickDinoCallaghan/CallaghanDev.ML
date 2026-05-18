@@ -286,5 +286,40 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         void SigmoidInPlace(float[,] matrix);
         void Dispose();
+
+        void ZeroMatrixColumns(float[,] matrix, int columnCount);
+
+        (float[,] K, float[,] V) ProjectKV(float[,] input, float[,] WK, float[] biasK, float[,] WV, float[] biasV);
+
+        float[,] BackpropKV(float[,] input, float[,] dK, float[,] dV, float[,] WK, float[,] WV, float[,] WKGrad, float[] biasKGrad, float[,] WVGrad, float[] biasVGrad);
+
+        void Matrix3DAddInPlace(float[,,] target, float[,,] addend);
+
+        void Matrix3DUpdate(float[,,] weights, float[,,] gradients, float learningRate);
+
+        void VectorUpdateClamped(float[] weights, float[] gradients, float learningRate, float minValue, float maxValue);
+
+        (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews, int numPrice) BuildMmtacContextWithPrice(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] priceContextHidden, float[] priceContextTimes, float[,] contextTypeEmbedding);
+
+        (float loss, float[,] dHidden) BackpropMmtacOutputHeads(
+            float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence,
+            float[,] targetRegression, float[,] targetRange, float[,] targetQuality, float[,] targetDirection, float[,] targetMidDirection,
+            float[] previousClose, float[] confidenceTargets,
+            float[,] hidden, float[,] regressionLogits, float[] rangeLogits,
+            float[,] regressionProjection, float[,] rangeProjection, float[,] qualityProjection, float[,] directionProjection, float[,] midDirectionProjection, float[,] confidenceProjection,
+            float[,] regressionProjectionGrad, float[] regressionBiasGrad,
+            float[,] rangeProjectionGrad, float[] rangeBiasGrad,
+            float[,] qualityProjectionGrad, float[] qualityBiasGrad,
+            float[,] directionProjectionGrad, float[] directionBiasGrad,
+            float[,] midDirectionProjectionGrad, float[] midDirectionBiasGrad,
+            float[,] confidenceProjectionGrad, float[] confidenceBiasGrad,
+            float rangeLossWeight, float qualityLossWeight, float directionLossWeight, float midDirectionLossWeight,
+            float closeDirectionConsistencyWeight, float closeDirectionConsistencyMargin, float confidenceLossWeight, bool useConfidenceHead);
+
+        void AccumulateMmtacContextGradients(float[,] dContextA, float[,] dContextB, float[,] contextTypeEmbeddingGrad, float[,] dLiveNewsHidden, float[] dGlobalHidden, int numGlobal, int numStoredNews, int numNews, int numLiveNews, int numPriceContext, int totalContext, int priceOffset);
+
+        void AccumulateGlobalProjectionGradients(float[] dGlobalHidden, float[] globalFeatures, float[,] projectionGrad, float[] biasGrad);
+
+        float[,] ExpandMeanPoolGradient(float[,] pooledGradient, int rowIndex, int rowCount, int embeddingDim);
     }
 }

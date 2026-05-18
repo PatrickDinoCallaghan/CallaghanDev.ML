@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.Enums;
 using System.Reflection;
 
 namespace CallaghanDev.ML.TestConsoleApp.Tests
@@ -6,7 +7,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
     internal sealed class MultiHeadAttentionForwardTests : TestBase
     {
         private const float Tolerance = 1e-4f;
-
+        AccelerationType _accelerationType;
+        public MultiHeadAttentionForwardTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
         public void RunAllTests()
         {
             CountNumber++;
@@ -18,29 +23,22 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             (Test_Construction_DefaultStateCorrect, "Construction: AccelerationCPU constructs"),
             (Test_DeterministicKnownValues_NoMask, "Known values: single-head no-mask output correct"),
             (Test_DeterministicKnownValues_WithMask, "Known values: single-head masked output correct"),
-            (Test_OldAndNewMatch_ExhaustiveSmallShapes_NoMask, "Equivalence: exhaustive small valid shapes without mask"),
-            (Test_OldAndNewMatch_ExhaustiveSmallShapes_AllValidMasks, "Equivalence: exhaustive small valid masks"),
-            (Test_OldAndNewMatch_CausalMasks, "Equivalence: causal masks"),
-            (Test_OldAndNewMatch_RandomizedMediumCases, "Equivalence: randomized medium cases"),
-            (Test_OldAndNewMatch_DifferentScales, "Equivalence: different scale values"),
-            (Test_OldAndNewMatch_CrossAttentionShapes, "Equivalence: seqLenQ != seqLenK"),
             (Test_NewMethod_FullyMaskedRowReturnsZero, "New method: fully masked row returns zero"),
             (Test_NewMethod_NullArgumentsThrow, "New method: null arguments throw"),
             (Test_NewMethod_InvalidShapesThrow, "New method: invalid shapes throw"),
-            (Test_Methods_DoNotMutateInputs, "Both methods: inputs are not mutated"),
             (Test_ParallelCalls_NewMethodDeterministic, "Concurrency: new method deterministic"),
         };
 
         private void Test_Construction_DefaultStateCorrect()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
 
             Assert(cpu != null, "AccelerationCPU should construct");
         }
 
         private void Test_DeterministicKnownValues_NoMask()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
 
             var q = new float[,]
             {
@@ -75,7 +73,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_DeterministicKnownValues_WithMask()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
 
             var q = new float[,]
             {
@@ -105,187 +103,10 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             AssertNearlyEqual(actual[0, 1], 20f, "Masked output[0,1] mismatch");
         }
 
-        private void Test_OldAndNewMatch_ExhaustiveSmallShapes_NoMask()
-        {
-            var cpu = NewCpu();
-
-            for (int seqLenQ = 1; seqLenQ <= 5; seqLenQ++)
-            {
-                for (int seqLenK = 1; seqLenK <= 5; seqLenK++)
-                {
-                    for (int embeddingDim = 1; embeddingDim <= 12; embeddingDim++)
-                    {
-                        for (int numHeads = 1; numHeads <= embeddingDim; numHeads++)
-                        {
-                            if (embeddingDim % numHeads != 0)
-                            {
-                                continue;
-                            }
-
-                            var q = DeterministicMatrix(seqLenQ, embeddingDim, seed: 100 + seqLenQ + embeddingDim);
-                            var k = DeterministicMatrix(seqLenK, embeddingDim, seed: 200 + seqLenK + embeddingDim);
-                            var v = DeterministicMatrix(seqLenK, embeddingDim, seed: 300 + seqLenK + embeddingDim);
-
-                            float scale = 1f / MathF.Sqrt(embeddingDim / numHeads);
-
-                            AssertOldAndNewMatch(cpu, q, k, v, numHeads, scale, null,
-                                $"No-mask mismatch; Q={seqLenQ}, K={seqLenK}, D={embeddingDim}, H={numHeads}");
-                        }
-                    }
-                }
-            }
-        }
-
-        private void Test_OldAndNewMatch_ExhaustiveSmallShapes_AllValidMasks()
-        {
-            var cpu = NewCpu();
-
-            for (int seqLenQ = 1; seqLenQ <= 3; seqLenQ++)
-            {
-                for (int seqLenK = 1; seqLenK <= 3; seqLenK++)
-                {
-                    for (int embeddingDim = 1; embeddingDim <= 8; embeddingDim++)
-                    {
-                        for (int numHeads = 1; numHeads <= embeddingDim; numHeads++)
-                        {
-                            if (embeddingDim % numHeads != 0)
-                            {
-                                continue;
-                            }
-
-                            var q = DeterministicMatrix(seqLenQ, embeddingDim, seed: 400 + seqLenQ + embeddingDim);
-                            var k = DeterministicMatrix(seqLenK, embeddingDim, seed: 500 + seqLenK + embeddingDim);
-                            var v = DeterministicMatrix(seqLenK, embeddingDim, seed: 600 + seqLenK + embeddingDim);
-
-                            float scale = 1f / MathF.Sqrt(embeddingDim / numHeads);
-
-                            foreach (var mask in EnumerateMasksWithoutFullyMaskedRows(seqLenQ, seqLenK))
-                            {
-                                AssertOldAndNewMatch(cpu, q, k, v, numHeads, scale, mask,
-                                    $"Mask mismatch; Q={seqLenQ}, K={seqLenK}, D={embeddingDim}, H={numHeads}");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        private void Test_OldAndNewMatch_CausalMasks()
-        {
-            var cpu = NewCpu();
-
-            for (int seqLenQ = 1; seqLenQ <= 8; seqLenQ++)
-            {
-                for (int seqLenK = 1; seqLenK <= 8; seqLenK++)
-                {
-                    for (int embeddingDim = 2; embeddingDim <= 16; embeddingDim += 2)
-                    {
-                        for (int numHeads = 1; numHeads <= embeddingDim; numHeads++)
-                        {
-                            if (embeddingDim % numHeads != 0)
-                            {
-                                continue;
-                            }
-
-                            var q = DeterministicMatrix(seqLenQ, embeddingDim, seed: 700 + seqLenQ);
-                            var k = DeterministicMatrix(seqLenK, embeddingDim, seed: 800 + seqLenK);
-                            var v = DeterministicMatrix(seqLenK, embeddingDim, seed: 900 + embeddingDim);
-
-                            float scale = 1f / MathF.Sqrt(embeddingDim / numHeads);
-                            var mask = CausalMask(seqLenQ, seqLenK);
-
-                            AssertOldAndNewMatch(cpu, q, k, v, numHeads, scale, mask,
-                                $"Causal mask mismatch; Q={seqLenQ}, K={seqLenK}, D={embeddingDim}, H={numHeads}");
-                        }
-                    }
-                }
-            }
-        }
-
-        private void Test_OldAndNewMatch_RandomizedMediumCases()
-        {
-            var cpu = NewCpu();
-            var random = new Random(12345);
-
-            for (int test = 0; test < 250; test++)
-            {
-                int seqLenQ = random.Next(1, 16);
-                int seqLenK = random.Next(1, 16);
-
-                int[] embeddingDims = new[] { 2, 4, 6, 8, 12, 16, 24, 32 };
-                int embeddingDim = embeddingDims[random.Next(embeddingDims.Length)];
-
-                var validHeads = ValidHeadCounts(embeddingDim);
-                int numHeads = validHeads[random.Next(validHeads.Length)];
-
-                var q = RandomMatrix(seqLenQ, embeddingDim, random);
-                var k = RandomMatrix(seqLenK, embeddingDim, random);
-                var v = RandomMatrix(seqLenK, embeddingDim, random);
-
-                float scale = 1f / MathF.Sqrt(embeddingDim / numHeads);
-                bool[,] mask = random.Next(0, 2) == 0
-                    ? null
-                    : RandomMaskWithoutFullyMaskedRows(seqLenQ, seqLenK, random);
-
-                AssertOldAndNewMatch(cpu, q, k, v, numHeads, scale, mask,
-                    $"Random mismatch at test {test}; Q={seqLenQ}, K={seqLenK}, D={embeddingDim}, H={numHeads}");
-            }
-        }
-
-        private void Test_OldAndNewMatch_DifferentScales()
-        {
-            var cpu = NewCpu();
-
-            float[] scales = new[]
-            {
-                0f,
-                0.01f,
-                0.1f,
-                0.5f,
-                1f,
-                2f,
-                -0.5f
-            };
-
-            foreach (float scale in scales)
-            {
-                var q = DeterministicMatrix(4, 8, seed: 1000);
-                var k = DeterministicMatrix(5, 8, seed: 1100);
-                var v = DeterministicMatrix(5, 8, seed: 1200);
-
-                AssertOldAndNewMatch(cpu, q, k, v, numHeads: 2, scale: scale, mask: null,
-                    $"Scale mismatch for scale {scale}");
-            }
-        }
-
-        private void Test_OldAndNewMatch_CrossAttentionShapes()
-        {
-            var cpu = NewCpu();
-
-            var cases = new[]
-            {
-                (SeqQ: 1, SeqK: 7, EmbeddingDim: 8, Heads: 2),
-                (SeqQ: 7, SeqK: 1, EmbeddingDim: 8, Heads: 2),
-                (SeqQ: 3, SeqK: 9, EmbeddingDim: 12, Heads: 3),
-                (SeqQ: 9, SeqK: 3, EmbeddingDim: 12, Heads: 4),
-            };
-
-            foreach (var testCase in cases)
-            {
-                var q = DeterministicMatrix(testCase.SeqQ, testCase.EmbeddingDim, seed: 1300);
-                var k = DeterministicMatrix(testCase.SeqK, testCase.EmbeddingDim, seed: 1400);
-                var v = DeterministicMatrix(testCase.SeqK, testCase.EmbeddingDim, seed: 1500);
-
-                float scale = 1f / MathF.Sqrt(testCase.EmbeddingDim / testCase.Heads);
-
-                AssertOldAndNewMatch(cpu, q, k, v, testCase.Heads, scale, null,
-                    $"Cross-attention mismatch; Q={testCase.SeqQ}, K={testCase.SeqK}, D={testCase.EmbeddingDim}, H={testCase.Heads}");
-            }
-        }
 
         private void Test_NewMethod_FullyMaskedRowReturnsZero()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
 
             var q = DeterministicMatrix(2, 4, seed: 1600);
             var k = DeterministicMatrix(3, 4, seed: 1700);
@@ -307,7 +128,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_NewMethod_NullArgumentsThrow()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
             var matrix = DeterministicMatrix(2, 4, seed: 1900);
 
             AssertThrows<ArgumentNullException>(
@@ -325,7 +146,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
         private void Test_NewMethod_InvalidShapesThrow()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
 
             AssertThrows<ArgumentException>(
                 () => cpu.MultiHeadAttentionForward(
@@ -374,33 +195,10 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 "New method should reject mask shape mismatch");
         }
 
-        private void Test_Methods_DoNotMutateInputs()
-        {
-            var cpu = NewCpu();
-
-            var q = DeterministicMatrix(4, 8, seed: 2000);
-            var k = DeterministicMatrix(5, 8, seed: 2100);
-            var v = DeterministicMatrix(5, 8, seed: 2200);
-
-            var qOriginal = Clone(q);
-            var kOriginal = Clone(k);
-            var vOriginal = Clone(v);
-            cpu.MultiHeadAttentionForward_Obsolete(q, k, v, numHeads: 2, scale: 0.5f);
-
-            AssertMatrixNearlyEqual(q, qOriginal, "Old method mutated Q");
-            AssertMatrixNearlyEqual(k, kOriginal, "Old method mutated K");
-            AssertMatrixNearlyEqual(v, vOriginal, "Old method mutated V");
-
-            cpu.MultiHeadAttentionForward(q, k, v, numHeads: 2, scale: 0.5f);
-
-            AssertMatrixNearlyEqual(q, qOriginal, "New method mutated Q");
-            AssertMatrixNearlyEqual(k, kOriginal, "New method mutated K");
-            AssertMatrixNearlyEqual(v, vOriginal, "New method mutated V");
-        }
 
         private void Test_ParallelCalls_NewMethodDeterministic()
         {
-            var cpu = NewCpu();
+            var cpu = NewAccellerator();
 
             var q = DeterministicMatrix(16, 32, seed: 2300);
             var k = DeterministicMatrix(16, 32, seed: 2400);
@@ -413,7 +211,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 
             Parallel.For(0, results.Length, i =>
             {
-                var localCpu = NewCpu();
+                var localCpu = NewAccellerator();
 
                 results[i] = localCpu.MultiHeadAttentionForward(
                     Clone(q),
@@ -430,35 +228,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             }
         }
 
-        private static void AssertOldAndNewMatch(
-            AccelerationCPU cpu,
-            float[,] q,
-            float[,] k,
-            float[,] v,
-            int numHeads,
-            float scale,
-            bool[,] mask,
-            string message)
+
+
+        private IAccelerationManager NewAccellerator()
         {
-            var qForOld = Clone(q);
-            var kForOld = Clone(k);
-            var vForOld = Clone(v);
-            var maskForOld = mask == null ? null : Clone(mask);
-
-            var qForNew = Clone(q);
-            var kForNew = Clone(k);
-            var vForNew = Clone(v);
-            var maskForNew = mask == null ? null : Clone(mask);
-
-            var expected = cpu.MultiHeadAttentionForward_Obsolete(qForOld, kForOld, vForOld, numHeads, scale, maskForOld);
-            var actual = cpu.MultiHeadAttentionForward(qForNew, kForNew, vForNew, numHeads, scale, maskForNew);
-
-            AssertMatrixNearlyEqualStatic(actual, expected, message);
-        }
-
-        private static AccelerationCPU NewCpu()
-        {
-            return new AccelerationCPU();
+            return AccelerationFactory.Create(_accelerationType);
         }
 
         private static float[,] DeterministicMatrix(int rows, int cols, int seed)

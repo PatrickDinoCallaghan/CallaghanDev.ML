@@ -562,295 +562,66 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             if (cache.RangeLogits == null)
                 throw new ArgumentException("cache.RangeLogits is required. Call ProjectToOutputs(..., cache) before BackwardPass.", nameof(cache));
 
-            int sl = reg.GetLength(0);
-            int rDim = MmtacOutputConfig.RegressionOutputCount;
-            int ed = _config.Price.EmbeddingDim;
-
-            float mseLoss = 0f;
-
-            var dHigh = new float[sl];
-            var dLow = new float[sl];
-            var dClose = new float[sl];
-
-            // Missing variable that caused your compile error.
-            var dRangeOutput = new float[sl];
-
-            float invRegCount = 1.0f / (sl * rDim);
-
-            for (int t = 0; t < sl; t++)
-            {
-                float diffHigh = reg[t, 0] - tgtReg[t, 0];
-                float diffLow = reg[t, 1] - tgtReg[t, 1];
-                float diffClose = reg[t, 2] - tgtReg[t, 2];
-
-                mseLoss += diffHigh * diffHigh + diffLow * diffLow + diffClose * diffClose;
-
-                dHigh[t] = 2f * diffHigh * invRegCount;
-                dLow[t] = 2f * diffLow * invRegCount;
-                dClose[t] = 2f * diffClose * invRegCount;
-            }
-
-            mseLoss *= invRegCount;
-
-            float closeDirConsistencyLoss = 0f;
-            float closeDirWeight = _config.Output.CloseDirectionConsistencyWeight;
-            float closeDirMargin = _config.Output.CloseDirectionConsistencyMargin;
-
-            if (closeDirWeight > 0f && prevClose != null)
-            {
-                for (int t = 0; t < sl; t++)
-                {
-                    float sign = tgtDir[t, 0] >= 0.5f ? 1f : -1f;
-                    float z = sign * (reg[t, 2] - prevClose[t] - sign * closeDirMargin);
-
-                    if (z > 20f)
-                        closeDirConsistencyLoss += MathF.Exp(-z);
-                    else if (z < -20f)
-                        closeDirConsistencyLoss += -z;
-                    else
-                        closeDirConsistencyLoss += MathF.Log(1f + MathF.Exp(-z));
-
-                    float sigmoidNegZ;
-
-                    if (z >= 0f)
-                    {
-                        float ez = MathF.Exp(-z);
-                        sigmoidNegZ = ez / (1f + ez);
-                    }
-                    else
-                    {
-                        float ez = MathF.Exp(z);
-                        sigmoidNegZ = 1f / (1f + ez);
-                    }
-
-                    dClose[t] += -sign * sigmoidNegZ * closeDirWeight / sl;
-                }
-
-                closeDirConsistencyLoss /= sl;
-            }
-
-            float rangeLoss = 0f;
-
-            for (int t = 0; t < sl; t++)
-            {
-                float diff = range[t, 0] - tgtRange[t, 0];
-                rangeLoss += diff * diff;
-
-                dRangeOutput[t] = 2f * diff / sl * _config.Output.RangeLossWeight;
-            }
-
-            rangeLoss /= sl;
-
-            var dRawRegression = new float[sl, rDim];
-            var dHidden = new float[sl, ed];
-
-            for (int t = 0; t < sl; t++)
-            {
-                float upLogit = cache.RegressionLogits[t, 0];
-                float downLogit = cache.RegressionLogits[t, 1];
-                float rangeLogit = cache.RangeLogits[t];
-
-                float upBase = Softplus(upLogit);
-                float downBase = Softplus(downLogit);
-                float den = upBase + downBase;
-
-                float upShare = den > 1e-6f ? upBase / den : 0.5f;
-                float downShare = 1f - upShare;
-                float rangeValue = Softplus(rangeLogit);
-
-                float gHigh = dHigh[t];
-                float gLow = dLow[t];
-                float gClose = dClose[t];
-                float gRange = dRangeOutput[t];
-
-                float dCloseRaw = gHigh + gLow + gClose;
-
-                // High = Close + Range * upShare
-                // Low  = Close - Range * downShare
-                // Range head also has its own supervised loss.
-                float dRangeValue = gHigh * upShare - gLow * downShare + gRange;
-
-                // upShare changes High positively and Low negatively via downShare = 1 - upShare.
-                float dShare = rangeValue * (gHigh + gLow);
-
-                float dUpBase = 0f;
-                float dDownBase = 0f;
-
-                if (den > 1e-6f)
-                {
-                    float invDenSq = 1f / (den * den);
-
-                    dUpBase = dShare * downBase * invDenSq;
-                    dDownBase = -dShare * upBase * invDenSq;
-                }
-
-                dRawRegression[t, 0] = dUpBase * SoftplusDerivative(upLogit);
-                dRawRegression[t, 1] = dDownBase * SoftplusDerivative(downLogit);
-                dRawRegression[t, 2] = dCloseRaw;
-
-                float dRangeLogit = dRangeValue * SoftplusDerivative(rangeLogit);
-
-                _gradients.RangeBiasGrad[0] += dRangeLogit;
-
-                for (int k = 0; k < ed; k++)
-                {
-                    _gradients.RangeProjectionGrad[0, k] += dRangeLogit * cache.PriceFinalHidden[t, k];
-                    dHidden[t, k] += dRangeLogit * _model.RangeProjection[0, k];
-                }
-            }
-
-            var dHiddenFromRegression = _accel.BackpropOutputProjection(
-                dRawRegression,
+            var outputBackprop = _accel.BackpropMmtacOutputHeads(
+                reg,
+                range,
+                quality,
+                dir,
+                midDir,
+                conf,
+                tgtReg,
+                tgtRange,
+                tgtQuality,
+                tgtDir,
+                tgtMid,
+                prevClose,
+                confTgt,
                 cache.PriceFinalHidden,
+                cache.RegressionLogits,
+                cache.RangeLogits,
                 _model.RegressionProjection,
+                _model.RangeProjection,
+                _model.QualityProjection,
+                _model.DirectionProjection,
+                _model.MidDirectionProjection,
+                _model.ConfidenceProjection,
                 _gradients.RegressionProjectionGrad,
                 _gradients.RegressionBiasGrad,
-                sl,
-                rDim,
-                ed);
+                _gradients.RangeProjectionGrad,
+                _gradients.RangeBiasGrad,
+                _gradients.QualityProjectionGrad,
+                _gradients.QualityBiasGrad,
+                _gradients.DirectionProjectionGrad,
+                _gradients.DirectionBiasGrad,
+                _gradients.MidDirectionProjectionGrad,
+                _gradients.MidDirectionBiasGrad,
+                _gradients.ConfidenceProjectionGrad,
+                _gradients.ConfidenceBiasGrad,
+                _config.Output.RangeLossWeight,
+                _config.Output.QualityLossWeight,
+                _config.Output.DirectionLossWeight,
+                _config.Output.MidDirectionLossWeight,
+                _config.Output.CloseDirectionConsistencyWeight,
+                _config.Output.CloseDirectionConsistencyMargin,
+                _config.Output.UseConfidenceHead ? MathF.Max(0f, _trainConfig.ConfidenceLossWeight) : 0f,
+                _config.Output.UseConfidenceHead);
 
-            _accel.MatrixAddInPlace(dHidden, dHiddenFromRegression);
-
-            float qualityLoss = 0f;
-
-            for (int t = 0; t < sl; t++)
-            {
-                float p = quality[t, 0];
-                float diff = p - tgtQuality[t, 0];
-
-                qualityLoss += diff * diff;
-
-                float dOutput = 2f * diff / sl * _config.Output.QualityLossWeight;
-                float dLogit = dOutput * p * (1f - p);
-
-                _gradients.QualityBiasGrad[0] += dLogit;
-
-                for (int k = 0; k < ed; k++)
-                {
-                    _gradients.QualityProjectionGrad[0, k] += dLogit * cache.PriceFinalHidden[t, k];
-                    dHidden[t, k] += dLogit * _model.QualityProjection[0, k];
-                }
-            }
-
-            qualityLoss /= sl;
-
-            float dirLoss = 0f;
-
-            for (int t = 0; t < sl; t++)
-            {
-                float p = dir[t, 0];
-                float y = tgtDir[t, 0];
-                float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
-
-                dirLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
-
-                float dLogit = (p - y) * _config.Output.DirectionLossWeight / sl;
-
-                _gradients.DirectionBiasGrad[0] += dLogit;
-
-                for (int k = 0; k < ed; k++)
-                {
-                    _gradients.DirectionProjectionGrad[0, k] += dLogit * cache.PriceFinalHidden[t, k];
-                    dHidden[t, k] += dLogit * _model.DirectionProjection[0, k];
-                }
-            }
-
-            dirLoss /= sl;
-
-            float midDirLoss = 0f;
-
-            for (int t = 0; t < sl; t++)
-            {
-                float p = midDir[t, 0];
-                float y = tgtMid[t, 0];
-                float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
-
-                midDirLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
-
-                float dLogit = (p - y) * _config.Output.MidDirectionLossWeight / sl;
-
-                _gradients.MidDirectionBiasGrad[0] += dLogit;
-
-                for (int k = 0; k < ed; k++)
-                {
-                    _gradients.MidDirectionProjectionGrad[0, k] += dLogit * cache.PriceFinalHidden[t, k];
-                    dHidden[t, k] += dLogit * _model.MidDirectionProjection[0, k];
-                }
-            }
-
-            midDirLoss /= sl;
-
-            float confLoss = 0f;
-            float confWeight = _config.Output.UseConfidenceHead
-                ? MathF.Max(0f, _trainConfig.ConfidenceLossWeight)
-                : 0f;
-
-            if (_config.Output.UseConfidenceHead && conf != null && confWeight > 0f)
-            {
-                if (confTgt != null && confTgt.Length < sl)
-                    throw new ArgumentException("confTgt length must be at least the sequence length.", nameof(confTgt));
-
-                for (int t = 0; t < sl; t++)
-                {
-                    float p = conf[t, 0];
-
-                    float y = confTgt != null
-                        ? confTgt[t]
-                        : MathF.Exp(-5f * MathF.Sqrt(Enumerable.Range(0, rDim).Sum(j =>
-                        {
-                            float diff = reg[t, j] - tgtReg[t, j];
-                            return diff * diff;
-                        }) / rDim));
-
-                    float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
-
-                    confLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
-
-                    float dLogit = (p - y) * confWeight / sl;
-
-                    _gradients.ConfidenceBiasGrad[0] += dLogit;
-
-                    for (int k = 0; k < ed; k++)
-                    {
-                        _gradients.ConfidenceProjectionGrad[0, k] += dLogit * cache.PriceFinalHidden[t, k];
-                        dHidden[t, k] += dLogit * _model.ConfidenceProjection[0, k];
-                    }
-                }
-
-                confLoss /= sl;
-            }
+            float outputLoss = outputBackprop.loss;
+            var dHidden = outputBackprop.dHidden;
 
             (float[,] dNewsHidden, float[] dGlobalHidden) = BackpropPriceDecoder(dHidden, cache);
 
             if (!_config.Text.Freeze && dNewsHidden != null && cache.StoryCaches != null)
-                BackpropMultiStoryTextEncoder(dNewsHidden, cache);
-
-            if (_config.Global.GlobalFeatureDim > 0
-                && cache.GlobalTokenEmbedded != null
-                && cache.GlobalRawInput != null
-                && dGlobalHidden != null
-                && _gradients.GlobalFeatureProjectionGrad != null)
             {
-                int gd = _config.Global.GlobalFeatureDim;
-
-                for (int d = 0; d < ed; d++)
-                {
-                    float gToken = dGlobalHidden[d];
-
-                    _gradients.GlobalFeatureBiasGrad[d] += gToken;
-
-                    for (int g = 0; g < gd; g++)
-                        _gradients.GlobalFeatureProjectionGrad[d, g] += gToken * cache.GlobalRawInput[g];
-                }
+                BackpropMultiStoryTextEncoder(dNewsHidden, cache);
             }
 
-            return mseLoss
-                + closeDirWeight * closeDirConsistencyLoss
-                + _config.Output.RangeLossWeight * rangeLoss
-                + _config.Output.QualityLossWeight * qualityLoss
-                + _config.Output.DirectionLossWeight * dirLoss
-                + _config.Output.MidDirectionLossWeight * midDirLoss
-                + confWeight * confLoss;
+            if (_config.Global.GlobalFeatureDim > 0 && cache.GlobalTokenEmbedded != null && cache.GlobalRawInput != null && dGlobalHidden != null  && _gradients.GlobalFeatureProjectionGrad != null)
+            {
+                _accel.AccumulateGlobalProjectionGradients(dGlobalHidden, cache.GlobalRawInput, _gradients.GlobalFeatureProjectionGrad, _gradients.GlobalFeatureBiasGrad);
+            }
+
+            return outputLoss;
         }
         private (float[,] dLiveNewsHidden, float[] dGlobalHidden) BackpropPriceDecoder(float[,] dOut, MmtacForwardCache cache)
         {
@@ -959,58 +730,28 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                         if (dKeyEmb != null)
                         {
-                            for (int gi = 0; gi < numGlobal && gi < totalContext; gi++)
-                            {
-                                for (int j = 0; j < ed; j++)
-                                {
-                                    float g = dKeyEmb[gi, j];
-                                    _gradients.ContextTypeEmbeddingGrad[2, j] += g;
-                                    if (dGlobalHidden != null)
-                                        dGlobalHidden[j] += g;
-                                }
-                            }
-
-                            for (int i = 0; i < numNews; i++)
-                            {
-                                int ctxIdx = numGlobal + i;
-                                if (ctxIdx >= totalContext)
-                                    break;
-
-                                bool isLive = i >= numStoredNews;
-                                int liveIdx = i - numStoredNews;
-
-                                for (int j = 0; j < ed; j++)
-                                {
-                                    float g = dKeyEmb[ctxIdx, j];
-                                    _gradients.ContextTypeEmbeddingGrad[0, j] += g;
-
-                                    if (isLive && dLiveNewsHidden != null && liveIdx >= 0 && liveIdx < numLiveNews)
-                                        dLiveNewsHidden[liveIdx, j] += g;
-                                }
-                            }
-
-                            for (int i = 0; i < numPriceCtx; i++)
-                            {
-                                int ctxIdx = priceOffset + i;
-                                if (ctxIdx >= totalContext)
-                                    break;
-
-                                for (int j = 0; j < ed; j++)
-                                    _gradients.ContextTypeEmbeddingGrad[1, j] += dKeyEmb[ctxIdx, j];
-                            }
+                            _accel.AccumulateMmtacContextGradients(
+                                dKeyEmb,
+                                null,
+                                _gradients.ContextTypeEmbeddingGrad,
+                                dLiveNewsHidden,
+                                dGlobalHidden,
+                                numGlobal,
+                                numStoredNews,
+                                numNews,
+                                numLiveNews,
+                                numPriceCtx,
+                                totalContext,
+                                priceOffset);
                         }
 
                         if (dQueryEmb != null)
                         {
-                            for (int i = 0; i < seqLen; i++)
-                                for (int j = 0; j < ed; j++)
-                                    dCrossRes[i, j] += dQueryEmb[i, j];
+                            _accel.MatrixAddInPlace(dCrossRes, dQueryEmb);
                         }
                     }
 
                     var dFromQ = new float[seqLen, ed];
-                    var dCtxFromK = new float[totalContext, ed];
-                    var dCtxFromV = new float[totalContext, ed];
 
                     _accel.BackpropLinearProjection(
                         bc.NormedSelf,
@@ -1020,61 +761,30 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                         crossGrads.BiasQ_Grad,
                         dFromQ);
 
-                    _accel.BackpropLinearProjection(
+                    var dCtxFromKV = _accel.BackpropKV(
                         cache.TextFinalHidden,
                         dK,
+                        dV,
                         block.CrossAttention.WK,
+                        block.CrossAttention.WV,
                         crossGrads.WK_Grad,
                         crossGrads.BiasK_Grad,
-                        dCtxFromK);
-
-                    _accel.BackpropLinearProjection(
-                        cache.TextFinalHidden,
-                        dV,
-                        block.CrossAttention.WV,
                         crossGrads.WV_Grad,
-                        crossGrads.BiasV_Grad,
-                        dCtxFromV);
+                        crossGrads.BiasV_Grad);
 
-                    for (int gi = 0; gi < numGlobal && gi < totalContext; gi++)
-                    {
-                        for (int j = 0; j < ed; j++)
-                        {
-                            float g = dCtxFromK[gi, j] + dCtxFromV[gi, j];
-                            _gradients.ContextTypeEmbeddingGrad[2, j] += g;
-                            if (dGlobalHidden != null)
-                                dGlobalHidden[j] += g;
-                        }
-                    }
-
-                    for (int i = 0; i < numNews; i++)
-                    {
-                        int ctxIdx = numGlobal + i;
-                        if (ctxIdx >= totalContext)
-                            break;
-
-                        bool isLive = i >= numStoredNews;
-                        int liveIdx = i - numStoredNews;
-
-                        for (int j = 0; j < ed; j++)
-                        {
-                            float g = dCtxFromK[ctxIdx, j] + dCtxFromV[ctxIdx, j];
-                            _gradients.ContextTypeEmbeddingGrad[0, j] += g;
-
-                            if (isLive && dLiveNewsHidden != null && liveIdx >= 0 && liveIdx < numLiveNews)
-                                dLiveNewsHidden[liveIdx, j] += g;
-                        }
-                    }
-
-                    for (int i = 0; i < numPriceCtx; i++)
-                    {
-                        int ctxIdx = priceOffset + i;
-                        if (ctxIdx >= totalContext)
-                            break;
-
-                        for (int j = 0; j < ed; j++)
-                            _gradients.ContextTypeEmbeddingGrad[1, j] += dCtxFromK[ctxIdx, j] + dCtxFromV[ctxIdx, j];
-                    }
+                    _accel.AccumulateMmtacContextGradients(
+                        dCtxFromKV,
+                        null,
+                        _gradients.ContextTypeEmbeddingGrad,
+                        dLiveNewsHidden,
+                        dGlobalHidden,
+                        numGlobal,
+                        numStoredNews,
+                        numNews,
+                        numLiveNews,
+                        numPriceCtx,
+                        totalContext,
+                        priceOffset);
 
                     _accel.MatrixAddInPlace(dFromQ, dCrossRes);
                     dSelfIn = dFromQ;
@@ -1115,10 +825,20 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                 _rotaryPositionEmbedding.ApplyBackwardInPlace(dQSelf, dKSelf, nh);
 
-                var dBlockIn = new float[seqLen, ed];
-                _accel.BackpropLinearProjection(bc.BlockInput, dQSelf, block.SelfAttention.WQ, selfGrads.WQ_Grad, selfGrads.BiasQ_Grad, dBlockIn);
-                _accel.BackpropLinearProjection(bc.BlockInput, dKSelf, block.SelfAttention.WK, selfGrads.WK_Grad, selfGrads.BiasK_Grad, dBlockIn);
-                _accel.BackpropLinearProjection(bc.BlockInput, dVSelf, block.SelfAttention.WV, selfGrads.WV_Grad, selfGrads.BiasV_Grad, dBlockIn);
+                var dBlockIn = _accel.BackpropQKV(
+                    bc.BlockInput,
+                    dQSelf,
+                    dKSelf,
+                    dVSelf,
+                    block.SelfAttention.WQ,
+                    block.SelfAttention.WK,
+                    block.SelfAttention.WV,
+                    selfGrads.WQ_Grad,
+                    selfGrads.BiasQ_Grad,
+                    selfGrads.WK_Grad,
+                    selfGrads.BiasK_Grad,
+                    selfGrads.WV_Grad,
+                    selfGrads.BiasV_Grad);
                 _accel.MatrixAddInPlace(dBlockIn, dSelfRes);
                 dX = dBlockIn;
             }
@@ -1223,17 +943,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 if (tokenCount <= 0)
                     continue;
 
-                float inv = 1.0f / tokenCount;
-                var dTokenHidden = new float[tokenCount, ed];
-
-                for (int t = 0; t < tokenCount; t++)
-                    for (int d = 0; d < ed; d++)
-                        dTokenHidden[t, d] = dSH[s, d] * inv;
+                var dTokenHidden = _accel.ExpandMeanPoolGradient(dSH, s, tokenCount, ed);
 
                 BackpropTextEncoder(dTokenHidden, cache.StoryCaches[s]);
             }
         }
-
         private void BackpropTextEncoder(float[,] dTH, MmtacForwardCache cache)
         {
             int ed = _config.Text.EmbeddingDim;
@@ -1275,10 +989,20 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 var (dQ, dK, dV) = _accel.MultiHeadAttentionBackward(ac.Q, ac.K, ac.V, dC, nh, s, _config.Text.UseDecoderOnly);
                 _rotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, nh);
 
-                var dI = new float[sl, ed];
-                _accel.BackpropLinearProjection(ac.Input, dQ, b.Attention.WQ, ag.WQ_Grad, ag.BiasQ_Grad, dI);
-                _accel.BackpropLinearProjection(ac.Input, dK, b.Attention.WK, ag.WK_Grad, ag.BiasK_Grad, dI);
-                _accel.BackpropLinearProjection(ac.Input, dV, b.Attention.WV, ag.WV_Grad, ag.BiasV_Grad, dI);
+                var dI = _accel.BackpropQKV(
+                    ac.Input,
+                    dQ,
+                    dK,
+                    dV,
+                    b.Attention.WQ,
+                    b.Attention.WK,
+                    b.Attention.WV,
+                    ag.WQ_Grad,
+                    ag.BiasQ_Grad,
+                    ag.WK_Grad,
+                    ag.BiasK_Grad,
+                    ag.WV_Grad,
+                    ag.BiasV_Grad);
                 _accel.MatrixAddInPlace(dI, dAR);
                 dX = dI;
             }
@@ -1581,60 +1305,28 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         }
 
         #region Gradient utilities
-
         private void AccumulateDecayGrads(ContentAwareDecayGradients tgt, ContentAwareDecayGradients src)
         {
-            int nh = src.B2Grad.Length, cd = src.QueryProjectionGrad.GetLength(2);
-            int pd = src.QueryProjectionGrad.GetLength(1), hd = src.B1Grad.GetLength(1);
-            int mid = src.W1Grad.GetLength(2), ntb = src.TimeLogFreqGrad.GetLength(1);
-            int rawDim = src.TimeProjGrad.GetLength(2);
+            if (tgt == null || src == null)
+                return;
 
-            for (int h = 0; h < nh; h++)
-            {
-                tgt.LogBaseDecayRateGrad[h] += src.LogBaseDecayRateGrad[h];
-                tgt.B2Grad[h] += src.B2Grad[h];
-                for (int p = 0; p < pd; p++)
-                {
-                    for (int d = 0; d < cd; d++)
-                    {
-                        tgt.QueryProjectionGrad[h, p, d] += src.QueryProjectionGrad[h, p, d];
-                        tgt.KeyProjectionGrad[h, p, d] += src.KeyProjectionGrad[h, p, d];
-                    }
+            _accel.VectorAccumulate(tgt.LogBaseDecayRateGrad, src.LogBaseDecayRateGrad);
+            _accel.VectorAccumulate(tgt.B2Grad, src.B2Grad);
 
-                    tgt.QueryProjectionBiasGrad[h, p] += src.QueryProjectionBiasGrad[h, p];
-                    tgt.KeyProjectionBiasGrad[h, p] += src.KeyProjectionBiasGrad[h, p];
+            _accel.Matrix3DAddInPlace(tgt.QueryProjectionGrad, src.QueryProjectionGrad);
+            _accel.Matrix3DAddInPlace(tgt.KeyProjectionGrad, src.KeyProjectionGrad);
+            _accel.Matrix3DAddInPlace(tgt.TimeProjGrad, src.TimeProjGrad);
+            _accel.Matrix3DAddInPlace(tgt.MemAttnOutputWGrad, src.MemAttnOutputWGrad);
+            _accel.Matrix3DAddInPlace(tgt.W1Grad, src.W1Grad);
 
-                    for (int r = 0; r < rawDim; r++)
-                    {
-                        tgt.TimeProjGrad[h, p, r] += src.TimeProjGrad[h, p, r];
-                    }
-
-                    tgt.TimeProjBiasGrad[h, p] += src.TimeProjBiasGrad[h, p];
-
-                    for (int q = 0; q < pd; q++)
-                    {
-                        tgt.MemAttnOutputWGrad[h, p, q] += src.MemAttnOutputWGrad[h, p, q];
-                    }
-
-                    tgt.MemAttnOutputBGrad[h, p] += src.MemAttnOutputBGrad[h, p];
-                }
-                for (int bIdx = 0; bIdx < ntb; bIdx++)
-                {
-                    tgt.TimeLogFreqGrad[h, bIdx] += src.TimeLogFreqGrad[h, bIdx];
-                }
-                for (int j = 0; j < hd; j++)
-                {
-                    tgt.B1Grad[h, j] += src.B1Grad[h, j];
-                    tgt.W2Grad[h, j] += src.W2Grad[h, j];
-
-                    for (int k = 0; k < mid; k++)
-                    {
-                        tgt.W1Grad[h, j, k] += src.W1Grad[h, j, k];
-                    }
-                }
-            }
+            _accel.MatrixAddInPlace(tgt.QueryProjectionBiasGrad, src.QueryProjectionBiasGrad);
+            _accel.MatrixAddInPlace(tgt.KeyProjectionBiasGrad, src.KeyProjectionBiasGrad);
+            _accel.MatrixAddInPlace(tgt.TimeLogFreqGrad, src.TimeLogFreqGrad);
+            _accel.MatrixAddInPlace(tgt.TimeProjBiasGrad, src.TimeProjBiasGrad);
+            _accel.MatrixAddInPlace(tgt.MemAttnOutputBGrad, src.MemAttnOutputBGrad);
+            _accel.MatrixAddInPlace(tgt.B1Grad, src.B1Grad);
+            _accel.MatrixAddInPlace(tgt.W2Grad, src.W2Grad);
         }
-
         private void ZeroAllGradients()
         {
             _gradients.Zero();
@@ -1914,13 +1606,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 _accel.VectorUpdate(_model.ConfidenceBias, _gradients.ConfidenceBiasGrad, lr);
             }
 
-            int cteEd = _config.Price.EmbeddingDim;
-
-            for (int t = 0; t < MmtacConfig.ContextTypeCount; t++)
-            {
-                for (int d = 0; d < cteEd; d++)
-                    _model.ContextTypeEmbedding[t, d] -= lr * _gradients.ContextTypeEmbeddingGrad[t, d];
-            }
+            _accel.MatrixUpdate(_model.ContextTypeEmbedding, _gradients.ContextTypeEmbeddingGrad, lr);
         }
         private void UpdateAttn(MultiHeadAttention attn, AttentionGradients ag, float lr)
         {
@@ -1929,61 +1615,30 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             _accel.VectorUpdate(attn.BiasQ, ag.BiasQ_Grad, lr); _accel.VectorUpdate(attn.BiasK, ag.BiasK_Grad, lr);
             _accel.VectorUpdate(attn.BiasV, ag.BiasV_Grad, lr); _accel.VectorUpdate(attn.BiasO, ag.BiasO_Grad, lr);
         }
-
         private void UpdateDecayNetwork(ContentAwareDecayNetwork net, ContentAwareDecayGradients g, float lr)
         {
             if (net == null || g == null)
                 return;
 
-            int nh = net.NumHeads;
-            int cd = net.ContentDim;
-            int pd = net.ProjectionDim;
-            int hd = net.HiddenDim;
-            int mid = net.MLPInputDim;
-            int ntb = net.NumTimeBases;
-            int rawDim = net.TimeRawDim;
-
             float minLogRate = net.GetMinLogBaseDecayRate();
             float maxLogRate = net.GetMaxLogBaseDecayRate();
 
-            for (int h = 0; h < nh; h++)
-            {
-                net.LogBaseDecayRate[h] -= lr * g.LogBaseDecayRateGrad[h];
-                net.LogBaseDecayRate[h] = Math.Clamp(net.LogBaseDecayRate[h], minLogRate, maxLogRate);
-                net.B2[h] -= lr * g.B2Grad[h];
+            _accel.VectorUpdateClamped(net.LogBaseDecayRate, g.LogBaseDecayRateGrad, lr, minLogRate, maxLogRate);
+            _accel.VectorUpdate(net.B2, g.B2Grad, lr);
 
-                for (int p = 0; p < pd; p++)
-                {
-                    for (int d = 0; d < cd; d++)
-                    {
-                        net.QueryProjection[h, p, d] -= lr * g.QueryProjectionGrad[h, p, d];
-                        net.KeyProjection[h, p, d] -= lr * g.KeyProjectionGrad[h, p, d];
-                    }
+            _accel.Matrix3DUpdate(net.QueryProjection, g.QueryProjectionGrad, lr);
+            _accel.Matrix3DUpdate(net.KeyProjection, g.KeyProjectionGrad, lr);
+            _accel.Matrix3DUpdate(net.TimeProj, g.TimeProjGrad, lr);
+            _accel.Matrix3DUpdate(net.MemAttnOutputW, g.MemAttnOutputWGrad, lr);
+            _accel.Matrix3DUpdate(net.W1, g.W1Grad, lr);
 
-                    net.QueryProjectionBias[h, p] -= lr * g.QueryProjectionBiasGrad[h, p];
-                    net.KeyProjectionBias[h, p] -= lr * g.KeyProjectionBiasGrad[h, p];
-
-                    for (int r = 0; r < rawDim; r++)
-                        net.TimeProj[h, p, r] -= lr * g.TimeProjGrad[h, p, r];
-                    net.TimeProjBias[h, p] -= lr * g.TimeProjBiasGrad[h, p];
-
-                    for (int q = 0; q < pd; q++)
-                        net.MemAttnOutputW[h, p, q] -= lr * g.MemAttnOutputWGrad[h, p, q];
-                    net.MemAttnOutputB[h, p] -= lr * g.MemAttnOutputBGrad[h, p];
-                }
-
-                for (int b = 0; b < ntb; b++)
-                    net.TimeLogFreq[h, b] -= lr * g.TimeLogFreqGrad[h, b];
-
-                for (int j = 0; j < hd; j++)
-                {
-                    net.B1[h, j] -= lr * g.B1Grad[h, j];
-                    net.W2[h, j] -= lr * g.W2Grad[h, j];
-
-                    for (int k = 0; k < mid; k++)
-                        net.W1[h, j, k] -= lr * g.W1Grad[h, j, k];
-                }
-            }
+            _accel.MatrixUpdate(net.QueryProjectionBias, g.QueryProjectionBiasGrad, lr);
+            _accel.MatrixUpdate(net.KeyProjectionBias, g.KeyProjectionBiasGrad, lr);
+            _accel.MatrixUpdate(net.TimeLogFreq, g.TimeLogFreqGrad, lr);
+            _accel.MatrixUpdate(net.TimeProjBias, g.TimeProjBiasGrad, lr);
+            _accel.MatrixUpdate(net.MemAttnOutputB, g.MemAttnOutputBGrad, lr);
+            _accel.MatrixUpdate(net.B1, g.B1Grad, lr);
+            _accel.MatrixUpdate(net.W2, g.W2Grad, lr);
         }
 
         #endregion

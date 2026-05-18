@@ -11,6 +11,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 {
     internal sealed class MultiTypeTransformerTests : TestBase
     {
+        AccelerationType _accelerationType;
+        public MultiTypeTransformerTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
         public void RunAllTests()
         {
             CountNumber++;
@@ -783,7 +788,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 NumLayers = numLayers,
                 FeedForwardDim = ffnDim,
                 UseDecoderOnly = true,
-                Runtime = new RuntimeConfig { FFNActivationType = ActivationType.Relu, AccelerationType = AccelerationType.CPU, AccelerationDeviceId = 0 },
+                Runtime = new RuntimeConfig { FFNActivationType = ActivationType.Relu, AccelerationType = _accelerationType, AccelerationDeviceId = 0 },
                 Regularization = new RegularizationConfig { L2RegulationLamda = 0f, GradientClippingThreshold = 5f }
             };
         }
@@ -809,7 +814,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 NumLayers = numLayers,
                 FeedForwardDim = ffnDim,
                 UseDecoderOnly = true,
-                Runtime = new RuntimeConfig { FFNActivationType = ActivationType.Relu, AccelerationType = AccelerationType.CPU, AccelerationDeviceId = 0 },
+                Runtime = new RuntimeConfig { FFNActivationType = ActivationType.Relu, AccelerationType = _accelerationType, AccelerationDeviceId = 0 },
                 Regularization = new RegularizationConfig { L2RegulationLamda = 0f, GradientClippingThreshold = 5f }
             };
         }

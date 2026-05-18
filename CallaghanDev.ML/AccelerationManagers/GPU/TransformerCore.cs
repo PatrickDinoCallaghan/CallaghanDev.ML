@@ -72,6 +72,47 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                     ArrayView1D<float, Stride1D.Dense>>(
                         BackpropQKVBiasGradKernel);
 
+            _projectKVKernel =
+                _accelerator.LoadAutoGroupedStreamKernel<
+                    Index1D,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView1D<float, Stride1D.Dense>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView1D<float, Stride1D.Dense>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>>(
+                        ProjectKVKernel);
+
+            _backpropKVDInputKernel =
+                _accelerator.LoadAutoGroupedStreamKernel<
+                    Index1D,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>>(
+                        BackpropKVDInputKernel);
+
+            _backpropKVWeightGradKernel =
+                _accelerator.LoadAutoGroupedStreamKernel<
+                    Index1D,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>>(
+                        BackpropKVWeightGradKernel);
+
+            _backpropKVBiasGradKernel =
+                _accelerator.LoadAutoGroupedStreamKernel<
+                    Index1D,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView1D<float, Stride1D.Dense>,
+                    ArrayView1D<float, Stride1D.Dense>>(
+                        BackpropKVBiasGradKernel);
+
         }
 
         private void DisposeTransformerCoreBuffers()
@@ -1751,6 +1792,359 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         }
 
         #endregion
+
+
+
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _projectKVKernel;
+
+        private Action<
+            Index1D,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>> _backpropKVDInputKernel;
+
+        public (float[,] K, float[,] V) ProjectKV(float[,] input, float[,] WK, float[] biasK, float[,] WV, float[] biasV)
+        {
+            var shape = ValidateProjectKVInputsGpu(input, WK, biasK, WV, biasV);
+
+            int rows = shape.Rows;
+            int inputDim = shape.InputDim;
+            int outputDim = shape.OutputDim;
+            long workUnits = 2L * rows * outputDim * inputDim;
+
+            if (!ShouldUseGpu(workUnits, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.ProjectKV(input, WK, biasK, WV, biasV);
+            }
+
+            var bufInput = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, inputDim));
+            var bufWK = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufWV = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufBiasK = _accelerator.Allocate1D<float>(outputDim);
+            var bufBiasV = _accelerator.Allocate1D<float>(outputDim);
+            var bufK = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
+            var bufV = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
+
+            try
+            {
+                bufInput.CopyFromCPU(input);
+                bufWK.CopyFromCPU(WK);
+                bufWV.CopyFromCPU(WV);
+                bufBiasK.CopyFromCPU(biasK);
+                bufBiasV.CopyFromCPU(biasV);
+
+                _projectKVKernel(
+                    new Index1D(rows * outputDim),
+                    bufInput.View,
+                    bufWK.View,
+                    bufBiasK.View,
+                    bufWV.View,
+                    bufBiasV.View,
+                    bufK.View,
+                    bufV.View);
+
+                var K = new float[rows, outputDim];
+                var V = new float[rows, outputDim];
+                bufK.CopyToCPU(K);
+                bufV.CopyToCPU(V);
+                return (K, V);
+            }
+            finally
+            {
+                bufInput.Dispose();
+                bufWK.Dispose();
+                bufWV.Dispose();
+                bufBiasK.Dispose();
+                bufBiasV.Dispose();
+                bufK.Dispose();
+                bufV.Dispose();
+            }
+        }
+
+        private Action<
+            Index1D,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>> _backpropKVWeightGradKernel;
+        public float[,] BackpropKV(
+            float[,] input,
+            float[,] dK,
+            float[,] dV,
+            float[,] WK,
+            float[,] WV,
+            float[,] WKGrad,
+            float[] biasKGrad,
+            float[,] WVGrad,
+            float[] biasVGrad)
+        {
+            var shape = ValidateBackpropKVInputsGpu(input, dK, dV, WK, WV, WKGrad, biasKGrad, WVGrad, biasVGrad);
+
+            int rows = shape.Rows;
+            int inputDim = shape.InputDim;
+            int outputDim = shape.OutputDim;
+            long workUnits = 4L * rows * inputDim * outputDim;
+
+            if (!ShouldUseGpu(workUnits, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.BackpropKV(input, dK, dV, WK, WV, WKGrad, biasKGrad, WVGrad, biasVGrad);
+            }
+
+            var bufInput = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, inputDim));
+            var bufDK = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
+            var bufDV = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
+            var bufWK = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufWV = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufWKGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufWVGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufBiasKGrad = _accelerator.Allocate1D<float>(outputDim);
+            var bufBiasVGrad = _accelerator.Allocate1D<float>(outputDim);
+            var bufDInput = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, inputDim));
+
+            try
+            {
+                bufInput.CopyFromCPU(input);
+                bufDK.CopyFromCPU(dK);
+                bufDV.CopyFromCPU(dV);
+                bufWK.CopyFromCPU(WK);
+                bufWV.CopyFromCPU(WV);
+                bufWKGrad.CopyFromCPU(WKGrad);
+                bufWVGrad.CopyFromCPU(WVGrad);
+                bufBiasKGrad.CopyFromCPU(biasKGrad);
+                bufBiasVGrad.CopyFromCPU(biasVGrad);
+
+                _backpropKVDInputKernel(
+                    new Index1D(rows * inputDim),
+                    bufDK.View,
+                    bufDV.View,
+                    bufWK.View,
+                    bufWV.View,
+                    bufDInput.View);
+
+                _backpropKVWeightGradKernel(
+                    new Index1D(outputDim * inputDim),
+                    bufInput.View,
+                    bufDK.View,
+                    bufDV.View,
+                    bufWKGrad.View,
+                    bufWVGrad.View);
+
+                _backpropKVBiasGradKernel(
+                    new Index1D(outputDim),
+                    bufDK.View,
+                    bufDV.View,
+                    bufBiasKGrad.View,
+                    bufBiasVGrad.View);
+
+                var dInput = new float[rows, inputDim];
+                bufDInput.CopyToCPU(dInput);
+                bufWKGrad.CopyToCPU(WKGrad);
+                bufWVGrad.CopyToCPU(WVGrad);
+                bufBiasKGrad.CopyToCPU(biasKGrad);
+                bufBiasVGrad.CopyToCPU(biasVGrad);
+                return dInput;
+            }
+            finally
+            {
+                bufInput.Dispose();
+                bufDK.Dispose();
+                bufDV.Dispose();
+                bufWK.Dispose();
+                bufWV.Dispose();
+                bufWKGrad.Dispose();
+                bufWVGrad.Dispose();
+                bufBiasKGrad.Dispose();
+                bufBiasVGrad.Dispose();
+                bufDInput.Dispose();
+            }
+        }
+        private Action<
+            Index1D,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView1D<float, Stride1D.Dense>> _backpropKVBiasGradKernel;
+
+        private static void ProjectKVKernel(
+          Index1D index,
+          ArrayView2D<float, Stride2D.DenseX> input,
+          ArrayView2D<float, Stride2D.DenseX> WK,
+          ArrayView1D<float, Stride1D.Dense> biasK,
+          ArrayView2D<float, Stride2D.DenseX> WV,
+          ArrayView1D<float, Stride1D.Dense> biasV,
+          ArrayView2D<float, Stride2D.DenseX> K,
+          ArrayView2D<float, Stride2D.DenseX> V)
+        {
+            int outputDim = (int)K.Extent.Y;
+            int inputDim = (int)input.Extent.Y;
+
+            int flat = index;
+            int row = flat / outputDim;
+            int o = flat - row * outputDim;
+
+            float kSum = biasK[o];
+            float vSum = biasV[o];
+
+            for (int d = 0; d < inputDim; d++)
+            {
+                float x = input[row, d];
+                kSum += WK[o, d] * x;
+                vSum += WV[o, d] * x;
+            }
+
+            K[row, o] = kSum;
+            V[row, o] = vSum;
+        }
+        private static void BackpropKVDInputKernel(
+          Index1D index,
+          ArrayView2D<float, Stride2D.DenseX> dK,
+          ArrayView2D<float, Stride2D.DenseX> dV,
+          ArrayView2D<float, Stride2D.DenseX> WK,
+          ArrayView2D<float, Stride2D.DenseX> WV,
+          ArrayView2D<float, Stride2D.DenseX> dInput)
+        {
+            int inputDim = (int)dInput.Extent.Y;
+            int outputDim = (int)dK.Extent.Y;
+
+            int flat = index;
+            int row = flat / inputDim;
+            int d = flat - row * inputDim;
+
+            float sum = 0.0f;
+
+            for (int o = 0; o < outputDim; o++)
+            {
+                sum += dK[row, o] * WK[o, d]
+                     + dV[row, o] * WV[o, d];
+            }
+
+            dInput[row, d] = sum;
+        }
+
+        private static void BackpropKVWeightGradKernel(
+            Index1D index,
+            ArrayView2D<float, Stride2D.DenseX> input,
+            ArrayView2D<float, Stride2D.DenseX> dK,
+            ArrayView2D<float, Stride2D.DenseX> dV,
+            ArrayView2D<float, Stride2D.DenseX> WKGrad,
+            ArrayView2D<float, Stride2D.DenseX> WVGrad)
+        {
+            int rows = (int)input.Extent.X;
+            int inputDim = (int)input.Extent.Y;
+
+            int flat = index;
+            int o = flat / inputDim;
+            int d = flat - o * inputDim;
+
+            float kSum = 0.0f;
+            float vSum = 0.0f;
+
+            for (int row = 0; row < rows; row++)
+            {
+                float x = input[row, d];
+                kSum += dK[row, o] * x;
+                vSum += dV[row, o] * x;
+            }
+
+            WKGrad[o, d] += kSum;
+            WVGrad[o, d] += vSum;
+        }
+
+        private static void BackpropKVBiasGradKernel(
+    Index1D index,
+    ArrayView2D<float, Stride2D.DenseX> dK,
+    ArrayView2D<float, Stride2D.DenseX> dV,
+    ArrayView1D<float, Stride1D.Dense> biasKGrad,
+    ArrayView1D<float, Stride1D.Dense> biasVGrad)
+        {
+            int rows = (int)dK.Extent.X;
+            int o = index;
+
+            float kSum = 0.0f;
+            float vSum = 0.0f;
+
+            for (int row = 0; row < rows; row++)
+            {
+                kSum += dK[row, o];
+                vSum += dV[row, o];
+            }
+
+            biasKGrad[o] += kSum;
+            biasVGrad[o] += vSum;
+        }
+
+        private static (int Rows, int InputDim, int OutputDim) ValidateProjectKVInputsGpu(float[,] input, float[,] WK, float[] biasK, float[,] WV, float[] biasV)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (WK == null) throw new ArgumentNullException(nameof(WK));
+            if (WV == null) throw new ArgumentNullException(nameof(WV));
+            if (biasK == null) throw new ArgumentNullException(nameof(biasK));
+            if (biasV == null) throw new ArgumentNullException(nameof(biasV));
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+
+            if (rows <= 0)
+                throw new ArgumentException("Input must contain at least one row.", nameof(input));
+            if (inputDim <= 0)
+                throw new ArgumentException("Input must contain at least one column.", nameof(input));
+
+            int kOut = WK.GetLength(0);
+            int vOut = WV.GetLength(0);
+
+            if (kOut <= 0)
+                throw new ArgumentException("WK must contain at least one output row.", nameof(WK));
+            if (kOut != vOut)
+                throw new ArgumentException("WK and WV output dimensions must match.");
+            if (WK.GetLength(1) != inputDim)
+                throw new ArgumentException("WK input dimension must match input width.", nameof(WK));
+            if (WV.GetLength(1) != inputDim)
+                throw new ArgumentException("WV input dimension must match input width.", nameof(WV));
+            if (biasK.Length != kOut)
+                throw new ArgumentException("biasK length must match WK output dimension.", nameof(biasK));
+            if (biasV.Length != kOut)
+                throw new ArgumentException("biasV length must match WV output dimension.", nameof(biasV));
+
+            return (rows, inputDim, kOut);
+        }
+
+        private static (int Rows, int InputDim, int OutputDim) ValidateBackpropKVInputsGpu(
+          float[,] input,
+          float[,] dK,
+          float[,] dV,
+          float[,] WK,
+          float[,] WV,
+          float[,] WKGrad,
+          float[] biasKGrad,
+          float[,] WVGrad,
+          float[] biasVGrad)
+        {
+            if (dK == null) throw new ArgumentNullException(nameof(dK));
+            if (dV == null) throw new ArgumentNullException(nameof(dV));
+            if (WKGrad == null) throw new ArgumentNullException(nameof(WKGrad));
+            if (WVGrad == null) throw new ArgumentNullException(nameof(WVGrad));
+            if (biasKGrad == null) throw new ArgumentNullException(nameof(biasKGrad));
+            if (biasVGrad == null) throw new ArgumentNullException(nameof(biasVGrad));
+
+            var shape = ValidateProjectKVInputsGpu(input, WK, biasKGrad, WV, biasVGrad);
+            int rows = shape.Rows;
+            int inputDim = shape.InputDim;
+            int outputDim = shape.OutputDim;
+
+            if (dK.GetLength(0) != rows || dK.GetLength(1) != outputDim)
+                throw new ArgumentException($"dK shape must be [{rows},{outputDim}].", nameof(dK));
+            if (dV.GetLength(0) != rows || dV.GetLength(1) != outputDim)
+                throw new ArgumentException($"dV shape must be [{rows},{outputDim}].", nameof(dV));
+            if (WKGrad.GetLength(0) != outputDim || WKGrad.GetLength(1) != inputDim)
+                throw new ArgumentException($"WKGrad shape must be [{outputDim},{inputDim}].", nameof(WKGrad));
+            if (WVGrad.GetLength(0) != outputDim || WVGrad.GetLength(1) != inputDim)
+                throw new ArgumentException($"WVGrad shape must be [{outputDim},{inputDim}].", nameof(WVGrad));
+
+            return shape;
+        }
     }
 
 }

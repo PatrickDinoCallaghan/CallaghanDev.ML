@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.TestConsoleApp.Tests;
+﻿using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.TestConsoleApp.Tests;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
@@ -6,35 +7,35 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main(string[] args)
         {
-            TransformerTestSuite.Run();
+            AccelerationType accelerationType1 = Enums.AccelerationType.MultiThreadCPU;
+            TransformerTestSuite.Run(accelerationType1);
+
+            foreach (var accelerationType in Enum.GetValues<Enums.AccelerationType>())
+            {
+                TransformerTestSuite.Run(accelerationType);
+            }
+
+            new AccelerationManagerParityTests().RunAllTests();
         }
     }
 
     public static class TransformerTestSuite
     {
-        public static void Run()
+        public static void Run(AccelerationType accelerationType)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             PrintBanner("TRANSFORMER TEST SUITE", '=');
 
 
-            new AccelerationManagerParityTests().RunAllTests();
-            new BPETokenizerTests().RunAllTests();
-            new MmtacTests().RunAllTests();
-
-
-            new MultiHeadAttentionForwardTests().RunAllTests();
-
-            new RotaryPositionEmbeddingTests().RunAllTests();
-
-
-            new CrossAttentionMultimodalTests().RunAllTests();
-
-            new TacmatTests().RunAllTests();
-
-            new MultiTypeTransformerTests().RunAllTests();
-            new NeuralNetworkTests().RunAllTests();
+            new MmtacTests(accelerationType).RunAllTests();
+            new BPETokenizerTests(accelerationType).RunAllTests();
+            new MultiHeadAttentionForwardTests(accelerationType).RunAllTests();
+            new RotaryPositionEmbeddingTests(accelerationType).RunAllTests();
+            new CrossAttentionMultimodalTests(accelerationType).RunAllTests();
+            new TacmatTests(accelerationType).RunAllTests();
+            new MultiTypeTransformerTests(accelerationType).RunAllTests();
+            new NeuralNetworkTests(accelerationType).RunAllTests();
 
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;

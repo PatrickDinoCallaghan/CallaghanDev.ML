@@ -412,6 +412,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             if (cache == null)
                 throw new ArgumentNullException(nameof(cache));
 
+            if (cache.NormalizedTimeDiffs == null)
+            {
+                throw new InvalidOperationException("ContentAwareDecayCache.NormalizedTimeDiffs is null. The acceleration backend must populate it during ContentAwareDecayForward.");
+            }
             int queryLen = cache.TimeDiffs.GetLength(0);
             int keyLen = cache.TimeDiffs.GetLength(1);
             int projDim = ProjectionDim;

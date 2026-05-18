@@ -27,6 +27,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private const float StrictTol = 1e-6f;
         private const float SaveLoadTol = 1e-5f;
         private const float ChangedTol = 1e-8f;
+        AccelerationType _accelerationType;
+        public CrossAttentionMultimodalTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
 
         public void RunAllTests()
         {
@@ -1163,7 +1168,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 Runtime = new RuntimeConfig
                 {
                     FFNActivationType = ActivationType.Relu,
-                    AccelerationType = AccelerationType.CPU
+                    AccelerationType = _accelerationType
                 },
                 Regularization = new RegularizationConfig
                 {
@@ -1212,7 +1217,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 Runtime = new RuntimeConfig
                 {
                     FFNActivationType = ActivationType.Relu,
-                    AccelerationType = AccelerationType.CPU
+                    AccelerationType = _accelerationType
                 },
                 Regularization = new RegularizationConfig
                 {

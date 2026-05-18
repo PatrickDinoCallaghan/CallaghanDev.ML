@@ -18,6 +18,12 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
     /// </summary>
     internal sealed class MmtacTests : TestBase
     {
+        AccelerationType _accelerationType;
+        public MmtacTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
+
         public void RunAllTests()
         {
             CountNumber++;
@@ -805,7 +811,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             cfg.Output.CloseDirectionConsistencyMargin = 0f;
             cfg.Decay.MemAttentionDropout = 0f;
             cfg.Decay.MlpDropout = 0f;
-            cfg.Runtime.AccelerationType = AccelerationType.CPU;
+            cfg.Runtime.AccelerationType = _accelerationType;
 
             var model = new MmtacModel(cfg, new Random(42));
 
@@ -2124,7 +2130,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 Runtime = new RuntimeConfig
                 {
                     FFNActivationType = ActivationType.Relu,
-                    AccelerationType = AccelerationType.CPU,
+                    AccelerationType = _accelerationType,
                     AccelerationDeviceId = 0
                 },
                 PriceContext = new PriceContextConfig

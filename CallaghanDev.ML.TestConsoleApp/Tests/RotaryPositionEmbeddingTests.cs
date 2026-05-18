@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers;
 using System.Reflection;
 
@@ -7,7 +8,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
     internal sealed class RotaryPositionEmbeddingTests : TestBase
     {
         private const float Tolerance = 1e-5f;
-
+        AccelerationType _accelerationType;
+        public RotaryPositionEmbeddingTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
         public void RunAllTests()
         {
             CountNumber++;
@@ -318,9 +323,9 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             }
         }
 
-        private static RotaryPositionEmbedding NewRotaryPositionEmbedding()
+        private RotaryPositionEmbedding NewRotaryPositionEmbedding()
         {
-            return new RotaryPositionEmbedding(new AccelerationCPU());
+            return new RotaryPositionEmbedding(AccelerationFactory.Create(_accelerationType));
         }
 
         private static float[,] Matrix(int rows, int cols)

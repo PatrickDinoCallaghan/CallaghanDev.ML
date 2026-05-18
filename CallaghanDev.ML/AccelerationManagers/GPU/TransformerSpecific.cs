@@ -26,7 +26,45 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private Action<Index1D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareSoftmaxKernel;
         private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareWeightedSumKernel;
         private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int, int> _assembleHeadOutputKernel;
+        private Action<Index2D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int> _buildMmtacContextWithPriceHiddenKernel;
+        private Action<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, int, int, int, int> _buildMmtacContextWithPriceTimesKernel;
 
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int, int, int, int, int, int> _accumulateMmtacContextTypeGradKernel;
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int, int, int, int> _accumulateMmtacLiveNewsGradKernel;
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int, int, int, int> _accumulateMmtacGlobalGradKernel;
+
+        private Action<Index2D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _accumulateGlobalProjectionGradKernel;
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int> _expandMeanPoolGradientKernel;
+
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, float> _mmtacScalarMseGradKernel;
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, float> _mmtacScalarBceGradKernel;
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, float, int, int> _mmtacConfidenceGradKernel;
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int> _mmtacOutputDHiddenKernel;
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _mmtacOutputProjectionGradKernel;
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _mmtacOutputBiasGradKernel;
+
+        private Action<
+    Index1D,
+    ArrayView2D<float, Stride2D.DenseX>,
+    ArrayView2D<float, Stride2D.DenseX>,
+    ArrayView2D<float, Stride2D.DenseX>,
+    ArrayView1D<float, Stride1D.Dense>,
+    ArrayView2D<float, Stride2D.DenseX>,
+    ArrayView1D<float, Stride1D.Dense>,
+    float,
+    float,
+    int> _mmtacRegressionBaseGradKernel;
+
+        private Action<
+            Index1D,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView1D<float, Stride1D.Dense>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView1D<float, Stride1D.Dense>,
+            float> _mmtacRangeShareGradKernel;
         private void InitTransformerSpecificKernels()
         {
             _applyContextTypeEmbeddingKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(ApplyContextTypeEmbeddingKernel);
@@ -38,6 +76,8 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             _embedTokenIdsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView1D<int, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(EmbedTokenIdsKernel);
             _meanPoolAllRowsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(MeanPoolAllRowsKernel);
             _mat3DScaleInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, float>(Mat3DScaleInPlaceKernel);
+            _mat3DAddInPlaceKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(Mat3DAddInPlaceKernel);
+            _mat3DUpdateKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float>(Mat3DUpdateKernel);
             _matrixSquaredNorm3DKernel = _accelerator.LoadAutoGroupedStreamKernel<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView1D<float, Stride1D.Dense>>(MatrixSquaredNorm3DKernel);
             _softmaxVectorKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>>(SoftmaxVectorKernel);
 
@@ -47,6 +87,49 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             _contentAwareSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareSoftmaxKernel);
             _contentAwareWeightedSumKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareWeightedSumKernel);
             _assembleHeadOutputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, int, int>(AssembleHeadOutputKernel);
+
+            _buildMmtacContextWithPriceHiddenKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int>(BuildMmtacContextWithPriceHiddenKernel);
+            _buildMmtacContextWithPriceTimesKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, int, int, int, int>(BuildMmtacContextWithPriceTimesKernel);
+
+            _accumulateMmtacContextTypeGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int, int, int, int, int, int>(AccumulateMmtacContextTypeGradKernel);
+            _accumulateMmtacLiveNewsGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int, int, int, int>(AccumulateMmtacLiveNewsGradKernel);
+            _accumulateMmtacGlobalGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int, int, int, int>(AccumulateMmtacGlobalGradKernel);
+
+            _accumulateGlobalProjectionGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(AccumulateGlobalProjectionGradKernel);
+            _expandMeanPoolGradientKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int>(ExpandMeanPoolGradientKernel);
+
+            _mmtacRegressionBaseGradKernel =
+       _accelerator.LoadAutoGroupedStreamKernel<
+           Index1D,
+           ArrayView2D<float, Stride2D.DenseX>,
+           ArrayView2D<float, Stride2D.DenseX>,
+           ArrayView2D<float, Stride2D.DenseX>,
+           ArrayView1D<float, Stride1D.Dense>,
+           ArrayView2D<float, Stride2D.DenseX>,
+           ArrayView1D<float, Stride1D.Dense>,
+           float,
+           float,
+           int>(
+               MmtacRegressionBaseGradKernel);
+
+            _mmtacRangeShareGradKernel =
+                _accelerator.LoadAutoGroupedStreamKernel<
+                    Index1D,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView1D<float, Stride1D.Dense>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView2D<float, Stride2D.DenseX>,
+                    ArrayView1D<float, Stride1D.Dense>,
+                    float>(
+                        MmtacRangeShareGradKernel); _mmtacScalarMseGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, float>(MmtacScalarMseGradKernel);
+            _mmtacScalarBceGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, float>(MmtacScalarBceGradKernel);
+            _mmtacConfidenceGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, float, int, int>(MmtacConfidenceGradKernel);
+            _mmtacOutputDHiddenKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int>(MmtacOutputDHiddenKernel);
+            _mmtacOutputProjectionGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(MmtacOutputProjectionGradKernel);
+            _mmtacOutputBiasGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(MmtacOutputBiasGradKernel);
+
         }
 
         private void DisposeTransformerSpecificBuffers()
@@ -1031,5 +1114,1158 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         }
 
         #endregion
+
+
+
+        private Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _mat3DAddInPlaceKernel;
+        private static void Mat3DAddInPlaceKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> target, ArrayView3D<float, Stride3D.DenseXY> addend)
+        {
+            target[idx] += addend[idx];
+        }
+        public void Matrix3DAddInPlace(float[,,] target, float[,,] addend)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (addend == null) throw new ArgumentNullException(nameof(addend));
+
+            int d0 = target.GetLength(0);
+            int d1 = target.GetLength(1);
+            int d2 = target.GetLength(2);
+
+            if (!ShouldUseGpu((long)d0 * d1 * d2))
+            {
+                _mutliThreadCPU.Matrix3DAddInPlace(target, addend);
+                return;
+            }
+
+            var bufTarget = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
+            var bufAddend = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
+
+            try
+            {
+                bufTarget.CopyFromCPU(target);
+                bufAddend.CopyFromCPU(addend);
+                _mat3DAddInPlaceKernel(new Index3D(d0, d1, d2), bufTarget.View, bufAddend.View);
+                bufTarget.CopyToCPU(target);
+            }
+            finally
+            {
+                bufTarget.Dispose();
+                bufAddend.Dispose();
+            }
+        }
+
+
+        private Action<Index3D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float> _mat3DUpdateKernel;
+        private static void Mat3DUpdateKernel(Index3D idx, ArrayView3D<float, Stride3D.DenseXY> weights, ArrayView3D<float, Stride3D.DenseXY> gradients, float learningRate)
+        {
+            weights[idx] -= learningRate * gradients[idx];
+        }
+        public void Matrix3DUpdate(float[,,] weights, float[,,] gradients, float learningRate)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (gradients == null) throw new ArgumentNullException(nameof(gradients));
+
+            int d0 = weights.GetLength(0);
+            int d1 = weights.GetLength(1);
+            int d2 = weights.GetLength(2);
+
+            if (!ShouldUseGpu((long)d0 * d1 * d2))
+            {
+                _mutliThreadCPU.Matrix3DUpdate(weights, gradients, learningRate);
+                return;
+            }
+
+            var bufWeights = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
+            var bufGradients = _accelerator.Allocate3DDenseXY<float>(new Index3D(d0, d1, d2));
+
+            try
+            {
+                bufWeights.CopyFromCPU(weights);
+                bufGradients.CopyFromCPU(gradients);
+                _mat3DUpdateKernel(new Index3D(d0, d1, d2), bufWeights.View, bufGradients.View, learningRate);
+                bufWeights.CopyToCPU(weights);
+            }
+            finally
+            {
+                bufWeights.Dispose();
+                bufGradients.Dispose();
+            }
+        }
+
+        public (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews, int numPrice) BuildMmtacContextWithPrice(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] priceContextHidden, float[] priceContextTimes, float[,] contextTypeEmbedding)
+        {
+            if (contextTypeEmbedding == null)
+            {
+                throw new ArgumentNullException(nameof(contextTypeEmbedding));
+            }
+
+            int ed = contextTypeEmbedding.GetLength(1);
+            int numGlobal = globalToken != null ? 1 : 0;
+            int numNews = newsHidden != null ? newsHidden.GetLength(0) : 0;
+            int numPrice = priceContextHidden != null ? priceContextHidden.GetLength(0) : 0;
+            int total = numGlobal + numNews + numPrice;
+
+            if (total == 0)
+            {
+                return (null, null, 0, 0, 0);
+            }
+
+            if (globalToken != null && globalToken.Length != ed)
+            {
+                throw new ArgumentException("globalToken length must match embedding dimension.", nameof(globalToken));
+            }
+
+            if (newsHidden != null && newsHidden.GetLength(1) != ed)
+            {
+                throw new ArgumentException("newsHidden embedding dimension mismatch.", nameof(newsHidden));
+            }
+
+            if (priceContextHidden != null && priceContextHidden.GetLength(1) != ed)
+            {
+                throw new ArgumentException("priceContextHidden embedding dimension mismatch.", nameof(priceContextHidden));
+            }
+
+            if (newsTimes != null && newsTimes.Length != numNews)
+            {
+                throw new ArgumentException("newsTimes length must match newsHidden row count.", nameof(newsTimes));
+            }
+
+            if (priceContextTimes != null && priceContextTimes.Length != numPrice)
+            {
+                throw new ArgumentException("priceContextTimes length must match priceContextHidden row count.", nameof(priceContextTimes));
+            }
+
+            if (!ShouldUseGpu((long)total * ed))
+            {
+                return _mutliThreadCPU.BuildMmtacContextWithPrice(newsHidden, newsTimes, globalToken, priceContextHidden, priceContextTimes, contextTypeEmbedding);
+            }
+
+            var bufGlobal = _accelerator.Allocate1D<float>(Math.Max(1, ed));
+            var bufNews = _accelerator.Allocate2DDenseX<float>(new Index2D(Math.Max(1, numNews), ed));
+            var bufPrice = _accelerator.Allocate2DDenseX<float>(new Index2D(Math.Max(1, numPrice), ed));
+            var bufType = _accelerator.Allocate2DDenseX<float>(new Index2D(contextTypeEmbedding.GetLength(0), ed));
+            var bufHidden = _accelerator.Allocate2DDenseX<float>(new Index2D(total, ed));
+            var bufNewsTimes = _accelerator.Allocate1D<float>(Math.Max(1, numNews));
+            var bufPriceTimes = _accelerator.Allocate1D<float>(Math.Max(1, numPrice));
+            var bufTimes = _accelerator.Allocate1D<float>(total);
+
+            try
+            {
+                bufGlobal.CopyFromCPU(globalToken ?? new float[Math.Max(1, ed)]);
+                bufNews.CopyFromCPU(newsHidden ?? new float[Math.Max(1, numNews), ed]);
+                bufPrice.CopyFromCPU(priceContextHidden ?? new float[Math.Max(1, numPrice), ed]);
+                bufType.CopyFromCPU(contextTypeEmbedding);
+                bufNewsTimes.CopyFromCPU(newsTimes ?? new float[Math.Max(1, numNews)]);
+                bufPriceTimes.CopyFromCPU(priceContextTimes ?? new float[Math.Max(1, numPrice)]);
+
+                _buildMmtacContextWithPriceHiddenKernel(new Index2D(total, ed), bufGlobal.View, bufNews.View, bufPrice.View, bufType.View, bufHidden.View, numGlobal, numNews);
+                _buildMmtacContextWithPriceTimesKernel(new Index1D(total), bufNewsTimes.View, bufPriceTimes.View, bufTimes.View, numGlobal, numNews, newsTimes != null ? 1 : 0, priceContextTimes != null ? 1 : 0);
+
+                var contextHidden = new float[total, ed];
+                var contextTimes = new float[total];
+                bufHidden.CopyToCPU(contextHidden);
+                bufTimes.CopyToCPU(contextTimes);
+                return (contextHidden, contextTimes, numGlobal, numNews, numPrice);
+            }
+            finally
+            {
+                bufGlobal.Dispose();
+                bufNews.Dispose();
+                bufPrice.Dispose();
+                bufType.Dispose();
+                bufHidden.Dispose();
+                bufNewsTimes.Dispose();
+                bufPriceTimes.Dispose();
+                bufTimes.Dispose();
+            }
+        }
+        public (float loss, float[,] dHidden) BackpropMmtacOutputHeads(
+                   float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence,
+                   float[,] targetRegression, float[,] targetRange, float[,] targetQuality, float[,] targetDirection, float[,] targetMidDirection,
+                   float[] previousClose, float[] confidenceTargets,
+                   float[,] hidden, float[,] regressionLogits, float[] rangeLogits,
+                   float[,] regressionProjection, float[,] rangeProjection, float[,] qualityProjection, float[,] directionProjection, float[,] midDirectionProjection, float[,] confidenceProjection,
+                   float[,] regressionProjectionGrad, float[] regressionBiasGrad,
+                   float[,] rangeProjectionGrad, float[] rangeBiasGrad,
+                   float[,] qualityProjectionGrad, float[] qualityBiasGrad,
+                   float[,] directionProjectionGrad, float[] directionBiasGrad,
+                   float[,] midDirectionProjectionGrad, float[] midDirectionBiasGrad,
+                   float[,] confidenceProjectionGrad, float[] confidenceBiasGrad,
+                   float rangeLossWeight, float qualityLossWeight, float directionLossWeight, float midDirectionLossWeight,
+                   float closeDirectionConsistencyWeight, float closeDirectionConsistencyMargin,
+                   float confidenceLossWeight, bool useConfidenceHead)
+        {
+            if (regression == null) throw new ArgumentNullException(nameof(regression));
+            if (range == null) throw new ArgumentNullException(nameof(range));
+            if (quality == null) throw new ArgumentNullException(nameof(quality));
+            if (direction == null) throw new ArgumentNullException(nameof(direction));
+            if (midDirection == null) throw new ArgumentNullException(nameof(midDirection));
+            if (targetRegression == null) throw new ArgumentNullException(nameof(targetRegression));
+            if (targetRange == null) throw new ArgumentNullException(nameof(targetRange));
+            if (targetQuality == null) throw new ArgumentNullException(nameof(targetQuality));
+            if (targetDirection == null) throw new ArgumentNullException(nameof(targetDirection));
+            if (targetMidDirection == null) throw new ArgumentNullException(nameof(targetMidDirection));
+            if (hidden == null) throw new ArgumentNullException(nameof(hidden));
+            if (regressionLogits == null) throw new ArgumentNullException(nameof(regressionLogits));
+            if (rangeLogits == null) throw new ArgumentNullException(nameof(rangeLogits));
+
+            int sl = regression.GetLength(0);
+            int rDim = regression.GetLength(1);
+            int ed = hidden.GetLength(1);
+
+            if (rDim < 3)
+            {
+                throw new ArgumentException("Regression output must contain high, low and close columns.", nameof(regression));
+            }
+
+            float effectiveConfidenceWeight = useConfidenceHead ? MathF.Max(0.0f, confidenceLossWeight) : 0.0f;
+            bool useConfidence = useConfidenceHead
+                && confidence != null
+                && confidenceProjection != null
+                && confidenceProjectionGrad != null
+                && confidenceBiasGrad != null
+                && effectiveConfidenceWeight > 0.0f;
+
+            float[] rangeLogitsHost = rangeLogits;
+            if (rangeLogitsHost.Length != sl)
+            {
+                var tmp = new float[sl];
+                Array.Copy(rangeLogitsHost, tmp, Math.Min(sl, rangeLogitsHost.Length));
+                rangeLogitsHost = tmp;
+            }
+
+            float[] previousCloseHost = previousClose ?? new float[sl];
+            if (previousCloseHost.Length != sl)
+            {
+                var tmp = new float[sl];
+                Array.Copy(previousCloseHost, tmp, Math.Min(sl, previousCloseHost.Length));
+                previousCloseHost = tmp;
+            }
+
+            float[] confidenceTargetsHost = confidenceTargets ?? new float[sl];
+            if (confidenceTargetsHost.Length != sl)
+            {
+                var tmp = new float[sl];
+                Array.Copy(confidenceTargetsHost, tmp, Math.Min(sl, confidenceTargetsHost.Length));
+                confidenceTargetsHost = tmp;
+            }
+
+            long workUnits = (long)sl * (ed * (rDim + 5) + rDim + 8);
+            if (!ShouldUseGpu(workUnits, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.BackpropMmtacOutputHeads(
+                    regression, range, quality, direction, midDirection, confidence,
+                    targetRegression, targetRange, targetQuality, targetDirection, targetMidDirection,
+                    previousClose, confidenceTargets,
+                    hidden, regressionLogits, rangeLogits,
+                    regressionProjection, rangeProjection, qualityProjection, directionProjection, midDirectionProjection, confidenceProjection,
+                    regressionProjectionGrad, regressionBiasGrad,
+                    rangeProjectionGrad, rangeBiasGrad,
+                    qualityProjectionGrad, qualityBiasGrad,
+                    directionProjectionGrad, directionBiasGrad,
+                    midDirectionProjectionGrad, midDirectionBiasGrad,
+                    confidenceProjectionGrad, confidenceBiasGrad,
+                    rangeLossWeight, qualityLossWeight, directionLossWeight, midDirectionLossWeight,
+                    closeDirectionConsistencyWeight, closeDirectionConsistencyMargin,
+                    confidenceLossWeight, useConfidenceHead);
+            }
+
+            var bufRegression = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, rDim));
+            var bufRange = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufQuality = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufDirection = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufMidDirection = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufConfidence = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+
+            var bufTargetRegression = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, rDim));
+            var bufTargetRange = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufTargetQuality = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufTargetDirection = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufTargetMidDirection = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+
+            var bufPreviousClose = _accelerator.Allocate1D<float>(sl);
+            var bufConfidenceTargets = _accelerator.Allocate1D<float>(sl);
+            var bufHidden = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, ed));
+            var bufRegressionLogits = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, rDim));
+            var bufRangeLogits = _accelerator.Allocate1D<float>(sl);
+
+            var bufRegressionProjection = _accelerator.Allocate2DDenseX<float>(new Index2D(rDim, ed));
+            var bufRangeProjection = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufQualityProjection = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufDirectionProjection = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufMidDirectionProjection = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufConfidenceProjection = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+
+            var bufRegressionProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(rDim, ed));
+            var bufRangeProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufQualityProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufDirectionProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufMidDirectionProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+            var bufConfidenceProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(1, ed));
+
+            var bufRegressionBiasGrad = _accelerator.Allocate1D<float>(rDim);
+            var bufRangeBiasGrad = _accelerator.Allocate1D<float>(1);
+            var bufQualityBiasGrad = _accelerator.Allocate1D<float>(1);
+            var bufDirectionBiasGrad = _accelerator.Allocate1D<float>(1);
+            var bufMidDirectionBiasGrad = _accelerator.Allocate1D<float>(1);
+            var bufConfidenceBiasGrad = _accelerator.Allocate1D<float>(1);
+
+            var bufDRegression = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, rDim));
+            var bufDRange = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufDQuality = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufDDirection = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufDMidDirection = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufDConfidence = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, 1));
+            var bufDHidden = _accelerator.Allocate2DDenseX<float>(new Index2D(sl, ed));
+            var bufLoss = _accelerator.Allocate1D<float>(1);
+
+            try
+            {
+                bufRegression.CopyFromCPU(regression);
+                bufRange.CopyFromCPU(range);
+                bufQuality.CopyFromCPU(quality);
+                bufDirection.CopyFromCPU(direction);
+                bufMidDirection.CopyFromCPU(midDirection);
+                bufConfidence.CopyFromCPU(useConfidence ? confidence : new float[sl, 1]);
+
+                bufTargetRegression.CopyFromCPU(targetRegression);
+                bufTargetRange.CopyFromCPU(targetRange);
+                bufTargetQuality.CopyFromCPU(targetQuality);
+                bufTargetDirection.CopyFromCPU(targetDirection);
+                bufTargetMidDirection.CopyFromCPU(targetMidDirection);
+
+                bufPreviousClose.CopyFromCPU(previousCloseHost);
+                bufConfidenceTargets.CopyFromCPU(confidenceTargetsHost);
+                bufHidden.CopyFromCPU(hidden);
+                bufRegressionLogits.CopyFromCPU(regressionLogits);
+                bufRangeLogits.CopyFromCPU(rangeLogitsHost);
+
+                bufRegressionProjection.CopyFromCPU(regressionProjection);
+                bufRangeProjection.CopyFromCPU(rangeProjection);
+                bufQualityProjection.CopyFromCPU(qualityProjection);
+                bufDirectionProjection.CopyFromCPU(directionProjection);
+                bufMidDirectionProjection.CopyFromCPU(midDirectionProjection);
+                bufConfidenceProjection.CopyFromCPU(useConfidence ? confidenceProjection : new float[1, ed]);
+
+                bufRegressionProjectionGrad.CopyFromCPU(regressionProjectionGrad);
+                bufRangeProjectionGrad.CopyFromCPU(rangeProjectionGrad);
+                bufQualityProjectionGrad.CopyFromCPU(qualityProjectionGrad);
+                bufDirectionProjectionGrad.CopyFromCPU(directionProjectionGrad);
+                bufMidDirectionProjectionGrad.CopyFromCPU(midDirectionProjectionGrad);
+                bufConfidenceProjectionGrad.CopyFromCPU(useConfidence ? confidenceProjectionGrad : new float[1, ed]);
+
+                bufRegressionBiasGrad.CopyFromCPU(regressionBiasGrad);
+                bufRangeBiasGrad.CopyFromCPU(rangeBiasGrad);
+                bufQualityBiasGrad.CopyFromCPU(qualityBiasGrad);
+                bufDirectionBiasGrad.CopyFromCPU(directionBiasGrad);
+                bufMidDirectionBiasGrad.CopyFromCPU(midDirectionBiasGrad);
+                bufConfidenceBiasGrad.CopyFromCPU(useConfidence ? confidenceBiasGrad : new float[1]);
+
+                bufDRegression.MemSetToZero();
+                bufDRange.MemSetToZero();
+                bufDQuality.MemSetToZero();
+                bufDDirection.MemSetToZero();
+                bufDMidDirection.MemSetToZero();
+                bufDConfidence.MemSetToZero();
+                bufDHidden.MemSetToZero();
+                bufLoss.CopyFromCPU(new float[1]);
+
+                _mmtacRegressionBaseGradKernel(
+                     new Index1D(sl),
+                     bufRegression.View,
+                     bufTargetRegression.View,
+                     bufTargetDirection.View,
+                     bufPreviousClose.View,
+                     bufDRegression.View,
+                     bufLoss.View,
+                     closeDirectionConsistencyWeight,
+                     closeDirectionConsistencyMargin,
+                     previousClose != null ? 1 : 0);
+
+                _mmtacRangeShareGradKernel(
+                    new Index1D(sl),
+                    bufRange.View,
+                    bufTargetRange.View,
+                    bufRegressionLogits.View,
+                    bufRangeLogits.View,
+                    bufDRegression.View,
+                    bufDRange.View,
+                    bufLoss.View,
+                    rangeLossWeight);
+                
+                _mmtacScalarMseGradKernel(new Index1D(sl), bufQuality.View, bufTargetQuality.View, bufDQuality.View, bufLoss.View, qualityLossWeight);
+                _mmtacScalarBceGradKernel(new Index1D(sl), bufDirection.View, bufTargetDirection.View, bufDDirection.View, bufLoss.View, directionLossWeight);
+                _mmtacScalarBceGradKernel(new Index1D(sl), bufMidDirection.View, bufTargetMidDirection.View, bufDMidDirection.View, bufLoss.View, midDirectionLossWeight);
+
+                if (useConfidence)
+                {
+                    _mmtacConfidenceGradKernel(new Index1D(sl), bufConfidence.View, bufConfidenceTargets.View, bufRegression.View, bufTargetRegression.View, bufDConfidence.View, bufLoss.View, effectiveConfidenceWeight, confidenceTargets != null ? 1 : 0, rDim);
+                }
+
+                _mmtacOutputDHiddenKernel(new Index2D(sl, ed), bufDRegression.View, bufDRange.View, bufDQuality.View, bufDDirection.View, bufDMidDirection.View, bufDConfidence.View, bufRegressionProjection.View, bufRangeProjection.View, bufQualityProjection.View, bufDirectionProjection.View, bufMidDirectionProjection.View, bufConfidenceProjection.View, bufDHidden.View, useConfidence ? 1 : 0);
+
+                _mmtacOutputProjectionGradKernel(new Index2D(rDim, ed), bufHidden.View, bufDRegression.View, bufRegressionProjectionGrad.View);
+                _mmtacOutputBiasGradKernel(new Index1D(rDim), bufDRegression.View, bufRegressionBiasGrad.View);
+
+                _mmtacOutputProjectionGradKernel(new Index2D(1, ed), bufHidden.View, bufDRange.View, bufRangeProjectionGrad.View);
+                _mmtacOutputBiasGradKernel(new Index1D(1), bufDRange.View, bufRangeBiasGrad.View);
+
+                _mmtacOutputProjectionGradKernel(new Index2D(1, ed), bufHidden.View, bufDQuality.View, bufQualityProjectionGrad.View);
+                _mmtacOutputBiasGradKernel(new Index1D(1), bufDQuality.View, bufQualityBiasGrad.View);
+
+                _mmtacOutputProjectionGradKernel(new Index2D(1, ed), bufHidden.View, bufDDirection.View, bufDirectionProjectionGrad.View);
+                _mmtacOutputBiasGradKernel(new Index1D(1), bufDDirection.View, bufDirectionBiasGrad.View);
+
+                _mmtacOutputProjectionGradKernel(new Index2D(1, ed), bufHidden.View, bufDMidDirection.View, bufMidDirectionProjectionGrad.View);
+                _mmtacOutputBiasGradKernel(new Index1D(1), bufDMidDirection.View, bufMidDirectionBiasGrad.View);
+
+                if (useConfidence)
+                {
+                    _mmtacOutputProjectionGradKernel(new Index2D(1, ed), bufHidden.View, bufDConfidence.View, bufConfidenceProjectionGrad.View);
+                    _mmtacOutputBiasGradKernel(new Index1D(1), bufDConfidence.View, bufConfidenceBiasGrad.View);
+                }
+
+                var lossHost = new float[1];
+                var dHidden = new float[sl, ed];
+                bufLoss.CopyToCPU(lossHost);
+                bufDHidden.CopyToCPU(dHidden);
+
+                bufRegressionProjectionGrad.CopyToCPU(regressionProjectionGrad);
+                bufRangeProjectionGrad.CopyToCPU(rangeProjectionGrad);
+                bufQualityProjectionGrad.CopyToCPU(qualityProjectionGrad);
+                bufDirectionProjectionGrad.CopyToCPU(directionProjectionGrad);
+                bufMidDirectionProjectionGrad.CopyToCPU(midDirectionProjectionGrad);
+
+                bufRegressionBiasGrad.CopyToCPU(regressionBiasGrad);
+                bufRangeBiasGrad.CopyToCPU(rangeBiasGrad);
+                bufQualityBiasGrad.CopyToCPU(qualityBiasGrad);
+                bufDirectionBiasGrad.CopyToCPU(directionBiasGrad);
+                bufMidDirectionBiasGrad.CopyToCPU(midDirectionBiasGrad);
+
+                if (useConfidence)
+                {
+                    bufConfidenceProjectionGrad.CopyToCPU(confidenceProjectionGrad);
+                    bufConfidenceBiasGrad.CopyToCPU(confidenceBiasGrad);
+                }
+
+                return (lossHost[0], dHidden);
+            }
+            finally
+            {
+                bufRegression.Dispose();
+                bufRange.Dispose();
+                bufQuality.Dispose();
+                bufDirection.Dispose();
+                bufMidDirection.Dispose();
+                bufConfidence.Dispose();
+
+                bufTargetRegression.Dispose();
+                bufTargetRange.Dispose();
+                bufTargetQuality.Dispose();
+                bufTargetDirection.Dispose();
+                bufTargetMidDirection.Dispose();
+
+                bufPreviousClose.Dispose();
+                bufConfidenceTargets.Dispose();
+                bufHidden.Dispose();
+                bufRegressionLogits.Dispose();
+                bufRangeLogits.Dispose();
+
+                bufRegressionProjection.Dispose();
+                bufRangeProjection.Dispose();
+                bufQualityProjection.Dispose();
+                bufDirectionProjection.Dispose();
+                bufMidDirectionProjection.Dispose();
+                bufConfidenceProjection.Dispose();
+
+                bufRegressionProjectionGrad.Dispose();
+                bufRangeProjectionGrad.Dispose();
+                bufQualityProjectionGrad.Dispose();
+                bufDirectionProjectionGrad.Dispose();
+                bufMidDirectionProjectionGrad.Dispose();
+                bufConfidenceProjectionGrad.Dispose();
+
+                bufRegressionBiasGrad.Dispose();
+                bufRangeBiasGrad.Dispose();
+                bufQualityBiasGrad.Dispose();
+                bufDirectionBiasGrad.Dispose();
+                bufMidDirectionBiasGrad.Dispose();
+                bufConfidenceBiasGrad.Dispose();
+
+                bufDRegression.Dispose();
+                bufDRange.Dispose();
+                bufDQuality.Dispose();
+                bufDDirection.Dispose();
+                bufDMidDirection.Dispose();
+                bufDConfidence.Dispose();
+                bufDHidden.Dispose();
+                bufLoss.Dispose();
+            }
+        }
+
+        public void AccumulateMmtacContextGradients(
+                  float[,] dContextA,
+                  float[,] dContextB,
+                  float[,] contextTypeEmbeddingGrad,
+                  float[,] dLiveNewsHidden,
+                  float[] dGlobalHidden,
+                  int numGlobal,
+                  int numStoredNews,
+                  int numNews,
+                  int numLiveNews,
+                  int numPriceContext,
+                  int totalContext,
+                  int priceOffset)
+        {
+            if (contextTypeEmbeddingGrad == null) throw new ArgumentNullException(nameof(contextTypeEmbeddingGrad));
+            if (dContextA == null && dContextB == null) return;
+
+            int ed = contextTypeEmbeddingGrad.GetLength(1);
+            if (!ShouldUseGpu((long)Math.Max(1, totalContext) * ed))
+            {
+                _mutliThreadCPU.AccumulateMmtacContextGradients(dContextA, dContextB, contextTypeEmbeddingGrad, dLiveNewsHidden, dGlobalHidden, numGlobal, numStoredNews, numNews, numLiveNews, numPriceContext, totalContext, priceOffset);
+                return;
+            }
+
+            int rowsA = dContextA != null ? dContextA.GetLength(0) : 1;
+            int rowsB = dContextB != null ? dContextB.GetLength(0) : 1;
+            var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(Math.Max(1, rowsA), ed));
+            var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(Math.Max(1, rowsB), ed));
+            var bufTypeGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(contextTypeEmbeddingGrad.GetLength(0), ed));
+            var bufLive = _accelerator.Allocate2DDenseX<float>(new Index2D(Math.Max(1, numLiveNews), ed));
+            var bufGlobal = _accelerator.Allocate1D<float>(ed);
+
+            try
+            {
+                bufA.CopyFromCPU(dContextA ?? new float[Math.Max(1, rowsA), ed]);
+                bufB.CopyFromCPU(dContextB ?? new float[Math.Max(1, rowsB), ed]);
+                bufTypeGrad.CopyFromCPU(contextTypeEmbeddingGrad);
+                bufLive.CopyFromCPU(dLiveNewsHidden ?? new float[Math.Max(1, numLiveNews), ed]);
+                bufGlobal.CopyFromCPU(dGlobalHidden ?? new float[ed]);
+
+                _accumulateMmtacContextTypeGradKernel(new Index2D(3, ed), bufA.View, bufB.View, bufTypeGrad.View, dContextA != null ? 1 : 0, dContextB != null ? 1 : 0, numGlobal, numNews, numPriceContext, totalContext, priceOffset);
+
+                if (dLiveNewsHidden != null && numLiveNews > 0)
+                {
+                    _accumulateMmtacLiveNewsGradKernel(new Index2D(numLiveNews, ed), bufA.View, bufB.View, bufLive.View, dContextA != null ? 1 : 0, dContextB != null ? 1 : 0, numGlobal, numStoredNews, totalContext);
+                }
+
+                if (dGlobalHidden != null && numGlobal > 0)
+                {
+                    _accumulateMmtacGlobalGradKernel(new Index1D(ed), bufA.View, bufB.View, bufGlobal.View, dContextA != null ? 1 : 0, dContextB != null ? 1 : 0, numGlobal, totalContext);
+                }
+
+                bufTypeGrad.CopyToCPU(contextTypeEmbeddingGrad);
+                if (dLiveNewsHidden != null && numLiveNews > 0)
+                {
+                    bufLive.CopyToCPU(dLiveNewsHidden);
+                }
+
+                if (dGlobalHidden != null && numGlobal > 0)
+                {
+                    bufGlobal.CopyToCPU(dGlobalHidden);
+                }
+            }
+            finally
+            {
+                bufA.Dispose();
+                bufB.Dispose();
+                bufTypeGrad.Dispose();
+                bufLive.Dispose();
+                bufGlobal.Dispose();
+            }
+        }
+        public void AccumulateGlobalProjectionGradients(float[] dGlobalHidden, float[] globalFeatures, float[,] projectionGrad, float[] biasGrad)
+        {
+            if (dGlobalHidden == null || globalFeatures == null || projectionGrad == null || biasGrad == null)
+            {
+                return;
+            }
+
+            int ed = dGlobalHidden.Length;
+            int gd = globalFeatures.Length;
+
+            if (!ShouldUseGpu((long)ed * gd))
+            {
+                _mutliThreadCPU.AccumulateGlobalProjectionGradients(dGlobalHidden, globalFeatures, projectionGrad, biasGrad);
+                return;
+            }
+
+            var bufDGlobal = _accelerator.Allocate1D<float>(ed);
+            var bufFeatures = _accelerator.Allocate1D<float>(gd);
+            var bufProjectionGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(ed, gd));
+            var bufBiasGrad = _accelerator.Allocate1D<float>(ed);
+
+            try
+            {
+                bufDGlobal.CopyFromCPU(dGlobalHidden);
+                bufFeatures.CopyFromCPU(globalFeatures);
+                bufProjectionGrad.CopyFromCPU(projectionGrad);
+                bufBiasGrad.CopyFromCPU(biasGrad);
+
+                _accumulateGlobalProjectionGradKernel(new Index2D(ed, gd), bufDGlobal.View, bufFeatures.View, bufProjectionGrad.View, bufBiasGrad.View);
+
+                bufProjectionGrad.CopyToCPU(projectionGrad);
+                bufBiasGrad.CopyToCPU(biasGrad);
+            }
+            finally
+            {
+                bufDGlobal.Dispose();
+                bufFeatures.Dispose();
+                bufProjectionGrad.Dispose();
+                bufBiasGrad.Dispose();
+            }
+        }
+        public float[,] ExpandMeanPoolGradient(float[,] pooledGradient, int rowIndex, int rowCount, int embeddingDim)
+        {
+            if (pooledGradient == null) throw new ArgumentNullException(nameof(pooledGradient));
+            if (rowCount <= 0) return new float[0, embeddingDim];
+            if (rowIndex < 0 || rowIndex >= pooledGradient.GetLength(0)) throw new ArgumentOutOfRangeException(nameof(rowIndex));
+            if (embeddingDim < 0 || embeddingDim > pooledGradient.GetLength(1)) throw new ArgumentOutOfRangeException(nameof(embeddingDim));
+
+            if (!ShouldUseGpu((long)rowCount * embeddingDim))
+            {
+                return _mutliThreadCPU.ExpandMeanPoolGradient(pooledGradient, rowIndex, rowCount, embeddingDim);
+            }
+
+            var bufPooled = _accelerator.Allocate2DDenseX<float>(new Index2D(pooledGradient.GetLength(0), pooledGradient.GetLength(1)));
+            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, embeddingDim));
+
+            try
+            {
+                bufPooled.CopyFromCPU(pooledGradient);
+                _expandMeanPoolGradientKernel(new Index2D(rowCount, embeddingDim), bufPooled.View, bufResult.View, rowIndex, rowCount);
+
+                var result = new float[rowCount, embeddingDim];
+                bufResult.CopyToCPU(result);
+                return result;
+            }
+            finally
+            {
+                bufPooled.Dispose();
+                bufResult.Dispose();
+            }
+        }
+
+
+        private static float StableSigmoidDevice(float x)
+        {
+            if (x >= 0.0f)
+            {
+                float ex = XMath.Exp(-x);
+                return 1.0f / (1.0f + ex);
+            }
+
+            float exp = XMath.Exp(x);
+            return exp / (1.0f + exp);
+        }
+
+        private static float SoftplusDevice(float x)
+        {
+            if (x > 20.0f)
+            {
+                return x;
+            }
+
+            if (x < -20.0f)
+            {
+                return XMath.Exp(x);
+            }
+
+            return XMath.Log(1.0f + XMath.Exp(x));
+        }
+
+        private static float ClampDevice(float value, float min, float max)
+        {
+            if (value < min)
+            {
+                return min;
+            }
+
+            if (value > max)
+            {
+                return max;
+            }
+
+            return value;
+        }
+
+        private static float ReadContextGradDevice(ArrayView2D<float, Stride2D.DenseX> dContextA, ArrayView2D<float, Stride2D.DenseX> dContextB, int hasA, int hasB, int row, int col)
+        {
+            float g = 0.0f;
+
+            if (hasA != 0 && row >= 0 && row < dContextA.Extent.X && col < dContextA.Extent.Y)
+            {
+                g += dContextA[row, col];
+            }
+
+            if (hasB != 0 && row >= 0 && row < dContextB.Extent.X && col < dContextB.Extent.Y)
+            {
+                g += dContextB[row, col];
+            }
+
+            return g;
+        }
+        private static void BuildMmtacContextWithPriceHiddenKernel(
+            Index2D idx,
+            ArrayView1D<float, Stride1D.Dense> globalToken,
+            ArrayView2D<float, Stride2D.DenseX> newsHidden,
+            ArrayView2D<float, Stride2D.DenseX> priceHidden,
+            ArrayView2D<float, Stride2D.DenseX> contextTypeEmbedding,
+            ArrayView2D<float, Stride2D.DenseX> output,
+            int numGlobal,
+            int numNews)
+        {
+            int row = idx.X;
+            int d = idx.Y;
+
+            if (row < numGlobal)
+            {
+                output[row, d] = globalToken[d] + contextTypeEmbedding[2, d];
+                return;
+            }
+
+            int newsRow = row - numGlobal;
+            if (newsRow < numNews)
+            {
+                output[row, d] = newsHidden[newsRow, d] + contextTypeEmbedding[0, d];
+                return;
+            }
+
+            int priceRow = newsRow - numNews;
+            output[row, d] = priceHidden[priceRow, d] + contextTypeEmbedding[1, d];
+        }
+        private static void BuildMmtacContextWithPriceTimesKernel(
+            Index1D rowIndex,
+            ArrayView1D<float, Stride1D.Dense> newsTimes,
+            ArrayView1D<float, Stride1D.Dense> priceTimes,
+            ArrayView1D<float, Stride1D.Dense> outputTimes,
+            int numGlobal,
+            int numNews,
+            int hasNewsTimes,
+            int hasPriceTimes)
+        {
+            int row = rowIndex;
+
+            if (row < numGlobal)
+            {
+                outputTimes[row] = 0.0f;
+                return;
+            }
+
+            int newsRow = row - numGlobal;
+            if (newsRow < numNews)
+            {
+                outputTimes[row] = hasNewsTimes != 0 ? newsTimes[newsRow] : 0.0f;
+                return;
+            }
+
+            int priceRow = newsRow - numNews;
+            outputTimes[row] = hasPriceTimes != 0 ? priceTimes[priceRow] : 0.0f;
+        }
+        private static void AccumulateMmtacContextTypeGradKernel(
+            Index2D idx,
+            ArrayView2D<float, Stride2D.DenseX> dContextA,
+            ArrayView2D<float, Stride2D.DenseX> dContextB,
+            ArrayView2D<float, Stride2D.DenseX> contextTypeEmbeddingGrad,
+            int hasA,
+            int hasB,
+            int numGlobal,
+            int numNews,
+            int numPriceContext,
+            int totalContext,
+            int priceOffset)
+        {
+            int type = idx.X;
+            int d = idx.Y;
+            float sum = 0.0f;
+
+            if (type == 2)
+            {
+                for (int row = 0; row < numGlobal && row < totalContext; row++)
+                {
+                    sum += ReadContextGradDevice(dContextA, dContextB, hasA, hasB, row, d);
+                }
+            }
+            else if (type == 0)
+            {
+                int start = numGlobal;
+                int endCandidate = numGlobal + numNews;
+                int end = endCandidate < totalContext ? endCandidate : totalContext;
+                for (int row = start; row < end; row++)
+                {
+                    sum += ReadContextGradDevice(dContextA, dContextB, hasA, hasB, row, d);
+                }
+            }
+            else
+            {
+                int start = priceOffset;
+                int endCandidate = priceOffset + numPriceContext;
+                int end = endCandidate < totalContext ? endCandidate : totalContext;
+                for (int row = start; row < end; row++)
+                {
+                    sum += ReadContextGradDevice(dContextA, dContextB, hasA, hasB, row, d);
+                }
+            }
+
+            contextTypeEmbeddingGrad[type, d] += sum;
+        }
+
+        private static void AccumulateMmtacLiveNewsGradKernel(
+          Index2D idx,
+          ArrayView2D<float, Stride2D.DenseX> dContextA,
+          ArrayView2D<float, Stride2D.DenseX> dContextB,
+          ArrayView2D<float, Stride2D.DenseX> dLiveNewsHidden,
+          int hasA,
+          int hasB,
+          int numGlobal,
+          int numStoredNews,
+          int totalContext)
+        {
+            int liveIdx = idx.X;
+            int d = idx.Y;
+            int ctxIdx = numGlobal + numStoredNews + liveIdx;
+
+            if (ctxIdx >= 0 && ctxIdx < totalContext)
+            {
+                dLiveNewsHidden[liveIdx, d] += ReadContextGradDevice(dContextA, dContextB, hasA, hasB, ctxIdx, d);
+            }
+        }
+
+        private static void AccumulateMmtacGlobalGradKernel(
+            Index1D dIndex,
+            ArrayView2D<float, Stride2D.DenseX> dContextA,
+            ArrayView2D<float, Stride2D.DenseX> dContextB,
+            ArrayView1D<float, Stride1D.Dense> dGlobalHidden,
+            int hasA,
+            int hasB,
+            int numGlobal,
+            int totalContext)
+        {
+            int d = dIndex;
+            float sum = 0.0f;
+
+            for (int row = 0; row < numGlobal && row < totalContext; row++)
+            {
+                sum += ReadContextGradDevice(dContextA, dContextB, hasA, hasB, row, d);
+            }
+
+            dGlobalHidden[d] += sum;
+        }
+
+        private static void AccumulateGlobalProjectionGradKernel(
+            Index2D idx,
+            ArrayView1D<float, Stride1D.Dense> dGlobalHidden,
+            ArrayView1D<float, Stride1D.Dense> globalFeatures,
+            ArrayView2D<float, Stride2D.DenseX> projectionGrad,
+            ArrayView1D<float, Stride1D.Dense> biasGrad)
+        {
+            int d = idx.X;
+            int g = idx.Y;
+            float tokenGrad = dGlobalHidden[d];
+
+            projectionGrad[d, g] += tokenGrad * globalFeatures[g];
+
+            if (g == 0)
+            {
+                biasGrad[d] += tokenGrad;
+            }
+        }
+
+        private static void ExpandMeanPoolGradientKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> pooledGradient, ArrayView2D<float, Stride2D.DenseX> result, int rowIndex, int rowCount)
+        {
+            int t = idx.X;
+            int d = idx.Y;
+            result[t, d] = pooledGradient[rowIndex, d] / rowCount;
+        }
+
+        private static void MmtacRegressionBaseGradKernel(
+            Index1D rowIndex,
+            ArrayView2D<float, Stride2D.DenseX> regression,
+            ArrayView2D<float, Stride2D.DenseX> targetRegression,
+            ArrayView2D<float, Stride2D.DenseX> targetDirection,
+            ArrayView1D<float, Stride1D.Dense> previousClose,
+            ArrayView2D<float, Stride2D.DenseX> dRegression,
+            ArrayView1D<float, Stride1D.Dense> loss,
+            float closeDirectionConsistencyWeight,
+            float closeDirectionConsistencyMargin,
+            int hasPreviousClose)
+        {
+            int t = rowIndex;
+            int sl = (int)regression.Extent.X;
+            int rDim = (int)regression.Extent.Y;
+
+            float invRegCount = 1.0f / (sl * rDim);
+            float invSl = 1.0f / sl;
+
+            float diffHigh = regression[t, 0] - targetRegression[t, 0];
+            float diffLow = regression[t, 1] - targetRegression[t, 1];
+            float diffClose = regression[t, 2] - targetRegression[t, 2];
+
+            Atomic.Add(
+                ref loss[0],
+                (diffHigh * diffHigh + diffLow * diffLow + diffClose * diffClose) * invRegCount);
+
+            float dHigh = 2.0f * diffHigh * invRegCount;
+            float dLow = 2.0f * diffLow * invRegCount;
+            float dClose = 2.0f * diffClose * invRegCount;
+
+            if (closeDirectionConsistencyWeight > 0.0f && hasPreviousClose != 0)
+            {
+                float sign = targetDirection[t, 0] >= 0.5f ? 1.0f : -1.0f;
+
+                float z = sign *
+                    (regression[t, 2] - previousClose[t] - sign * closeDirectionConsistencyMargin);
+
+                float closePenalty;
+
+                if (z > 20.0f)
+                {
+                    closePenalty = XMath.Exp(-z);
+                }
+                else if (z < -20.0f)
+                {
+                    closePenalty = -z;
+                }
+                else
+                {
+                    closePenalty = XMath.Log(1.0f + XMath.Exp(-z));
+                }
+
+                Atomic.Add(
+                    ref loss[0],
+                    closeDirectionConsistencyWeight * closePenalty * invSl);
+
+                float sigmoidNegZ;
+
+                if (z >= 0.0f)
+                {
+                    float ez = XMath.Exp(-z);
+                    sigmoidNegZ = ez / (1.0f + ez);
+                }
+                else
+                {
+                    float ez = XMath.Exp(z);
+                    sigmoidNegZ = 1.0f / (1.0f + ez);
+                }
+
+                dClose += -sign * sigmoidNegZ * closeDirectionConsistencyWeight * invSl;
+            }
+
+            // Temporary storage:
+            // dRegression[t,0] = dHigh
+            // dRegression[t,1] = dLow
+            // dRegression[t,2] = dClose
+            // MmtacRangeShareGradKernel converts these into raw regression-logit gradients.
+            dRegression[t, 0] = dHigh;
+            dRegression[t, 1] = dLow;
+            dRegression[t, 2] = dClose;
+        }
+
+        private static void MmtacRangeShareGradKernel(
+            Index1D rowIndex,
+            ArrayView2D<float, Stride2D.DenseX> range,
+            ArrayView2D<float, Stride2D.DenseX> targetRange,
+            ArrayView2D<float, Stride2D.DenseX> regressionLogits,
+            ArrayView1D<float, Stride1D.Dense> rangeLogits,
+            ArrayView2D<float, Stride2D.DenseX> dRegression,
+            ArrayView2D<float, Stride2D.DenseX> dRangeLogit,
+            ArrayView1D<float, Stride1D.Dense> loss,
+            float rangeLossWeight)
+        {
+            int t = rowIndex;
+            int sl = (int)range.Extent.X;
+            float invSl = 1.0f / sl;
+
+            float dHigh = dRegression[t, 0];
+            float dLow = dRegression[t, 1];
+            float dClose = dRegression[t, 2];
+
+            float rangeDiff = range[t, 0] - targetRange[t, 0];
+
+            Atomic.Add(
+                ref loss[0],
+                rangeLossWeight * rangeDiff * rangeDiff * invSl);
+
+            float dRangeOutput = 2.0f * rangeDiff * invSl * rangeLossWeight;
+
+            float upLogit = regressionLogits[t, 0];
+            float downLogit = regressionLogits[t, 1];
+            float rangeLogit = rangeLogits[t];
+
+            float upBase = SoftplusDevice(upLogit);
+            float downBase = SoftplusDevice(downLogit);
+            float den = upBase + downBase;
+
+            float upShare = den > 1e-6f ? upBase / den : 0.5f;
+            float downShare = 1.0f - upShare;
+            float rangeValue = SoftplusDevice(rangeLogit);
+
+            float dCloseRaw = dHigh + dLow + dClose;
+            float dRangeValue = dHigh * upShare - dLow * downShare + dRangeOutput;
+            float dShare = rangeValue * (dHigh + dLow);
+
+            float dUpBase = 0.0f;
+            float dDownBase = 0.0f;
+
+            if (den > 1e-6f)
+            {
+                float invDenSq = 1.0f / (den * den);
+                dUpBase = dShare * downBase * invDenSq;
+                dDownBase = -dShare * upBase * invDenSq;
+            }
+
+            dRegression[t, 0] = dUpBase * StableSigmoidDevice(upLogit);
+            dRegression[t, 1] = dDownBase * StableSigmoidDevice(downLogit);
+            dRegression[t, 2] = dCloseRaw;
+
+            dRangeLogit[t, 0] = dRangeValue * StableSigmoidDevice(rangeLogit);
+        }
+
+        private static void MmtacScalarMseGradKernel(
+            Index1D rowIndex,
+            ArrayView2D<float, Stride2D.DenseX> prediction,
+            ArrayView2D<float, Stride2D.DenseX> target,
+            ArrayView2D<float, Stride2D.DenseX> dLogit,
+            ArrayView1D<float, Stride1D.Dense> loss,
+            float weight)
+        {
+            int t = rowIndex;
+            int sl = (int)prediction.Extent.X;
+            float p = prediction[t, 0];
+            float diff = p - target[t, 0];
+            float invSl = 1.0f / sl;
+
+            Atomic.Add(ref loss[0], weight * diff * diff * invSl);
+            dLogit[t, 0] = 2.0f * diff * invSl * weight * p * (1.0f - p);
+        }
+
+        private static void MmtacScalarBceGradKernel(
+            Index1D rowIndex,
+            ArrayView2D<float, Stride2D.DenseX> prediction,
+            ArrayView2D<float, Stride2D.DenseX> target,
+            ArrayView2D<float, Stride2D.DenseX> dLogit,
+            ArrayView1D<float, Stride1D.Dense> loss,
+            float weight)
+        {
+            int t = rowIndex;
+            int sl = (int)prediction.Extent.X;
+            float p = prediction[t, 0];
+            float y = target[t, 0];
+            float pc = ClampDevice(p, 1e-7f, 1.0f - 1e-7f);
+            float invSl = 1.0f / sl;
+
+            Atomic.Add(ref loss[0], weight * (-(y * XMath.Log(pc) + (1.0f - y) * XMath.Log(1.0f - pc))) * invSl);
+            dLogit[t, 0] = (p - y) * weight * invSl;
+        }
+
+        private static void MmtacConfidenceGradKernel(
+            Index1D rowIndex,
+            ArrayView2D<float, Stride2D.DenseX> confidence,
+            ArrayView1D<float, Stride1D.Dense> confidenceTargets,
+            ArrayView2D<float, Stride2D.DenseX> regression,
+            ArrayView2D<float, Stride2D.DenseX> targetRegression,
+            ArrayView2D<float, Stride2D.DenseX> dConfidence,
+            ArrayView1D<float, Stride1D.Dense> loss,
+            float weight,
+            int hasConfidenceTargets,
+            int rDim)
+        {
+            int t = rowIndex;
+            int sl = (int)confidence.Extent.X;
+            float p = confidence[t, 0];
+            float y;
+
+            if (hasConfidenceTargets != 0)
+            {
+                y = confidenceTargets[t];
+            }
+            else
+            {
+                float sq = 0.0f;
+                for (int j = 0; j < rDim; j++)
+                {
+                    float diff = regression[t, j] - targetRegression[t, j];
+                    sq += diff * diff;
+                }
+
+                y = XMath.Exp(-5.0f * XMath.Sqrt(sq / rDim));
+            }
+
+            float pc = ClampDevice(p, 1e-7f, 1.0f - 1e-7f);
+            float invSl = 1.0f / sl;
+
+            Atomic.Add(ref loss[0], weight * (-(y * XMath.Log(pc) + (1.0f - y) * XMath.Log(1.0f - pc))) * invSl);
+            dConfidence[t, 0] = (p - y) * weight * invSl;
+        }
+
+        private static void MmtacOutputDHiddenKernel(
+            Index2D idx,
+            ArrayView2D<float, Stride2D.DenseX> dRegression,
+            ArrayView2D<float, Stride2D.DenseX> dRange,
+            ArrayView2D<float, Stride2D.DenseX> dQuality,
+            ArrayView2D<float, Stride2D.DenseX> dDirection,
+            ArrayView2D<float, Stride2D.DenseX> dMidDirection,
+            ArrayView2D<float, Stride2D.DenseX> dConfidence,
+            ArrayView2D<float, Stride2D.DenseX> regressionProjection,
+            ArrayView2D<float, Stride2D.DenseX> rangeProjection,
+            ArrayView2D<float, Stride2D.DenseX> qualityProjection,
+            ArrayView2D<float, Stride2D.DenseX> directionProjection,
+            ArrayView2D<float, Stride2D.DenseX> midDirectionProjection,
+            ArrayView2D<float, Stride2D.DenseX> confidenceProjection,
+            ArrayView2D<float, Stride2D.DenseX> dHidden,
+            int useConfidence)
+        {
+            int t = idx.X;
+            int k = idx.Y;
+            int rDim = (int)dRegression.Extent.Y;
+            float sum = 0.0f;
+
+            for (int v = 0; v < rDim; v++)
+            {
+                sum += dRegression[t, v] * regressionProjection[v, k];
+            }
+
+            sum += dRange[t, 0] * rangeProjection[0, k];
+            sum += dQuality[t, 0] * qualityProjection[0, k];
+            sum += dDirection[t, 0] * directionProjection[0, k];
+            sum += dMidDirection[t, 0] * midDirectionProjection[0, k];
+
+            if (useConfidence != 0)
+            {
+                sum += dConfidence[t, 0] * confidenceProjection[0, k];
+            }
+
+            dHidden[t, k] = sum;
+        }
+
+        private static void MmtacOutputProjectionGradKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> hidden, ArrayView2D<float, Stride2D.DenseX> dLogits, ArrayView2D<float, Stride2D.DenseX> projectionGrad)
+        {
+            int o = idx.X;
+            int k = idx.Y;
+            int rows = (int)hidden.Extent.X;
+            float sum = 0.0f;
+
+            for (int t = 0; t < rows; t++)
+            {
+                sum += dLogits[t, o] * hidden[t, k];
+            }
+
+            projectionGrad[o, k] += sum;
+        }
+
+        private static void MmtacOutputBiasGradKernel(Index1D oIndex, ArrayView2D<float, Stride2D.DenseX> dLogits, ArrayView1D<float, Stride1D.Dense> biasGrad)
+        {
+            int o = oIndex;
+            int rows = (int)dLogits.Extent.X;
+            float sum = 0.0f;
+
+            for (int t = 0; t < rows; t++)
+            {
+                sum += dLogits[t, o];
+            }
+
+            biasGrad[o] += sum;
+        }
     }
 }

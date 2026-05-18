@@ -32,6 +32,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
             //ZeroMatrix / ZeroVector
             _zeroMatrixKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>>(ZeroMatrixKernel);
+            _zeroMatrixColumnsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>>(ZeroMatrixColumnsKernel);
             _zeroVectorKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView1D<float, Stride1D.Dense>>(ZeroVectorKernel);
 
             //MatrixAddInPlace
@@ -691,6 +692,47 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         #endregion
 
+
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>> _zeroMatrixColumnsKernel;
+        private static void ZeroMatrixColumnsKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> mat)
+        {
+            mat[idx] = 0.0f;
+        }
+        public void ZeroMatrixColumns(float[,] matrix, int columnCount)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            if (columnCount <= 0)
+            {
+                return;
+            }
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            int count = Math.Min(columnCount, cols);
+
+            if (!ShouldUseGpu((long)rows * count))
+            {
+                _mutliThreadCPU.ZeroMatrixColumns(matrix, count);
+                return;
+            }
+
+            var buf = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
+
+            try
+            {
+                buf.CopyFromCPU(matrix);
+                _zeroMatrixColumnsKernel(new Index2D(rows, count), buf.View);
+                buf.CopyToCPU(matrix);
+            }
+            finally
+            {
+                buf.Dispose();
+            }
+        }
         private void DisposeSharedTensorBuffers()
         {
             foreach (var v in _matMulCache.Values)

@@ -30,7 +30,13 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
     { 
         private int _passed;
         private int _failed;
-        private readonly List<string> _failures = new List<string>();
+        private readonly List<string> _failures = new List<string>(); 
+        
+        AccelerationType _accelerationType;
+        public TacmatTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
         private void Test_PredictWithMemory_StoredPriceMemoryMatchesExplicitPriceContext()
         {
             var config = CreateConfig(
@@ -2322,7 +2328,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 Runtime = new RuntimeConfig
                 {
                     FFNActivationType = ActivationType.Relu,
-                    AccelerationType = AccelerationType.CPU,
+                    AccelerationType = _accelerationType,
                     AccelerationDeviceId = 0
                 },
                 Regularization = new RegularizationConfig
@@ -2364,7 +2370,10 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 "bullish sentiment on tech sector",
                 "neutral background market commentary"
             };
-            var tokenizer = new BPETokenizer(new RuntimeConfig());
+            
+        var config = new RuntimeConfig();
+            config.AccelerationType = _accelerationType;
+            var tokenizer = new BPETokenizer(config);
             tokenizer.Train(corpus, vocabSize: 100, minFrequency: 1);
             return tokenizer;
         }

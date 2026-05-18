@@ -232,7 +232,7 @@ namespace CallaghanDev.ML.Transformers.Configuration
     {
         public ActivationType FFNActivationType { get; set; } = ActivationType.Relu;
 
-        public AccelerationType AccelerationType { get; set; } = AccelerationType.CPU;
+        public AccelerationType AccelerationType { get; set; } = AccelerationType.MultiThreadCPU;
 
         public int AccelerationDeviceId { get; set; } = 0;
 

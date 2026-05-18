@@ -3547,6 +3547,664 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
             return MathF.Log(1f + MathF.Exp(x));
         }
+
+        public void ZeroMatrixColumns(float[,] matrix, int columnCount)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            if (columnCount <= 0)
+            {
+                return;
+            }
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            int count = Math.Min(columnCount, cols);
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < count; j++)
+                {
+                    matrix[i, j] = 0f;
+                }
+            }
+        }
+
+        public (float[,] K, float[,] V) ProjectKV(float[,] input, float[,] WK, float[] biasK, float[,] WV, float[] biasV)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (WK == null) throw new ArgumentNullException(nameof(WK));
+            if (WV == null) throw new ArgumentNullException(nameof(WV));
+            if (biasK == null) throw new ArgumentNullException(nameof(biasK));
+            if (biasV == null) throw new ArgumentNullException(nameof(biasV));
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+            int kDim = WK.GetLength(0);
+            int vDim = WV.GetLength(0);
+
+            if (kDim != vDim)
+                throw new ArgumentException("K and V output dimensions must match.");
+            if (WK.GetLength(1) != inputDim)
+                throw new ArgumentException("WK input dimension does not match input width.", nameof(WK));
+            if (WV.GetLength(1) != inputDim)
+                throw new ArgumentException("WV input dimension does not match input width.", nameof(WV));
+            if (biasK.Length != kDim)
+                throw new ArgumentException("biasK length does not match WK output dimension.", nameof(biasK));
+            if (biasV.Length != vDim)
+                throw new ArgumentException("biasV length does not match WV output dimension.", nameof(biasV));
+
+            var K = new float[rows, kDim];
+            var V = new float[rows, vDim];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int o = 0; o < kDim; o++)
+                {
+                    float kSum = biasK[o];
+                    float vSum = biasV[o];
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+                        kSum += WK[o, d] * x;
+                        vSum += WV[o, d] * x;
+                    }
+
+                    K[i, o] = kSum;
+                    V[i, o] = vSum;
+                }
+            }
+
+            return (K, V);
+        }
+        public float[,] BackpropKV(float[,] input, float[,] dK, float[,] dV, float[,] WK, float[,] WV, float[,] WKGrad, float[] biasKGrad, float[,] WVGrad, float[] biasVGrad)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (dK == null) throw new ArgumentNullException(nameof(dK));
+            if (dV == null) throw new ArgumentNullException(nameof(dV));
+            if (WK == null) throw new ArgumentNullException(nameof(WK));
+            if (WV == null) throw new ArgumentNullException(nameof(WV));
+            if (WKGrad == null) throw new ArgumentNullException(nameof(WKGrad));
+            if (WVGrad == null) throw new ArgumentNullException(nameof(WVGrad));
+            if (biasKGrad == null) throw new ArgumentNullException(nameof(biasKGrad));
+            if (biasVGrad == null) throw new ArgumentNullException(nameof(biasVGrad));
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+            int kDim = WK.GetLength(0);
+            int vDim = WV.GetLength(0);
+
+            if (kDim != vDim)
+                throw new ArgumentException("K and V dimensions must match.");
+
+            int outputDim = kDim;
+
+            if (WK.GetLength(1) != inputDim || WV.GetLength(1) != inputDim)
+                throw new ArgumentException("K/V weight input dimensions must match input width.");
+            if (dK.GetLength(0) != rows || dV.GetLength(0) != rows)
+                throw new ArgumentException("dK and dV row counts must match input row count.");
+            if (dK.GetLength(1) != outputDim || dV.GetLength(1) != outputDim)
+                throw new ArgumentException("dK and dV widths must match K/V output dimension.");
+            if (WKGrad.GetLength(0) != outputDim || WKGrad.GetLength(1) != inputDim)
+                throw new ArgumentException("WKGrad shape mismatch.", nameof(WKGrad));
+            if (WVGrad.GetLength(0) != outputDim || WVGrad.GetLength(1) != inputDim)
+                throw new ArgumentException("WVGrad shape mismatch.", nameof(WVGrad));
+            if (biasKGrad.Length != outputDim || biasVGrad.Length != outputDim)
+                throw new ArgumentException("K/V bias gradient lengths must match output dimension.");
+
+            var dInput = new float[rows, inputDim];
+
+            for (int i = 0; i < rows; i++)
+            {
+                for (int o = 0; o < outputDim; o++)
+                {
+                    float dk = dK[i, o];
+                    float dv = dV[i, o];
+
+                    biasKGrad[o] += dk;
+                    biasVGrad[o] += dv;
+
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+
+                        WKGrad[o, d] += dk * x;
+                        WVGrad[o, d] += dv * x;
+
+                        dInput[i, d] += dk * WK[o, d]
+                                      + dv * WV[o, d];
+                    }
+                }
+            }
+
+            return dInput;
+        }
+        public void VectorUpdateClamped(float[] weights, float[] gradients, float learningRate, float minValue, float maxValue)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (gradients == null) throw new ArgumentNullException(nameof(gradients));
+            if (weights.Length != gradients.Length) throw new ArgumentException("weights and gradients must have the same length.");
+
+            for (int i = 0; i < weights.Length; i++)
+            {
+                weights[i] = Math.Clamp(weights[i] - learningRate * gradients[i], minValue, maxValue);
+            }
+        }
+        public void Matrix3DAddInPlace(float[,,] target, float[,,] addend)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (addend == null) throw new ArgumentNullException(nameof(addend));
+
+            int d0 = target.GetLength(0);
+            int d1 = target.GetLength(1);
+            int d2 = target.GetLength(2);
+
+            if (addend.GetLength(0) != d0 || addend.GetLength(1) != d1 || addend.GetLength(2) != d2)
+            {
+                throw new ArgumentException("3D tensor shape mismatch.", nameof(addend));
+            }
+
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    for (int k = 0; k < d2; k++)
+                    {
+                        target[i, j, k] += addend[i, j, k];
+                    }
+                }
+            }
+        }
+        public void Matrix3DUpdate(float[,,] weights, float[,,] gradients, float learningRate)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (gradients == null) throw new ArgumentNullException(nameof(gradients));
+
+            int d0 = weights.GetLength(0);
+            int d1 = weights.GetLength(1);
+            int d2 = weights.GetLength(2);
+
+            if (gradients.GetLength(0) != d0 || gradients.GetLength(1) != d1 || gradients.GetLength(2) != d2)
+            {
+                throw new ArgumentException("3D tensor shape mismatch.", nameof(gradients));
+            }
+
+            for (int i = 0; i < d0; i++)
+            {
+                for (int j = 0; j < d1; j++)
+                {
+                    for (int k = 0; k < d2; k++)
+                    {
+                        weights[i, j, k] -= learningRate * gradients[i, j, k];
+                    }
+                }
+            }
+        }
+
+        public (float[,] contextHidden, float[] contextTimes, int numGlobal, int numNews, int numPrice) BuildMmtacContextWithPrice(float[,] newsHidden, float[] newsTimes, float[] globalToken, float[,] priceContextHidden, float[] priceContextTimes, float[,] contextTypeEmbedding)
+        {
+            if (contextTypeEmbedding == null)
+            {
+                throw new ArgumentNullException(nameof(contextTypeEmbedding));
+            }
+
+            int ed = contextTypeEmbedding.GetLength(1);
+            int numGlobal = globalToken != null ? 1 : 0;
+            int numNews = newsHidden != null ? newsHidden.GetLength(0) : 0;
+            int numPrice = priceContextHidden != null ? priceContextHidden.GetLength(0) : 0;
+            int total = numGlobal + numNews + numPrice;
+
+            if (total == 0)
+            {
+                return (null, null, 0, 0, 0);
+            }
+
+            if (globalToken != null && globalToken.Length != ed)
+            {
+                throw new ArgumentException("globalToken length must match embedding dimension.", nameof(globalToken));
+            }
+
+            if (newsHidden != null && newsHidden.GetLength(1) != ed)
+            {
+                throw new ArgumentException("newsHidden embedding dimension mismatch.", nameof(newsHidden));
+            }
+
+            if (newsTimes != null && newsTimes.Length != numNews)
+            {
+                throw new ArgumentException("newsTimes length must match newsHidden row count.", nameof(newsTimes));
+            }
+
+            if (priceContextHidden != null && priceContextHidden.GetLength(1) != ed)
+            {
+                throw new ArgumentException("priceContextHidden embedding dimension mismatch.", nameof(priceContextHidden));
+            }
+
+            if (priceContextTimes != null && priceContextTimes.Length != numPrice)
+            {
+                throw new ArgumentException("priceContextTimes length must match priceContextHidden row count.", nameof(priceContextTimes));
+            }
+
+            var contextHidden = new float[total, ed];
+            var contextTimes = new float[total];
+            int row = 0;
+
+            if (globalToken != null)
+            {
+                for (int d = 0; d < ed; d++)
+                {
+                    contextHidden[row, d] = globalToken[d] + contextTypeEmbedding[2, d];
+                }
+
+                contextTimes[row] = 0f;
+                row++;
+            }
+
+            for (int i = 0; i < numNews; i++)
+            {
+                for (int d = 0; d < ed; d++)
+                {
+                    contextHidden[row, d] = newsHidden[i, d] + contextTypeEmbedding[0, d];
+                }
+
+                contextTimes[row] = newsTimes != null ? newsTimes[i] : 0f;
+                row++;
+            }
+
+            for (int i = 0; i < numPrice; i++)
+            {
+                for (int d = 0; d < ed; d++)
+                {
+                    contextHidden[row, d] = priceContextHidden[i, d] + contextTypeEmbedding[1, d];
+                }
+
+                contextTimes[row] = priceContextTimes != null ? priceContextTimes[i] : 0f;
+                row++;
+            }
+
+            return (contextHidden, contextTimes, numGlobal, numNews, numPrice);
+        }
+        public (float loss, float[,] dHidden) BackpropMmtacOutputHeads(
+            float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence,
+            float[,] targetRegression, float[,] targetRange, float[,] targetQuality, float[,] targetDirection, float[,] targetMidDirection,
+            float[] previousClose, float[] confidenceTargets,
+            float[,] hidden, float[,] regressionLogits, float[] rangeLogits,
+            float[,] regressionProjection, float[,] rangeProjection, float[,] qualityProjection, float[,] directionProjection, float[,] midDirectionProjection, float[,] confidenceProjection,
+            float[,] regressionProjectionGrad, float[] regressionBiasGrad,
+            float[,] rangeProjectionGrad, float[] rangeBiasGrad,
+            float[,] qualityProjectionGrad, float[] qualityBiasGrad,
+            float[,] directionProjectionGrad, float[] directionBiasGrad,
+            float[,] midDirectionProjectionGrad, float[] midDirectionBiasGrad,
+            float[,] confidenceProjectionGrad, float[] confidenceBiasGrad,
+            float rangeLossWeight, float qualityLossWeight, float directionLossWeight, float midDirectionLossWeight,
+            float closeDirectionConsistencyWeight, float closeDirectionConsistencyMargin,
+            float confidenceLossWeight, bool useConfidenceHead)
+        {
+            if (regression == null) throw new ArgumentNullException(nameof(regression));
+            if (targetRegression == null) throw new ArgumentNullException(nameof(targetRegression));
+            if (hidden == null) throw new ArgumentNullException(nameof(hidden));
+            if (regressionLogits == null) throw new ArgumentNullException(nameof(regressionLogits));
+            if (rangeLogits == null) throw new ArgumentNullException(nameof(rangeLogits));
+
+            int sl = regression.GetLength(0);
+            int rDim = regression.GetLength(1);
+            int ed = hidden.GetLength(1);
+
+            if (rDim < 3)
+            {
+                throw new ArgumentException("Regression output must contain high, low and close columns.", nameof(regression));
+            }
+            if (hidden.GetLength(0) != sl)
+            {
+                throw new ArgumentException("hidden row count must match output row count.", nameof(hidden));
+            }
+            if (confidenceTargets != null && confidenceTargets.Length < sl)
+            {
+                throw new ArgumentException("confidenceTargets length must be at least the sequence length.", nameof(confidenceTargets));
+            }
+
+            float mseLoss = 0f;
+            var dHigh = new float[sl];
+            var dLow = new float[sl];
+            var dClose = new float[sl];
+            var dRangeOutput = new float[sl];
+            float invRegCount = 1.0f / (sl * rDim);
+
+            for (int t = 0; t < sl; t++)
+            {
+                float diffHigh = regression[t, 0] - targetRegression[t, 0];
+                float diffLow = regression[t, 1] - targetRegression[t, 1];
+                float diffClose = regression[t, 2] - targetRegression[t, 2];
+
+                mseLoss += diffHigh * diffHigh + diffLow * diffLow + diffClose * diffClose;
+                dHigh[t] = 2f * diffHigh * invRegCount;
+                dLow[t] = 2f * diffLow * invRegCount;
+                dClose[t] = 2f * diffClose * invRegCount;
+            }
+
+            mseLoss *= invRegCount;
+
+            float closeDirectionLoss = 0f;
+            if (closeDirectionConsistencyWeight > 0f && previousClose != null)
+            {
+                for (int t = 0; t < sl; t++)
+                {
+                    float sign = targetDirection[t, 0] >= 0.5f ? 1f : -1f;
+                    float z = sign * (regression[t, 2] - previousClose[t] - sign * closeDirectionConsistencyMargin);
+
+                    if (z > 20f)
+                        closeDirectionLoss += MathF.Exp(-z);
+                    else if (z < -20f)
+                        closeDirectionLoss += -z;
+                    else
+                        closeDirectionLoss += MathF.Log(1f + MathF.Exp(-z));
+
+                    float sigmoidNegZ;
+                    if (z >= 0f)
+                    {
+                        float ez = MathF.Exp(-z);
+                        sigmoidNegZ = ez / (1f + ez);
+                    }
+                    else
+                    {
+                        float ez = MathF.Exp(z);
+                        sigmoidNegZ = 1f / (1f + ez);
+                    }
+
+                    dClose[t] += -sign * sigmoidNegZ * closeDirectionConsistencyWeight / sl;
+                }
+
+                closeDirectionLoss /= sl;
+            }
+
+            float rangeLoss = 0f;
+            for (int t = 0; t < sl; t++)
+            {
+                float diff = range[t, 0] - targetRange[t, 0];
+                rangeLoss += diff * diff;
+                dRangeOutput[t] = 2f * diff / sl * rangeLossWeight;
+            }
+            rangeLoss /= sl;
+
+            var dRawRegression = new float[sl, rDim];
+            var dHidden = new float[sl, ed];
+
+            for (int t = 0; t < sl; t++)
+            {
+                float upLogit = regressionLogits[t, 0];
+                float downLogit = regressionLogits[t, 1];
+                float rangeLogit = rangeLogits[t];
+
+                float upBase = Softplus(upLogit);
+                float downBase = Softplus(downLogit);
+                float den = upBase + downBase;
+                float upShare = den > 1e-6f ? upBase / den : 0.5f;
+                float downShare = 1f - upShare;
+                float rangeValue = Softplus(rangeLogit);
+
+                float gHigh = dHigh[t];
+                float gLow = dLow[t];
+                float gClose = dClose[t];
+                float gRange = dRangeOutput[t];
+
+                float dCloseRaw = gHigh + gLow + gClose;
+                float dRangeValue = gHigh * upShare - gLow * downShare + gRange;
+                float dShare = rangeValue * (gHigh + gLow);
+
+                float dUpBase = 0f;
+                float dDownBase = 0f;
+                if (den > 1e-6f)
+                {
+                    float invDenSq = 1f / (den * den);
+                    dUpBase = dShare * downBase * invDenSq;
+                    dDownBase = -dShare * upBase * invDenSq;
+                }
+
+                dRawRegression[t, 0] = dUpBase * StableSigmoid(upLogit);
+                dRawRegression[t, 1] = dDownBase * StableSigmoid(downLogit);
+                dRawRegression[t, 2] = dCloseRaw;
+
+                float dRangeLogit = dRangeValue * StableSigmoid(rangeLogit);
+                rangeBiasGrad[0] += dRangeLogit;
+
+                for (int k = 0; k < ed; k++)
+                {
+                    rangeProjectionGrad[0, k] += dRangeLogit * hidden[t, k];
+                    dHidden[t, k] += dRangeLogit * rangeProjection[0, k];
+                }
+            }
+
+            for (int t = 0; t < sl; t++)
+            {
+                for (int v = 0; v < rDim; v++)
+                {
+                    float dVal = dRawRegression[t, v];
+                    regressionBiasGrad[v] += dVal;
+
+                    for (int k = 0; k < ed; k++)
+                    {
+                        regressionProjectionGrad[v, k] += dVal * hidden[t, k];
+                        dHidden[t, k] += dVal * regressionProjection[v, k];
+                    }
+                }
+            }
+
+            float qualityLoss = 0f;
+            for (int t = 0; t < sl; t++)
+            {
+                float p = quality[t, 0];
+                float diff = p - targetQuality[t, 0];
+                qualityLoss += diff * diff;
+
+                float dOutput = 2f * diff / sl * qualityLossWeight;
+                float dLogit = dOutput * p * (1f - p);
+                qualityBiasGrad[0] += dLogit;
+
+                for (int k = 0; k < ed; k++)
+                {
+                    qualityProjectionGrad[0, k] += dLogit * hidden[t, k];
+                    dHidden[t, k] += dLogit * qualityProjection[0, k];
+                }
+            }
+            qualityLoss /= sl;
+
+            float directionLoss = 0f;
+            for (int t = 0; t < sl; t++)
+            {
+                float p = direction[t, 0];
+                float y = targetDirection[t, 0];
+                float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
+                directionLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
+
+                float dLogit = (p - y) * directionLossWeight / sl;
+                directionBiasGrad[0] += dLogit;
+
+                for (int k = 0; k < ed; k++)
+                {
+                    directionProjectionGrad[0, k] += dLogit * hidden[t, k];
+                    dHidden[t, k] += dLogit * directionProjection[0, k];
+                }
+            }
+            directionLoss /= sl;
+
+            float midDirectionLoss = 0f;
+            for (int t = 0; t < sl; t++)
+            {
+                float p = midDirection[t, 0];
+                float y = targetMidDirection[t, 0];
+                float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
+                midDirectionLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
+
+                float dLogit = (p - y) * midDirectionLossWeight / sl;
+                midDirectionBiasGrad[0] += dLogit;
+
+                for (int k = 0; k < ed; k++)
+                {
+                    midDirectionProjectionGrad[0, k] += dLogit * hidden[t, k];
+                    dHidden[t, k] += dLogit * midDirectionProjection[0, k];
+                }
+            }
+            midDirectionLoss /= sl;
+
+            float confidenceLoss = 0f;
+            float effectiveConfidenceWeight = useConfidenceHead ? MathF.Max(0f, confidenceLossWeight) : 0f;
+
+            if (useConfidenceHead && confidence != null && confidenceProjection != null && confidenceProjectionGrad != null && confidenceBiasGrad != null && effectiveConfidenceWeight > 0f)
+            {
+                for (int t = 0; t < sl; t++)
+                {
+                    float p = confidence[t, 0];
+                    float y;
+
+                    if (confidenceTargets != null)
+                    {
+                        y = confidenceTargets[t];
+                    }
+                    else
+                    {
+                        float sq = 0f;
+                        for (int j = 0; j < rDim; j++)
+                        {
+                            float diff = regression[t, j] - targetRegression[t, j];
+                            sq += diff * diff;
+                        }
+                        y = MathF.Exp(-5f * MathF.Sqrt(sq / rDim));
+                    }
+
+                    float pc = Math.Clamp(p, 1e-7f, 1f - 1e-7f);
+                    confidenceLoss -= y * MathF.Log(pc) + (1f - y) * MathF.Log(1f - pc);
+
+                    float dLogit = (p - y) * effectiveConfidenceWeight / sl;
+                    confidenceBiasGrad[0] += dLogit;
+
+                    for (int k = 0; k < ed; k++)
+                    {
+                        confidenceProjectionGrad[0, k] += dLogit * hidden[t, k];
+                        dHidden[t, k] += dLogit * confidenceProjection[0, k];
+                    }
+                }
+
+                confidenceLoss /= sl;
+            }
+
+            float loss = mseLoss
+                + closeDirectionConsistencyWeight * closeDirectionLoss
+                + rangeLossWeight * rangeLoss
+                + qualityLossWeight * qualityLoss
+                + directionLossWeight * directionLoss
+                + midDirectionLossWeight * midDirectionLoss
+                + effectiveConfidenceWeight * confidenceLoss;
+
+            return (loss, dHidden);
+        }
+        public void AccumulateMmtacContextGradients(float[,] dContextA, float[,] dContextB, float[,] contextTypeEmbeddingGrad, float[,] dLiveNewsHidden, float[] dGlobalHidden, int numGlobal, int numStoredNews, int numNews, int numLiveNews, int numPriceContext, int totalContext, int priceOffset)
+        {
+            if (contextTypeEmbeddingGrad == null) throw new ArgumentNullException(nameof(contextTypeEmbeddingGrad));
+            if (dContextA == null && dContextB == null) return;
+
+            int ed = contextTypeEmbeddingGrad.GetLength(1);
+
+            float GetGrad(int row, int col)
+            {
+                float g = 0f;
+                if (dContextA != null && row < dContextA.GetLength(0)) g += dContextA[row, col];
+                if (dContextB != null && row < dContextB.GetLength(0)) g += dContextB[row, col];
+                return g;
+            }
+
+            for (int gi = 0; gi < numGlobal && gi < totalContext; gi++)
+            {
+                for (int j = 0; j < ed; j++)
+                {
+                    float g = GetGrad(gi, j);
+                    contextTypeEmbeddingGrad[2, j] += g;
+                    if (dGlobalHidden != null)
+                    {
+                        dGlobalHidden[j] += g;
+                    }
+                }
+            }
+
+            for (int i = 0; i < numNews; i++)
+            {
+                int ctxIdx = numGlobal + i;
+                if (ctxIdx >= totalContext)
+                {
+                    break;
+                }
+
+                bool isLive = i >= numStoredNews;
+                int liveIdx = i - numStoredNews;
+
+                for (int j = 0; j < ed; j++)
+                {
+                    float g = GetGrad(ctxIdx, j);
+                    contextTypeEmbeddingGrad[0, j] += g;
+
+                    if (isLive && dLiveNewsHidden != null && liveIdx >= 0 && liveIdx < numLiveNews)
+                    {
+                        dLiveNewsHidden[liveIdx, j] += g;
+                    }
+                }
+            }
+
+            for (int i = 0; i < numPriceContext; i++)
+            {
+                int ctxIdx = priceOffset + i;
+                if (ctxIdx >= totalContext)
+                {
+                    break;
+                }
+
+                for (int j = 0; j < ed; j++)
+                {
+                    contextTypeEmbeddingGrad[1, j] += GetGrad(ctxIdx, j);
+                }
+            }
+        }
+        public void AccumulateGlobalProjectionGradients(float[] dGlobalHidden, float[] globalFeatures, float[,] projectionGrad, float[] biasGrad)
+        {
+            if (dGlobalHidden == null || globalFeatures == null || projectionGrad == null || biasGrad == null)
+            {
+                return;
+            }
+
+            int ed = dGlobalHidden.Length;
+            int gd = globalFeatures.Length;
+
+            for (int d = 0; d < ed; d++)
+            {
+                float gToken = dGlobalHidden[d];
+                biasGrad[d] += gToken;
+
+                for (int g = 0; g < gd; g++)
+                {
+                    projectionGrad[d, g] += gToken * globalFeatures[g];
+                }
+            }
+        }
+        public float[,] ExpandMeanPoolGradient(float[,] pooledGradient, int rowIndex, int rowCount, int embeddingDim)
+        {
+            if (pooledGradient == null) throw new ArgumentNullException(nameof(pooledGradient));
+            if (rowCount <= 0) return new float[0, embeddingDim];
+            if (rowIndex < 0 || rowIndex >= pooledGradient.GetLength(0)) throw new ArgumentOutOfRangeException(nameof(rowIndex));
+
+            var result = new float[rowCount, embeddingDim];
+            float inv = 1.0f / rowCount;
+
+            for (int t = 0; t < rowCount; t++)
+            {
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    result[t, d] = pooledGradient[rowIndex, d] * inv;
+                }
+            }
+
+            return result;
+        }
         public void Dispose() { }
     }
 }

@@ -8,6 +8,12 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
 {
     internal sealed class BPETokenizerTests : TestBase
     {
+        AccelerationType _accelerationType;
+        public BPETokenizerTests(AccelerationType accelerationType)
+        {
+            _accelerationType = accelerationType;
+        }
+
         public void RunAllTests()
         {
             CountNumber++;
@@ -743,11 +749,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             Assert(cache.Count > 0, "Encode cache did not populate under concurrent use");
         }
 
-        private static BPETokenizer NewTokenizer()
+        private  BPETokenizer NewTokenizer()
         {
             var tokenizer = new BPETokenizer(new RuntimeConfig
             {
-                AccelerationType = AccelerationType.CPU,
+                AccelerationType = _accelerationType,
                 AccelerationDeviceId = 0
             });
 
@@ -755,7 +761,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             return tokenizer;
         }
 
-        private static BPETokenizer TrainedTokenizer()
+        private BPETokenizer TrainedTokenizer()
         {
             var tok = NewTokenizer();
 
