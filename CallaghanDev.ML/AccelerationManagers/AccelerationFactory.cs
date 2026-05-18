@@ -33,13 +33,13 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 case AccelerationType.GPU:
                 case AccelerationType.CUDA:
-                    return WithLogging == true ? new AccelerationGPU(type, AccelerationDeviceId) : new AccelerationGPU(type, AccelerationDeviceId).WithDebugLogging(type.ToString());
+                    return WithLogging == false ? new AccelerationGPU(type, AccelerationDeviceId) : new AccelerationGPU(type, AccelerationDeviceId).WithDebugLogging(type.ToString());
 
                 case AccelerationType.CPU:
-                    return WithLogging == true ? new AccelerationCPU() : new AccelerationCPU().WithDebugLogging(type.ToString());
+                    return WithLogging == false ? new AccelerationCPU() : new AccelerationCPU().WithDebugLogging(type.ToString());
 
                 case AccelerationType.MultiThreadCPU:
-                    return WithLogging == true ? new AccelerationMutliThreadCPU() : new AccelerationMutliThreadCPU().WithDebugLogging(type.ToString());
+                    return WithLogging == false ? new AccelerationMutliThreadCPU() : new AccelerationMutliThreadCPU().WithDebugLogging(type.ToString());
                 default:
                     throw new NotSupportedException($"Unsupported AccelerationType: {type}");
             }

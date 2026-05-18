@@ -53,7 +53,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             _priceFFNWeightGrads = new List<List<float[,]>>();
             _priceFFNBiasGrads = new List<List<float[]>>();
 
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(model.Config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             for (int i = 0; i < _config.Text.NumLayers; i++)
             {

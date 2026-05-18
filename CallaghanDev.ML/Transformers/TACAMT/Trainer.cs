@@ -52,7 +52,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 _priceFFNBiasGrads.Add(b);
             }
 
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
         }
 
         //TODO: Clean this up

@@ -30,7 +30,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             _ffnWeightGrads = new List<List<float[,]>>();
             _ffnBiasGrads = new List<List<float[]>>();
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(model.Config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             for (int i = 0; i < _modelConfig.NumLayers; i++)
             {

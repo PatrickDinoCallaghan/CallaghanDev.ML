@@ -31,7 +31,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             _gradients = new Gradients(_config);
             _accel = model.AccelerationManager;
             _random = new Random();
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(model.Config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             // Allocate FFN gradient storage
             _textFFNWeightGrads = new List<List<float[,]>>();

@@ -11,11 +11,6 @@ namespace CallaghanDev.ML.Transformers
         private const float BaseTheta = 10000f;
         private readonly IAccelerationManager _accel;
 
-        public RotaryPositionEmbedding(RuntimeConfig runtime) : this(AccelerationFactory.Create(runtime))
-        {
-
-        }
-
         public RotaryPositionEmbedding(IAccelerationManager accelerationManager)
         {
             _accel = accelerationManager;

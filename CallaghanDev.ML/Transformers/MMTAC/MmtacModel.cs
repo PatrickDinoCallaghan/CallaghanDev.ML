@@ -5,7 +5,6 @@ using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using CallaghanDev.ML.Transformers.TACAMT;
 using System.Text.Json;
-using static CallaghanDev.ML.Transformers.MMTAC.MmtacTrainer;
 
 namespace CallaghanDev.ML.Transformers.MMTAC
 {
@@ -96,10 +95,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             _config = config;
             _random = random ?? new Random();
-            //config.Runtime.AccelerationType = AccelerationType.MultiThreadCPU;
             _accel = AccelerationFactory.Create(config.Runtime);
 
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             // Copy runtime pruning settings from config. Do not keep the default
             // field initializer, otherwise config.Pruning is silently ignored.
@@ -127,13 +125,13 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public void SetTokenizer(BPETokenizer tokenizer)
         {
             if (tokenizer == null)
+            {
                 throw new ArgumentNullException(nameof(tokenizer));
+            }
 
             if (tokenizer.VocabSize > _config.Text.VocabSize)
             {
-                throw new ArgumentException(
-                    $"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize ({_config.Text.VocabSize}).",
-                    nameof(tokenizer));
+                throw new ArgumentException($"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize ({_config.Text.VocabSize}).", nameof(tokenizer));
             }
 
             Tokenizer = tokenizer;
@@ -196,7 +194,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             float[] storyTimes = null;
 
             if (input.NewsStories != null && input.NewsStories.Length > 0)
+            {
                 (storyHidden, storyTimes) = EncodeStories(input.NewsStories);
+            }
 
             float[,] contextHidden;
             float[] contextTimes;
@@ -205,6 +205,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             BuildContext(storyHidden, storyTimes, input.GlobalFeatures, null, null, out contextHidden, out contextTimes);
 
             var priceHidden = ForwardPriceDecoder(input.PriceSequence, contextHidden, contextTimes, numGlobalContext);
+
             return ProjectToOutputs(priceHidden);
         }
 
@@ -291,7 +292,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 var shiftedTimes = new float[contextTimes.Length];
 
                 for (int i = 0; i < contextTimes.Length; i++)
+                {
                     shiftedTimes[i] = i < numGlobalRows ? contextTimes[i] : contextTimes[i] - rowStart;
+                }
 
                 contextTimes = shiftedTimes;
             }

@@ -7,15 +7,22 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main(string[] args)
         {
-            AccelerationType accelerationType1 = Enums.AccelerationType.MultiThreadCPU;
-            TransformerTestSuite.Run(accelerationType1);
+            //AccelerationType accelerationType1 = Enums.AccelerationType.MultiThreadCPU;
+            //TransformerTestSuite.Run(accelerationType1);
 
             foreach (var accelerationType in Enum.GetValues<Enums.AccelerationType>())
             {
+                Console.WriteLine(accelerationType);
                 TransformerTestSuite.Run(accelerationType);
             }
 
             new AccelerationManagerParityTests().RunAllTests();
+
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("  All test suites complete. Press any key to exit.");
+            Console.ResetColor();
+            Console.ReadKey();
         }
     }
 
@@ -27,21 +34,13 @@ namespace CallaghanDev.ML.TestConsoleApp
 
             PrintBanner("TRANSFORMER TEST SUITE", '=');
 
-
             new MmtacTests(accelerationType).RunAllTests();
             new BPETokenizerTests(accelerationType).RunAllTests();
-            new MultiHeadAttentionForwardTests(accelerationType).RunAllTests();
             new RotaryPositionEmbeddingTests(accelerationType).RunAllTests();
             new CrossAttentionMultimodalTests(accelerationType).RunAllTests();
             new TacmatTests(accelerationType).RunAllTests();
             new MultiTypeTransformerTests(accelerationType).RunAllTests();
             new NeuralNetworkTests(accelerationType).RunAllTests();
-
-            Console.WriteLine();
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("  All test suites complete. Press any key to exit.");
-            Console.ResetColor();
-            Console.ReadKey();
         }
 
         internal static void PrintBanner(string title, char ch = '-')

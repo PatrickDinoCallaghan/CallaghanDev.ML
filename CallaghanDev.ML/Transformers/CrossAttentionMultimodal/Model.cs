@@ -37,7 +37,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             _random = random ?? new Random();
 
             _accel = AccelerationFactory.Create(_config.Runtime);
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             InitTextEncoder();
             InitPriceDecoder();

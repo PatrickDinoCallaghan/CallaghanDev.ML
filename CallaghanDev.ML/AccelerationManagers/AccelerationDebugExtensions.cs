@@ -16,7 +16,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
     }
 
-    public sealed class DebugAccelerationProxy<T> : DispatchProxy where T : class
+    public class DebugAccelerationProxy<T> : DispatchProxy where T : class
     {
         private T _inner = null!;
         private string _accelerationName = "";

@@ -71,7 +71,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             _random = random ?? new Random();
       
             _accel = AccelerationFactory.Create(_config.Runtime);
-            _rotaryPositionEmbedding = new RotaryPositionEmbedding(config.Runtime);
+            _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             InitTextEncoder();
             InitPriceDecoder();
