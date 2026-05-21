@@ -17,7 +17,7 @@ namespace CallaghanDev.ML.AccelerationManagers
     /// </summary>
     public static class AccelerationFactory
     {
-        public static IAccelerationManager Create(RuntimeConfig runtime, bool WithLogging = true)
+        public static IAccelerationManager Create(RuntimeConfig runtime, bool WithLogging = false)
         {
             if (runtime == null)
             {

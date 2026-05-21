@@ -10,6 +10,8 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 {
     public partial class AccelerationGPU : IAccelerationManager, IDisposable
     {
+        private const bool AlwaysParallel = true; // Just for testing purposes. Forgot to turn it off.
+
         private readonly Context _context;
         private readonly Accelerator _accelerator;
         private readonly AccelerationMutliThreadCPU _mutliThreadCPU;
@@ -19,6 +21,10 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         private static bool ShouldUseGpu(long workUnits, long threshold = GPU_ELEMENTWISE_THRESHOLD)
         {
+            if (AlwaysParallel)
+            {
+                return true;
+            }
             return workUnits >= threshold;
         }
 

@@ -1,4 +1,4 @@
-﻿using CallaghanDev.ML.AccelerationManagers.GPU;
+using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.TACAMT;
 using ILGPU.Runtime;
@@ -166,6 +166,13 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// Accumulates into weightGrad and biasGrad.
         /// </summary>
         void BackpropInputProjection(float[,] dX, float[,] continuousInput, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim);
+
+        /// <summary>
+        /// Backprop through input projection using a row slice of continuousInput without requiring
+        /// the caller to allocate a sliced matrix. The active input row for dX[i,*] is
+        /// continuousInput[inputRowStart + i,*].
+        /// </summary>
+        void BackpropInputProjection(float[,] dX, float[,] continuousInput, int inputRowStart, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim);
 
 
         /// <summary>

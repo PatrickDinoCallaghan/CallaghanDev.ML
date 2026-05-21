@@ -223,6 +223,55 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private float[,] EmbedPriceSequence(float[,] priceSequence, int seqLen)
         {
             if (priceSequence == null)
+            {
+                throw new ArgumentNullException(nameof(priceSequence));
+            }
+
+            int actualSeqLen = priceSequence.GetLength(0);
+            int featureDim = priceSequence.GetLength(1);
+
+            if (actualSeqLen != seqLen)
+            {
+                throw new ArgumentException($"Provided seqLen ({seqLen}) does not match priceSequence rows ({actualSeqLen}).", nameof(seqLen));
+            }
+
+            if (actualSeqLen <= 0)
+            {
+                throw new ArgumentException("Price sequence must contain at least one timestep.", nameof(priceSequence));
+            }
+
+            if (actualSeqLen > _config.Price.MaxSequenceLength)
+            {
+                throw new ArgumentException($"Price sequence length {actualSeqLen} exceeds configured max {_config.Price.MaxSequenceLength}.", nameof(priceSequence));
+            }
+
+            if (featureDim != _config.Price.InputFeatureDim)
+            {
+                throw new ArgumentException($"Price feature dimension {featureDim} does not match configured input feature dimension {_config.Price.InputFeatureDim}.", nameof(priceSequence));
+            }
+
+            for (int i = 0; i < actualSeqLen; i++)
+            {
+                for (int j = 0; j < featureDim; j++)
+                {
+                    float value = priceSequence[i, j];
+
+                    if (!float.IsFinite(value))
+                    {
+                        throw new ArgumentException($"Price sequence contains non-finite value at [{i},{j}]: {value}.", nameof(priceSequence));
+                    }
+                }
+            }
+
+            var projected = _accel.BatchDotProduct(PriceInputProjection, priceSequence);
+
+            return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
+        }
+
+        /*
+        private float[,] EmbedPriceSequence(float[,] priceSequence, int seqLen)
+        {
+            if (priceSequence == null)
                 throw new ArgumentNullException(nameof(priceSequence));
 
             int actualSeqLen = priceSequence.GetLength(0);
@@ -246,7 +295,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             var projected = _accel.BatchDotProduct(PriceInputProjection, priceSequence);
             return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
-        }
+        }*/
+
         private float[,] EmbedTextTokens(int[] textTokenIds, int seqLen)
         {
             if (textTokenIds == null)

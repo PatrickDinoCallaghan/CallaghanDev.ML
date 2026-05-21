@@ -21,6 +21,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _backpropOutputWeightBiasKernel;
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _backpropOutputInputKernel;
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _backpropInputProjectionWeightKernel;
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, ArrayView2D<float, Stride2D.DenseX>> _backpropInputProjectionSliceWeightKernel;
         private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _backpropInputProjectionBiasKernel;
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>> _accumulateTokenEmbeddingGradKernel;
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>> _matrixSquaredNormKernel;
@@ -46,6 +47,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             _backpropOutputWeightBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(BackpropOutputWeightBiasKernel);
             _backpropOutputInputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(BackpropOutputInputKernel);
             _backpropInputProjectionWeightKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(BackpropInputProjectionWeightKernel);
+            _backpropInputProjectionSliceWeightKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, ArrayView2D<float, Stride2D.DenseX>>(BackpropInputProjectionSliceWeightKernel);
             _backpropInputProjectionBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(BackpropInputProjectionBiasKernel);
             _accumulateTokenEmbeddingGradKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<int, Stride1D.Dense>>(AccumulateTokenEmbeddingGradKernel);
             _matrixSquaredNormKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>>(MatrixSquaredNormKernel);
@@ -183,6 +185,21 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             for (int i = 0; i < seqLen; i++)
             {
                 sum += dX[i, e] * continuousInput[i, f];
+            }
+
+            weightGrad[e, f] += sum;
+        }
+
+        private static void BackpropInputProjectionSliceWeightKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> dX, ArrayView2D<float, Stride2D.DenseX> continuousInput, int inputRowStart, ArrayView2D<float, Stride2D.DenseX> weightGrad)
+        {
+            int e = idx.X;
+            int f = idx.Y;
+            int seqLen = (int)dX.Extent.X;
+            float sum = 0.0f;
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                sum += dX[i, e] * continuousInput[inputRowStart + i, f];
             }
 
             weightGrad[e, f] += sum;
@@ -574,19 +591,26 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         public void BackpropInputProjection(float[,] dX, float[,] continuousInput, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim)
         {
+            BackpropInputProjection(dX, continuousInput, 0, weightGrad, biasGrad, seqLen, embeddingDim, inputFeatureDim);
+        }
+
+        public void BackpropInputProjection(float[,] dX, float[,] continuousInput, int inputRowStart, float[,] weightGrad, float[] biasGrad, int seqLen, int embeddingDim, int inputFeatureDim)
+        {
             if (dX == null) throw new ArgumentNullException(nameof(dX));
             if (continuousInput == null) throw new ArgumentNullException(nameof(continuousInput));
             if (weightGrad == null) throw new ArgumentNullException(nameof(weightGrad));
             if (biasGrad == null) throw new ArgumentNullException(nameof(biasGrad));
+            if (inputRowStart < 0 || seqLen < 0 || inputRowStart + seqLen > continuousInput.GetLength(0))
+                throw new ArgumentOutOfRangeException(nameof(inputRowStart), $"Invalid input row slice: start={inputRowStart}, count={seqLen}, rows={continuousInput.GetLength(0)}.");
 
             if (!ShouldUseGpu((long)seqLen * embeddingDim * inputFeatureDim, GPU_MATMUL_OP_THRESHOLD))
             {
-                _mutliThreadCPU.BackpropInputProjection(dX, continuousInput, weightGrad, biasGrad, seqLen, embeddingDim, inputFeatureDim);
+                _mutliThreadCPU.BackpropInputProjection(dX, continuousInput, inputRowStart, weightGrad, biasGrad, seqLen, embeddingDim, inputFeatureDim);
                 return;
             }
 
             var bufDX = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, embeddingDim));
-            var bufContinuous = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, inputFeatureDim));
+            var bufContinuous = _accelerator.Allocate2DDenseX<float>(new Index2D(continuousInput.GetLength(0), inputFeatureDim));
             var bufWeightGrad = _accelerator.Allocate2DDenseX<float>(new Index2D(embeddingDim, inputFeatureDim));
             var bufBiasGrad = _accelerator.Allocate1D<float>(biasGrad.Length);
 
@@ -597,7 +621,15 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bufWeightGrad.CopyFromCPU(weightGrad);
                 bufBiasGrad.CopyFromCPU(biasGrad);
 
-                _backpropInputProjectionWeightKernel(new Index2D(embeddingDim, inputFeatureDim), bufDX.View, bufContinuous.View, bufWeightGrad.View);
+                if (inputRowStart == 0 && continuousInput.GetLength(0) == seqLen)
+                {
+                    _backpropInputProjectionWeightKernel(new Index2D(embeddingDim, inputFeatureDim), bufDX.View, bufContinuous.View, bufWeightGrad.View);
+                }
+                else
+                {
+                    _backpropInputProjectionSliceWeightKernel(new Index2D(embeddingDim, inputFeatureDim), bufDX.View, bufContinuous.View, inputRowStart, bufWeightGrad.View);
+                }
+
                 _backpropInputProjectionBiasKernel(new Index1D(embeddingDim), bufDX.View, bufBiasGrad.View);
 
                 bufWeightGrad.CopyToCPU(weightGrad);

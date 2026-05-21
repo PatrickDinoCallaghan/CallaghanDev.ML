@@ -8,7 +8,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
     public partial class AccelerationGPU : IAccelerationManager, IDisposable
     {
         private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
-        private readonly Dictionary<(int outputDim, int inputDim, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
+        private readonly Dictionary<(int outputDim, int inputDim, int inputRows, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
 
         private void InitSharedTensorKernels()
         {
@@ -23,7 +23,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             //Matrix Add Bias
             _matAddBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(MatAddBiasKernel);
             //BatchDotProduct
-            _batchDotKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>>(BatchDotKernel);
+            _batchDotKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, ArrayView2D<float, Stride2D.DenseX>>(BatchDotKernel);
 
             //SliceRows, ExtractRow and SetRow
             _sliceRowsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int>(SliceRowsKernel);
@@ -267,7 +267,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         #region BatchDotProduct
 
-        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>> _batchDotKernel;
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, ArrayView2D<float, Stride2D.DenseX>> _batchDotKernel;
 
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
         {
@@ -299,13 +299,14 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 return _mutliThreadCPU.BatchDotProduct(weights, inputMatrix, rowStart, rowCount);
             }
 
-            var key = (outputDim, inputDim, rowCount);
+            int inputRows = inputMatrix.GetLength(0);
+            var key = (outputDim, inputDim, inputRows, rowCount);
 
             if (!_batchDotCache.TryGetValue(key, out var bufs))
             {
                 bufs = (
                     _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim)),
-                    _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, inputDim)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(inputRows, inputDim)),
                     _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, outputDim))
                 );
 
@@ -313,24 +314,13 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
 
             bufs.w.CopyFromCPU(weights);
-
-            // Create temporary CPU slice (required)
-            var slice = new float[rowCount, inputDim];
-
-            for (int i = 0; i < rowCount; i++)
-            {
-                for (int j = 0; j < inputDim; j++)
-                {
-                    slice[i, j] = inputMatrix[rowStart + i, j];
-                }
-            }
-
-            bufs.inp.CopyFromCPU(slice);
+            bufs.inp.CopyFromCPU(inputMatrix);
 
             _batchDotKernel(
                 new Index2D(rowCount, outputDim),
                 bufs.w.View,
                 bufs.inp.View,
+                rowStart,
                 bufs.res.View);
 
             var result = new float[rowCount, outputDim];
@@ -339,18 +329,19 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             return result;
         }
 
-        private static void BatchDotKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> weights, ArrayView2D<float, Stride2D.DenseX> input, ArrayView2D<float, Stride2D.DenseX> result)
+        private static void BatchDotKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> weights, ArrayView2D<float, Stride2D.DenseX> input, int rowStart, ArrayView2D<float, Stride2D.DenseX> result)
         {
             int seq = idx.X;
             int outDim = idx.Y;
             int inputDim = (int)weights.Extent.Y;
+            int srcRow = rowStart + seq;
             float sum = 0.0f;
-
 
             for (int k = 0; k < inputDim; k++)
             {
-                sum += weights[outDim, k] * input[seq, k];
+                sum += weights[outDim, k] * input[srcRow, k];
             }
+
             result[seq, outDim] = sum;
         }
 

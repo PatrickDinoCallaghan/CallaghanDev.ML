@@ -5,6 +5,8 @@ using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using CallaghanDev.ML.Transformers.TACAMT;
 using System.Text.Json;
+using System.Collections.Concurrent;
+using static CallaghanDev.ML.Transformers.MMTAC.MmtacTrainer;
 
 namespace CallaghanDev.ML.Transformers.MMTAC
 {
@@ -26,6 +28,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         private readonly Random _random;
         private readonly IAccelerationManager _accel;
         private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
+        private readonly ConcurrentDictionary<int, bool[,]> _causalMaskCache = new ConcurrentDictionary<int, bool[,]>();
+        private readonly ConcurrentDictionary<TokenSequenceCacheKey, float[]> _frozenTextStoryEmbeddingCache = new ConcurrentDictionary<TokenSequenceCacheKey, float[]>();
         public MmtacConfig Config => _config;
         public IAccelerationManager AccelerationManager => _accel;
 
@@ -95,8 +99,15 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             _config = config;
             _random = random ?? new Random();
-            _accel = AccelerationFactory.Create(config.Runtime);
 
+            // Do not override the caller's runtime selection here.
+            // The previous implementation forced MultiThreadCPU, which made GPU/other
+            // acceleration settings unreachable even when Runtime.AccelerationType was set.
+            _accel = AccelerationFactory.Create(config.Runtime);
+            //TODO remove this 
+
+            _accel = AccelerationFactory.Create(AccelerationType.MultiThreadCPU);
+            config.Runtime.AccelerationType = AccelerationType.MultiThreadCPU;
             _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             // Copy runtime pruning settings from config. Do not keep the default
@@ -115,7 +126,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             InitContextTypeEmbedding();
             InitOutputHeads();
 
-
             Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
         }
         // 
@@ -125,13 +135,13 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         public void SetTokenizer(BPETokenizer tokenizer)
         {
             if (tokenizer == null)
-            {
                 throw new ArgumentNullException(nameof(tokenizer));
-            }
 
             if (tokenizer.VocabSize > _config.Text.VocabSize)
             {
-                throw new ArgumentException($"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize ({_config.Text.VocabSize}).", nameof(tokenizer));
+                throw new ArgumentException(
+                    $"Tokenizer vocab size ({tokenizer.VocabSize}) exceeds config TextVocabSize ({_config.Text.VocabSize}).",
+                    nameof(tokenizer));
             }
 
             Tokenizer = tokenizer;
@@ -194,9 +204,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             float[] storyTimes = null;
 
             if (input.NewsStories != null && input.NewsStories.Length > 0)
-            {
                 (storyHidden, storyTimes) = EncodeStories(input.NewsStories);
-            }
 
             float[,] contextHidden;
             float[] contextTimes;
@@ -205,7 +213,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             BuildContext(storyHidden, storyTimes, input.GlobalFeatures, null, null, out contextHidden, out contextTimes);
 
             var priceHidden = ForwardPriceDecoder(input.PriceSequence, contextHidden, contextTimes, numGlobalContext);
-
             return ProjectToOutputs(priceHidden);
         }
 
@@ -265,7 +272,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             if (input.NewsStories != null && input.NewsStories.Length > 0)
             {
-                (storyHidden, storyTimes) = EncodeStoriesWithCache(input.NewsStories, cache);
+                bool keepTextBackpropCache = isTraining && !_config.Text.Freeze;
+                (storyHidden, storyTimes) = EncodeStoriesWithCache(input.NewsStories, cache, keepTextBackpropCache);
             }
             else
             {
@@ -292,9 +300,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 var shiftedTimes = new float[contextTimes.Length];
 
                 for (int i = 0; i < contextTimes.Length; i++)
-                {
                     shiftedTimes[i] = i < numGlobalRows ? contextTimes[i] : contextTimes[i] - rowStart;
-                }
 
                 contextTimes = shiftedTimes;
             }
@@ -695,11 +701,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
             }
 
-            var priceInputSlice = _accel.SliceRows(priceSequence, rowStart, rowStart + seqLen);
-
-            var emb = EmbedPriceSequence(priceInputSlice, 0, seqLen);
+            var emb = EmbedPriceSequence(priceSequence, rowStart, seqLen);
             cache.PriceEmbedded = emb;
-            cache.PriceContinuousInput = priceInputSlice;
+            cache.PriceContinuousInput = priceSequence;
+            cache.PriceContinuousInputRowStart = rowStart;
+            cache.PriceContinuousInputRowCount = seqLen;
 
             bool[,] selfMask = _config.Price.UseDecoderOnly ? CreateCausalMask(seqLen) : null;
             var x = emb;
@@ -826,13 +832,17 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     normedCross = ncr;
                 }
 
-                var ffnInputRows = new float[seqLen][];
-                for (int i = 0; i < seqLen; i++)
+                float[][] ffnInputRows = null;
+                if (isTraining)
                 {
-                    var row = new float[ed];
-                    for (int j = 0; j < ed; j++)
-                        row[j] = normedCross[i, j];
-                    ffnInputRows[i] = row;
+                    ffnInputRows = new float[seqLen][];
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        var row = new float[ed];
+                        for (int j = 0; j < ed; j++)
+                            row[j] = normedCross[i, j];
+                        ffnInputRows[i] = row;
+                    }
                 }
 
                 var ffnOutput = _accel.FFNForwardBatch(normedCross, seqLen, ed, block.FeedForwardNetwork.ForwardPassOnly);
@@ -857,7 +867,65 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Price-context training forward
         // 
 
-        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf) ForwardWithPriceContextAndCache(MultimodalInput input, float[,] priceCtxHidden, float[] priceCtxTimes, MmtacForwardCache cache, bool isTraining = true, Random dropoutRng = null)
+        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf)
+      ForwardWithPriceContextAndCache(
+          MultimodalInput input,
+          float[,] priceCtxHidden,
+          float[] priceCtxTimes,
+          MmtacForwardCache cache,
+          bool isTraining = true,
+          Random dropoutRng = null)
+        {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+            if (input.PriceSequence == null)
+                throw new ArgumentNullException(nameof(input.PriceSequence));
+
+            return ForwardWithPriceContextSliceAndCache(
+                input,
+                0,
+                input.PriceSequence.GetLength(0),
+                priceCtxHidden,
+                priceCtxTimes,
+                cache,
+                isTraining,
+                dropoutRng);
+        }
+
+        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf)
+            ForwardWithPriceContextSliceAndCache(
+                MultimodalInput input,
+                int rowStart,
+                int rowCount,
+                float[,] priceCtxHidden,
+                float[] priceCtxTimes,
+                MmtacForwardCache cache,
+                bool isTraining = true,
+                Random dropoutRng = null)
+        {
+            return ForwardWithPriceContextSliceAndCacheWithStoryTimeOffset(
+                input,
+                rowStart,
+                rowCount,
+                priceCtxHidden,
+                priceCtxTimes,
+                cache,
+                storyArrivalTimeOffset: 0f,
+                isTraining: isTraining,
+                dropoutRng: dropoutRng);
+        }
+
+        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf)
+            ForwardWithPriceContextSliceAndCacheWithStoryTimeOffset(
+                MultimodalInput input,
+                int rowStart,
+                int rowCount,
+                float[,] priceCtxHidden,
+                float[] priceCtxTimes,
+                MmtacForwardCache cache,
+                float storyArrivalTimeOffset = 0f,
+                bool isTraining = true,
+                Random dropoutRng = null)
         {
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
@@ -865,6 +933,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 throw new ArgumentNullException(nameof(input.PriceSequence));
             if (cache == null)
                 throw new ArgumentNullException(nameof(cache));
+            if (rowStart < 0 || rowCount <= 0 || rowStart + rowCount > input.PriceSequence.GetLength(0))
+                throw new ArgumentOutOfRangeException($"Invalid price row slice: start={rowStart}, count={rowCount}.");
 
             cache.Reset();
 
@@ -876,7 +946,12 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             if (input.NewsStories != null && input.NewsStories.Length > 0)
             {
-                (newsHidden, newsTimes) = EncodeStoriesWithCache(input.NewsStories, cache);
+                bool keepTextBackpropCache = isTraining && !_config.Text.Freeze;
+                (newsHidden, newsTimes) = EncodeStoriesWithCache(
+                    input.NewsStories,
+                    cache,
+                    keepTextBackpropCache,
+                    storyArrivalTimeOffset);
                 numNews = newsHidden.GetLength(0);
             }
             else
@@ -900,16 +975,18 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             if (priceCtxHidden != null && priceCtxHidden.GetLength(1) != ed)
                 throw new ArgumentException("priceCtxHidden embedding dimension does not match Price.EmbeddingDim.", nameof(priceCtxHidden));
+
             if (priceCtxTimes != null && priceCtxTimes.Length != numPriceCtx)
                 throw new ArgumentException("priceCtxTimes length must match priceCtxHidden row count.", nameof(priceCtxTimes));
 
-            var (combinedHidden, combinedTimes, builtGlobal, builtNews, builtPrice) = _accel.BuildMmtacContextWithPrice(
-                newsHidden,
-                newsTimes,
-                globalToken,
-                priceCtxHidden,
-                priceCtxTimes,
-                ContextTypeEmbedding);
+            var (combinedHidden, combinedTimes, builtGlobal, builtNews, builtPrice) =
+                _accel.BuildMmtacContextWithPrice(
+                    newsHidden,
+                    newsTimes,
+                    globalToken,
+                    priceCtxHidden,
+                    priceCtxTimes,
+                    ContextTypeEmbedding);
 
             numGlobal = builtGlobal;
             numNews = builtNews;
@@ -926,8 +1003,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             var priceHidden = ForwardPriceDecoderWithCache(
                 input.PriceSequence,
-                0,
-                input.PriceSequence.GetLength(0),
+                rowStart,
+                rowCount,
                 combinedHidden,
                 combinedTimes,
                 cache,
@@ -939,14 +1016,28 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         }
         public float[,] EncodePriceHistory(float[,] histPrices)
         {
-            int sl = histPrices.GetLength(0);
-            var emb = EmbedPriceSequence(histPrices, 0, sl);
-            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(sl) : null;
+            if (histPrices == null)
+                throw new ArgumentNullException(nameof(histPrices));
+
+            return EncodePriceHistory(histPrices, 0, histPrices.GetLength(0));
+        }
+
+        public float[,] EncodePriceHistory(float[,] histPrices, int rowStart, int rowCount)
+        {
+            if (histPrices == null)
+                throw new ArgumentNullException(nameof(histPrices));
+            if (rowStart < 0 || rowCount <= 0 || rowStart + rowCount > histPrices.GetLength(0))
+                throw new ArgumentOutOfRangeException($"Invalid history row slice: start={rowStart}, count={rowCount}.");
+
+            var emb = EmbedPriceSequence(histPrices, rowStart, rowCount);
+            bool[,] mask = _config.Price.UseDecoderOnly ? CreateCausalMask(rowCount) : null;
             var x = emb;
 
             foreach (var block in PriceBlocks)
             {
-                block.SetContext(null); block.SetTimeData(null, null); block.SetTraining(false);
+                block.SetContext(null);
+                block.SetTimeData(null, null);
+                block.SetTraining(false);
                 x = block.Forward(x, mask);
             }
 
@@ -1297,12 +1388,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             for (int i = 0; i < storyCount; i++)
             {
                 var story = stories[i];
+
                 if (object.ReferenceEquals(story, null))
                 {
                     times[i] = 0f;
                     continue;
                 }
 
+                // Do not apply arrivalTimeOffset here.
+                // This method is used by non-sliced public/inference paths and should preserve
+                // the story's own arrival time exactly.
                 times[i] = story.ArrivalTime;
 
                 if (story.TokenIds == null || story.TokenIds.Length == 0)
@@ -1324,13 +1419,12 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             return (hidden, times);
         }
-
         internal (float[,] hidden, float[] times) EncodeStoriesForMemory(NewsStory[] stories)
         {
             return EncodeStories(stories);
         }
 
-        internal (float[,] hidden, float[] times) EncodeStoriesWithCache(NewsStory[] stories, MmtacForwardCache cache)
+        internal (float[,] hidden, float[] times) EncodeStoriesWithCache(NewsStory[] stories, MmtacForwardCache cache, bool keepTextBackpropCache = true, float arrivalTimeOffset = 0f)
         {
             if (stories == null)
                 throw new ArgumentNullException(nameof(stories));
@@ -1342,51 +1436,177 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             var hidden = new float[storyCount, ed];
             var times = new float[storyCount];
 
-            cache.StoryCaches = new List<MmtacForwardCache>(storyCount);
             cache.StoryTokenCounts = new int[storyCount];
+            if (keepTextBackpropCache)
+            {
+                cache.PrepareStoryCaches(storyCount);
+            }
+            else
+            {
+                cache.StoryCaches = null;
+            }
 
             for (int i = 0; i < storyCount; i++)
             {
                 var story = stories[i];
+                MmtacForwardCache storyCache = null;
 
-                var storyCache = new MmtacForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
-                cache.StoryCaches.Add(storyCache);
+                if (keepTextBackpropCache)
+                {
+                    storyCache = cache.RentStoryCache();
+                }
 
                 if (object.ReferenceEquals(story, null))
                 {
-                    times[i] = 0f;
-                    storyCache.TextTokenIds = Array.Empty<int>();
-                    storyCache.TextEmbedded = new float[0, ed];
-                    storyCache.TextFinalHidden = new float[0, ed];
+                    times[i] = arrivalTimeOffset;
+
+                    if (storyCache != null)
+                    {
+                        storyCache.TextTokenIds = Array.Empty<int>();
+                        storyCache.TextEmbedded = new float[0, ed];
+                        storyCache.TextFinalHidden = new float[0, ed];
+                    }
+
                     cache.StoryTokenCounts[i] = 0;
                     continue;
                 }
 
-                times[i] = story.ArrivalTime;
+                times[i] = story.ArrivalTime + arrivalTimeOffset;
 
                 if (story.TokenIds == null || story.TokenIds.Length == 0)
                 {
-                    storyCache.TextTokenIds = Array.Empty<int>();
-                    storyCache.TextEmbedded = new float[0, ed];
-                    storyCache.TextFinalHidden = new float[0, ed];
+                    if (storyCache != null)
+                    {
+                        storyCache.TextTokenIds = Array.Empty<int>();
+                        storyCache.TextEmbedded = new float[0, ed];
+                        storyCache.TextFinalHidden = new float[0, ed];
+                    }
+
                     cache.StoryTokenCounts[i] = 0;
                     continue;
                 }
 
-                var tokenHidden = ForwardTextEncoderWithCache(story.TokenIds, storyCache);
-                int tokenCount = tokenHidden.GetLength(0);
-                cache.StoryTokenCounts[i] = tokenCount;
+                cache.StoryTokenCounts[i] = Math.Min(story.TokenIds.Length, _config.Text.MaxSequenceLength);
 
-                if (tokenCount == 0)
+                if (keepTextBackpropCache)
+                {
+                    var tokenHidden = ForwardTextEncoderWithCache(story.TokenIds, storyCache);
+                    int tokenCount = tokenHidden.GetLength(0);
+                    cache.StoryTokenCounts[i] = tokenCount;
+
+                    if (tokenCount == 0)
+                        continue;
+
+                    var pooled = _accel.MeanPoolRows(tokenHidden);
+                    _accel.SetRow(hidden, i, pooled, ed);
                     continue;
+                }
 
-                var pooled = _accel.MeanPoolRows(tokenHidden);
-                _accel.SetRow(hidden, i, pooled, ed);
+                float[] pooledEmbedding;
+
+                if (_config.Text.Freeze)
+                {
+                    var cacheKey = BuildTokenCacheKey(story.TokenIds);
+                    pooledEmbedding = _frozenTextStoryEmbeddingCache.GetOrAdd(cacheKey, _ => EncodeAndPoolStoryNoCache(story.TokenIds));
+                }
+                else
+                {
+                    pooledEmbedding = EncodeAndPoolStoryNoCache(story.TokenIds);
+                }
+
+                if (pooledEmbedding != null && pooledEmbedding.Length > 0)
+                    _accel.SetRow(hidden, i, pooledEmbedding, ed);
             }
 
             cache.TextFinalHidden = hidden;
             return (hidden, times);
         }
+
+        private float[] EncodeAndPoolStoryNoCache(int[] tokenIds)
+        {
+            int ed = _config.Text.EmbeddingDim;
+
+            if (tokenIds == null || tokenIds.Length == 0)
+                return new float[ed];
+
+            var tokenHidden = ForwardTextEncoder(tokenIds);
+            if (tokenHidden.GetLength(0) == 0)
+                return new float[ed];
+
+            return _accel.MeanPoolRows(tokenHidden);
+        }
+
+        private static TokenSequenceCacheKey BuildTokenCacheKey(int[] tokenIds)
+        {
+            return new TokenSequenceCacheKey(tokenIds);
+        }
+
+        private readonly struct TokenSequenceCacheKey : IEquatable<TokenSequenceCacheKey>
+        {
+            private readonly int[] _tokens;
+            private readonly int _length;
+            private readonly int _hash;
+
+            public TokenSequenceCacheKey(int[] tokens)
+            {
+                if (tokens == null || tokens.Length == 0)
+                {
+                    _tokens = Array.Empty<int>();
+                }
+                else
+                {
+                    _tokens = new int[tokens.Length];
+                    Array.Copy(tokens, _tokens, tokens.Length);
+                }
+
+                _length = _tokens.Length;
+
+                unchecked
+                {
+                    int hash = 17;
+                    for (int i = 0; i < _length; i++)
+                    {
+                        hash = (hash * 31) + _tokens[i];
+                    }
+
+                    _hash = hash;
+                }
+            }
+
+            public bool Equals(TokenSequenceCacheKey other)
+            {
+                if (_length != other._length || _hash != other._hash)
+                {
+                    return false;
+                }
+
+                for (int i = 0; i < _length; i++)
+                {
+                    if (_tokens[i] != other._tokens[i])
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is TokenSequenceCacheKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                return _hash;
+            }
+        }
+
+        public void ClearFrozenTextStoryEmbeddingCache()
+        {
+            _frozenTextStoryEmbeddingCache.Clear();
+        }
+
         private float[,] ForwardTextEncoder(int[] tokenIds)
         {
             int ed = _config.Text.EmbeddingDim;
@@ -1552,7 +1772,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         private bool[,] CreateCausalMask(int sl)
         {
-            return _accel.CreateCausalMask(sl);
+            if (sl <= 0)
+                return _accel.CreateCausalMask(sl);
+
+            return _causalMaskCache.GetOrAdd(sl, length => _accel.CreateCausalMask(length));
         }
 
         protected float SampleGaussian()
@@ -2083,32 +2306,36 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             m.LoadMemory(dir);
 
+            if (m.TextTokenEmbedding == null)
+            {
+                throw new InvalidOperationException("Loaded model has no text token embedding matrix.");
+            }
+
+            if (m.TextTokenEmbedding.GetLength(0) != cfg.Text.VocabSize)
+            {
+                throw new InvalidOperationException(
+                    $"Text embedding row count ({m.TextTokenEmbedding.GetLength(0)}) does not match config TextVocabSize ({cfg.Text.VocabSize}).");
+            }
+
             var tokDir = Path.Combine(dir, "tokenizer");
 
             if (Directory.Exists(tokDir))
             {
                 try
                 {
-                    IAccelerationManager accelerationManager = null;
+                    var loadedTokenizer = BPETokenizer.Load(tokDir, cfg.Runtime.AccelerationType, cfg.Runtime.AccelerationDeviceId);
 
-                    if (cfg.Runtime.AccelerationType == AccelerationType.CPU)
-                    {
-                        accelerationManager = new AccelerationCPU();
-                    }
-                    if (cfg.Runtime.AccelerationType == AccelerationType.GPU)
-                    {
-                        accelerationManager = new AccelerationGPU(cfg.Runtime.AccelerationType, cfg.Runtime.AccelerationDeviceId);
-                    }
-                    if (cfg.Runtime.AccelerationType == AccelerationType.MultiThreadCPU)
-                    {
-                        accelerationManager = new AccelerationMutliThreadCPU();
-                    }
-                    if (accelerationManager == null)
-                    {
-                        throw new Exception();
-                    }
-
-                    m.Tokenizer = BPETokenizer.Load(tokDir, cfg.Runtime.AccelerationType, cfg.Runtime.AccelerationDeviceId);
+                    // Route through SetTokenizer so tokenizer/model vocab mismatches fail at load time
+                    // instead of surfacing later as Token out of range during EmbedTokenIds.
+                    m.SetTokenizer(loadedTokenizer);
+                }
+                catch (ArgumentException)
+                {
+                    throw;
+                }
+                catch (InvalidOperationException)
+                {
+                    throw;
                 }
                 catch
                 {

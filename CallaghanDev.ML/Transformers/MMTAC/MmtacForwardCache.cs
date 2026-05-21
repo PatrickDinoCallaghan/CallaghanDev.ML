@@ -1,10 +1,15 @@
-﻿using CallaghanDev.ML.Transformers.Cache;
+using System.Collections.Generic;
+using CallaghanDev.ML.Transformers.Cache;
 using CallaghanDev.ML.Transformers.TACAMT;
 
 namespace CallaghanDev.ML.Transformers.MMTAC
 {
     public class MmtacForwardCache
     {
+        private readonly int _textNumLayers;
+        private readonly int _priceNumLayers;
+        private readonly Stack<MmtacForwardCache> _storyCachePool = new Stack<MmtacForwardCache>();
+
         // Text encoder
         public float[,] TextEmbedded { get; set; }
         public int[] TextTokenIds { get; set; }
@@ -29,6 +34,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Price decoder
         public float[,] PriceEmbedded { get; set; }
         public float[,] PriceContinuousInput { get; set; }
+        public int PriceContinuousInputRowStart { get; set; } = 0;
+        public int PriceContinuousInputRowCount { get; set; } = 0;
         public List<BlockCache> PriceBlockCaches { get; set; }
         public float[,] PriceFinalHidden { get; set; }
 
@@ -55,6 +62,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         public MmtacForwardCache(int textNumLayers, int priceNumLayers)
         {
+            _textNumLayers = textNumLayers;
+            _priceNumLayers = priceNumLayers;
+
             TextLayerInputs = new List<float[,]>();
             TextAttentionCaches = new List<AttentionCache>();
             TextLN1Caches = new List<LayerNormCache>();
@@ -101,19 +111,14 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 TextLN2Caches[i].Reset();
             }
 
-            if (StoryCaches != null)
-            {
-                foreach (var sc in StoryCaches)
-                {
-                    sc?.Reset();
-                }
-                StoryCaches.Clear();
-            }
+            ReleaseStoryCachesToPool();
 
             StoryTokenCounts = null;
             StoryArrivalTimes = null;
             PriceEmbedded = null;
             PriceContinuousInput = null;
+            PriceContinuousInputRowStart = 0;
+            PriceContinuousInputRowCount = 0;
             PriceFinalHidden = null;
             PriceContextHidden = null;
 
@@ -128,5 +133,62 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 PriceBlockCaches[i].Reset();
             }
         }
+        public void PrepareStoryCaches(int capacity)
+        {
+            if (capacity < 0)
+                capacity = 0;
+
+            if (StoryCaches == null)
+            {
+                StoryCaches = new List<MmtacForwardCache>(capacity);
+            }
+            else
+            {
+                ReleaseStoryCachesToPool();
+                if (StoryCaches.Capacity < capacity)
+                    StoryCaches.Capacity = capacity;
+            }
+        }
+
+        public MmtacForwardCache RentStoryCache()
+        {
+            MmtacForwardCache rented;
+
+            if (_storyCachePool.Count > 0)
+            {
+                rented = _storyCachePool.Pop();
+            }
+            else
+            {
+                rented = new MmtacForwardCache(_textNumLayers, _priceNumLayers);
+            }
+
+            rented.Reset();
+
+            if (StoryCaches == null)
+                StoryCaches = new List<MmtacForwardCache>();
+
+            StoryCaches.Add(rented);
+            return rented;
+        }
+
+        private void ReleaseStoryCachesToPool()
+        {
+            if (StoryCaches == null || StoryCaches.Count == 0)
+                return;
+
+            for (int i = 0; i < StoryCaches.Count; i++)
+            {
+                var storyCache = StoryCaches[i];
+                if (storyCache == null)
+                    continue;
+
+                storyCache.Reset();
+                _storyCachePool.Push(storyCache);
+            }
+
+            StoryCaches.Clear();
+        }
+
     }
 }

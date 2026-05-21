@@ -22,6 +22,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, int> _extractHeadQKVKernel;
         private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float> _contentAwareScoresKernel;
+        private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, float, int> _contentAwareScoresMaskedKernel;
         private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _addDecayBiasKernel;
         private Action<Index1D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareSoftmaxKernel;
         private Action<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>> _contentAwareWeightedSumKernel;
@@ -83,6 +84,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
             _extractHeadQKVKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView3D<float, Stride3D.DenseXY>, int, int>(ExtractHeadQKVKernel);
             _contentAwareScoresKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, float>(ContentAwareScoresKernel);
+            _contentAwareScoresMaskedKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView2D<float, Stride2D.DenseX>, float, int>(ContentAwareScoresMaskedKernel);
             _addDecayBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(AddDecayBiasKernel);
             _contentAwareSoftmaxKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareSoftmaxKernel);
             _contentAwareWeightedSumKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>, ArrayView3D<float, Stride3D.DenseXY>>(ContentAwareWeightedSumKernel);
@@ -310,6 +312,29 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             scores[0, i, j] = dot * scale;
         }
 
+        private static void ContentAwareScoresMaskedKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> Q_head, ArrayView3D<float, Stride3D.DenseXY> K_head, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView2D<float, Stride2D.DenseX> timeDiffs, float scale, int hasTimeDiffs)
+        {
+            int i = idx.X;
+            int j = idx.Y;
+
+            // This mirrors AccelerationCPU.ContentAwareCrossAttentionWithCache:
+            // a context key is invalid when timeDiffs[q, key] < 0, regardless of whether decay bias is enabled.
+            if (hasTimeDiffs != 0 && timeDiffs[i, j] < 0.0f)
+            {
+                scores[0, i, j] = float.NegativeInfinity;
+                return;
+            }
+
+            int headDim = (int)Q_head.Extent.Z;
+            float dot = 0.0f;
+            for (int d = 0; d < headDim; d++)
+            {
+                dot += Q_head[0, i, d] * K_head[0, j, d];
+            }
+
+            scores[0, i, j] = dot * scale;
+        }
+
         private static void AddDecayBiasKernel(Index2D idx, ArrayView3D<float, Stride3D.DenseXY> scores, ArrayView3D<float, Stride3D.DenseXY> decayBias, ArrayView3D<float, Stride3D.DenseXY> output)
         {
             int i = idx.X;
@@ -331,15 +356,40 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 }
             }
 
+            if (float.IsNegativeInfinity(maxVal))
+            {
+                for (int k = 0; k < seqLenK; k++)
+                {
+                    weights[0, q, k] = 0.0f;
+                }
+                return;
+            }
+
             float sum = 0.0f;
             for (int k = 0; k < seqLenK; k++)
             {
-                float exp = XMath.Exp(scores[0, q, k] - maxVal);
+                float score = scores[0, q, k];
+                if (float.IsNegativeInfinity(score))
+                {
+                    weights[0, q, k] = 0.0f;
+                    continue;
+                }
+
+                float exp = XMath.Exp(score - maxVal);
                 weights[0, q, k] = exp;
                 sum += exp;
             }
 
-            float inv = 1.0f / XMath.Max(sum, 1e-20f);
+            if (sum <= 0.0f || float.IsNaN(sum) || float.IsInfinity(sum))
+            {
+                for (int k = 0; k < seqLenK; k++)
+                {
+                    weights[0, q, k] = 0.0f;
+                }
+                return;
+            }
+
+            float inv = 1.0f / sum;
             for (int k = 0; k < seqLenK; k++)
             {
                 weights[0, q, k] *= inv;
@@ -607,6 +657,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
         {
+            return ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, null, out attentionWeights, out scoresPreSoftmax);
+        }
+
+        private float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, float[,] timeDiffs, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        {
             int seqLenQ = Q.GetLength(0);
             int seqLenK = K.GetLength(0);
             int embeddingDim = Q.GetLength(1);
@@ -615,6 +670,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             if (embeddingDim % numHeads != 0)
             {
                 throw new ArgumentException("Embedding dim must be divisible by numHeads");
+            }
+
+            if (timeDiffs != null && (timeDiffs.GetLength(0) != seqLenQ || timeDiffs.GetLength(1) != seqLenK))
+            {
+                throw new ArgumentException($"timeDiffs shape must be [{seqLenQ},{seqLenK}].", nameof(timeDiffs));
             }
 
             if (!ShouldUseGpu((long)numHeads * seqLenQ * seqLenK * headDim, GPU_MATMUL_OP_THRESHOLD))
@@ -639,12 +699,19 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             var bufWeights = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, seqLenK));
             var bufHeadOutput = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, headDim));
             var bufDecayBias = _accelerator.Allocate3DDenseXY<float>(new Index3D(1, seqLenQ, seqLenK));
+            var bufTimeDiffs = timeDiffs != null
+                ? _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, seqLenK))
+                : _accelerator.Allocate2DDenseX<float>(new Index2D(1, 1));
 
             try
             {
                 bufQ.CopyFromCPU(Q);
                 bufK.CopyFromCPU(K);
                 bufV.CopyFromCPU(V);
+                if (timeDiffs != null)
+                {
+                    bufTimeDiffs.CopyFromCPU(timeDiffs);
+                }
 
                 for (int head = 0; head < numHeads; head++)
                 {
@@ -655,7 +722,14 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                     _extractHeadQKVKernel(new Index2D(seqLenK, headDim), bufK.View, bufKHead.View, headDim, startIdx);
                     _extractHeadQKVKernel(new Index2D(seqLenK, headDim), bufV.View, bufVHead.View, headDim, startIdx);
 
-                    _contentAwareScoresKernel(new Index2D(seqLenQ, seqLenK), bufQHead.View, bufKHead.View, bufScores.View, scale);
+                    if (timeDiffs != null)
+                    {
+                        _contentAwareScoresMaskedKernel(new Index2D(seqLenQ, seqLenK), bufQHead.View, bufKHead.View, bufScores.View, bufTimeDiffs.View, scale, 1);
+                    }
+                    else
+                    {
+                        _contentAwareScoresKernel(new Index2D(seqLenQ, seqLenK), bufQHead.View, bufKHead.View, bufScores.View, scale);
+                    }
 
                     if (decayBias != null)
                     {
@@ -715,6 +789,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bufWeights.Dispose();
                 bufHeadOutput.Dispose();
                 bufDecayBias.Dispose();
+                bufTimeDiffs.Dispose();
             }
         }
 
@@ -758,7 +833,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bc.DecayCache = null;
             }
 
-            var output = ContentAwareCrossAttentionForward(Q, K, V, PriceNumHeads, scale, decayBias, out var attentionWeights, out var scoresPreSoftmax);
+            var output = ContentAwareCrossAttentionForward(Q, K, V, PriceNumHeads, scale, decayBias, timeDiffs, out var attentionWeights, out var scoresPreSoftmax);
             bc.CrossAttentionWeights = attentionWeights;
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
             return output;
@@ -1492,7 +1567,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                     bufDRange.View,
                     bufLoss.View,
                     rangeLossWeight);
-                
+
                 _mmtacScalarMseGradKernel(new Index1D(sl), bufQuality.View, bufTargetQuality.View, bufDQuality.View, bufLoss.View, qualityLossWeight);
                 _mmtacScalarBceGradKernel(new Index1D(sl), bufDirection.View, bufTargetDirection.View, bufDDirection.View, bufLoss.View, directionLossWeight);
                 _mmtacScalarBceGradKernel(new Index1D(sl), bufMidDirection.View, bufTargetMidDirection.View, bufDMidDirection.View, bufLoss.View, midDirectionLossWeight);

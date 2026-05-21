@@ -1,5 +1,6 @@
 ﻿using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.TestConsoleApp.Tests;
+using ILGPU.Runtime;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
@@ -7,8 +8,15 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main(string[] args)
         {
-            //AccelerationType accelerationType1 = Enums.AccelerationType.MultiThreadCPU;
-            //TransformerTestSuite.Run(accelerationType1);
+            TransformerTestSuite.Run(Enums.AccelerationType.GPU);
+
+            TransformerTestSuite.Run(Enums.AccelerationType.CPU);
+
+            TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU);
+
+            Console.ReadKey();
+
+            Console.WriteLine();
 
             foreach (var accelerationType in Enum.GetValues<Enums.AccelerationType>())
             {

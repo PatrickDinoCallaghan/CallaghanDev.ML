@@ -111,10 +111,18 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         public void Zero()
         {
-            ZeroMatrix(TextEmbeddingGrad);
-            foreach (var g in TextAttnGrads) g.Zero();
-            foreach (var g in TextLN1Grads) g.Zero();
-            foreach (var g in TextLN2Grads) g.Zero();
+            Zero(includeText: true);
+        }
+
+        public void Zero(bool includeText)
+        {
+            if (includeText)
+            {
+                ZeroMatrix(TextEmbeddingGrad);
+                foreach (var g in TextAttnGrads) g.Zero();
+                foreach (var g in TextLN1Grads) g.Zero();
+                foreach (var g in TextLN2Grads) g.Zero();
+            }
 
             ZeroMatrix(PriceInputProjectionGrad);
             Array.Clear(PriceInputProjectionBiasGrad, 0, PriceInputProjectionBiasGrad.Length);
@@ -127,11 +135,20 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             foreach (var g in PriceBlockGrads) g.Zero();
 
-            ZeroMatrix(RegressionProjectionGrad); Array.Clear(RegressionBiasGrad, 0, RegressionBiasGrad.Length);
-            ZeroMatrix(RangeProjectionGrad); Array.Clear(RangeBiasGrad, 0, RangeBiasGrad.Length);
-            ZeroMatrix(QualityProjectionGrad); Array.Clear(QualityBiasGrad, 0, QualityBiasGrad.Length);
-            ZeroMatrix(DirectionProjectionGrad); Array.Clear(DirectionBiasGrad, 0, DirectionBiasGrad.Length);
-            ZeroMatrix(MidDirectionProjectionGrad); Array.Clear(MidDirectionBiasGrad, 0, MidDirectionBiasGrad.Length);
+            ZeroMatrix(RegressionProjectionGrad);
+            Array.Clear(RegressionBiasGrad, 0, RegressionBiasGrad.Length);
+
+            ZeroMatrix(RangeProjectionGrad);
+            Array.Clear(RangeBiasGrad, 0, RangeBiasGrad.Length);
+
+            ZeroMatrix(QualityProjectionGrad);
+            Array.Clear(QualityBiasGrad, 0, QualityBiasGrad.Length);
+
+            ZeroMatrix(DirectionProjectionGrad);
+            Array.Clear(DirectionBiasGrad, 0, DirectionBiasGrad.Length);
+
+            ZeroMatrix(MidDirectionProjectionGrad);
+            Array.Clear(MidDirectionBiasGrad, 0, MidDirectionBiasGrad.Length);
 
             if (ConfidenceProjectionGrad != null)
             {
@@ -144,15 +161,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         private static void ZeroMatrix(float[,] m)
         {
-            int r = m.GetLength(0), c = m.GetLength(1);
+            if (m == null)
+                return;
 
-            for (int i = 0; i < r; i++)
-            {
-                for (int j = 0; j < c; j++)
-                {
-                    m[i, j] = 0f;
-                }
-            }
+            Array.Clear(m, 0, m.Length);
         }
     }
 }
