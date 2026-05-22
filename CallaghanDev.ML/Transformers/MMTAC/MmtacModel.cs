@@ -104,10 +104,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             // The previous implementation forced MultiThreadCPU, which made GPU/other
             // acceleration settings unreachable even when Runtime.AccelerationType was set.
             _accel = AccelerationFactory.Create(config.Runtime);
-            //TODO remove this 
 
-            _accel = AccelerationFactory.Create(AccelerationType.MultiThreadCPU);
-            config.Runtime.AccelerationType = AccelerationType.MultiThreadCPU;
             _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             // Copy runtime pruning settings from config. Do not keep the default

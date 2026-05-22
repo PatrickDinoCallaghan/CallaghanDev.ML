@@ -15,7 +15,7 @@ namespace CallaghanDev.ML.AccelerationManagers
         private AccelerationCPU _singleThreadCPU;
         private readonly object _singleThreadCPULock = new object();
 
-        private const bool AlwaysParallel = true;
+        private const bool AlwaysParallel = false;
 
 
         private const int FixedMaxDegreeOfParallelism = 0; // 0 = logical CPU count.

@@ -8,11 +8,11 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main(string[] args)
         {
+            TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU);
+            TransformerTestSuite.Run(Enums.AccelerationType.CPU);
             TransformerTestSuite.Run(Enums.AccelerationType.GPU);
 
-            TransformerTestSuite.Run(Enums.AccelerationType.CPU);
 
-            TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU);
 
             Console.ReadKey();
 
