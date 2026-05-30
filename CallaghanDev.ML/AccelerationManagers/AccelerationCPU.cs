@@ -1733,6 +1733,34 @@ namespace CallaghanDev.ML.AccelerationManagers
         }
         public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
         {
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+            }
+
+            if (forwardPassFn == null)
+            {
+                throw new ArgumentNullException(nameof(forwardPassFn));
+            }
+
+            if (seqLen < 0 || seqLen > input.GetLength(0))
+            {
+                throw new ArgumentOutOfRangeException(nameof(seqLen));
+            }
+
+            // Transformer FFNs pass NeuralNetwork.ForwardPassOnly as the delegate.
+            // Use the network's stateless batched path instead of invoking the delegate
+            // once per row. This removes the largest FFN CPU fallback while preserving
+            // the existing IAccelerationManager API.
+            if (forwardPassFn.Target is CallaghanDev.ML.NeuralNetwork network)
+            {
+                float[,] batchInput = seqLen == input.GetLength(0)
+                    ? input
+                    : SliceRows(input, 0, seqLen);
+
+                return network.ForwardPassOnlyBatch(batchInput);
+            }
+
             int inputDim = input.GetLength(1);
             var result = new float[seqLen, outputDim];
             int inputBytes = inputDim * sizeof(float);

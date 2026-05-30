@@ -8,11 +8,11 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main(string[] args)
         {
-            TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU);
-            TransformerTestSuite.Run(Enums.AccelerationType.CPU);
-            TransformerTestSuite.Run(Enums.AccelerationType.GPU);
+            new AccelerationManagerParityTests().RunAllTests();
 
-
+            TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU, 0);
+            TransformerTestSuite.Run(Enums.AccelerationType.CPU, 0);
+            TransformerTestSuite.Run(Enums.AccelerationType.GPU, 0);
 
             Console.ReadKey();
 
@@ -21,10 +21,8 @@ namespace CallaghanDev.ML.TestConsoleApp
             foreach (var accelerationType in Enum.GetValues<Enums.AccelerationType>())
             {
                 Console.WriteLine(accelerationType);
-                TransformerTestSuite.Run(accelerationType);
+                TransformerTestSuite.Run(accelerationType, 0);
             }
-
-            new AccelerationManagerParityTests().RunAllTests();
 
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -36,13 +34,13 @@ namespace CallaghanDev.ML.TestConsoleApp
 
     public static class TransformerTestSuite
     {
-        public static void Run(AccelerationType accelerationType)
+        public static void Run(AccelerationType accelerationType, int deviceId)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             PrintBanner("TRANSFORMER TEST SUITE", '=');
 
-            new MmtacTests(accelerationType).RunAllTests();
+            new MmtacTests(accelerationType, deviceId).RunAllTests();
             new BPETokenizerTests(accelerationType).RunAllTests();
             new RotaryPositionEmbeddingTests(accelerationType).RunAllTests();
             new CrossAttentionMultimodalTests(accelerationType).RunAllTests();

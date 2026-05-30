@@ -24,6 +24,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // Multi-story
         public List<MmtacForwardCache> StoryCaches { get; set; }
         public int[] StoryTokenCounts { get; set; }
+        /// <summary>
+        /// Per-story IDs for batch-shared trainable text encoder forwards. A value
+        /// of -1 means the story uses the normal per-sample StoryCaches entry.
+        /// </summary>
+        public int[] SharedTextStoryIds { get; set; }
         public float[] StoryArrivalTimes { get; set; }
 
         // Global token
@@ -114,6 +119,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             ReleaseStoryCachesToPool();
 
             StoryTokenCounts = null;
+            SharedTextStoryIds = null;
             StoryArrivalTimes = null;
             PriceEmbedded = null;
             PriceContinuousInput = null;

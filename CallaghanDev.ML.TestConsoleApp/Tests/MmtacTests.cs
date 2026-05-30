@@ -19,9 +19,11 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
     internal sealed class MmtacTests : TestBase
     {
         AccelerationType _accelerationType;
-        public MmtacTests(AccelerationType accelerationType)
+        int _deviceId;
+        public MmtacTests(AccelerationType accelerationType, int deviceId)
         {
             _accelerationType = accelerationType;
+            _deviceId = deviceId;
         }
 
         public void RunAllTests()
@@ -306,8 +308,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             {
                 baseModel.Save(dir);
 
-                var modelA = MmtacModel.Load(dir);
-                var modelB = MmtacModel.Load(dir);
+                var modelA = MmtacModel.Load(dir, _accelerationType, _deviceId);
+                var modelB = MmtacModel.Load(dir, _accelerationType, _deviceId);
 
                 var fromEnd = modelA.PredictWithMemoryAtWindowEnd(
                     input,
@@ -359,13 +361,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 "A valid sample followed by an invalid sample in the same batch must not leave dirty partial gradients or update weights.");
         }
         private static (float[,] regression, float[,] range, float[,] quality, float[,] direction, float[,] midDirection, float[,] confidence)
-    InvokeForwardWithCacheSlice(
-        MmtacModel model,
-        MultimodalInput input,
-        int rowStart,
-        int rowCount,
-        MmtacForwardCache cache,
-        bool isTraining)
+        InvokeForwardWithCacheSlice(MmtacModel model, MultimodalInput input, int rowStart, int rowCount, MmtacForwardCache cache, bool isTraining)
         {
             var method = typeof(MmtacModel).GetMethod(
                 "ForwardWithCache",
@@ -1217,7 +1213,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 m.Save(dir);
-                var loaded = MmtacModel.Load(dir);
+                var loaded = MmtacModel.Load(dir, _accelerationType, _deviceId);
                 Assert(loaded.Tokenizer != null, "Tokenizer should load");
                 var after = loaded.TokenizeStories(texts, times);
                 Assert(before.Length == after.Length, "tokenized story count mismatch");
@@ -1920,7 +1916,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 m.Save(dir);
-                var loaded = MmtacModel.Load(dir);
+                var loaded = MmtacModel.Load(dir, _accelerationType, _deviceId);
                 var after = loaded.Forward(inputs[0]);
 
                 AssertMatricesClose(before.regression, after.regression, 1e-5f, "regression mismatch");
@@ -1940,7 +1936,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 m.Save(dir);
-                var ld = MmtacModel.Load(dir);
+                var ld = MmtacModel.Load(dir, _accelerationType, _deviceId);
                 Assert(!Changed(m.RegressionProjection, ld.RegressionProjection, 1e-6f), "RegressionProjection mismatch");
                 Assert(!Changed(m.RangeProjection, ld.RangeProjection, 1e-6f), "RangeProjection mismatch");
                 Assert(!Changed(m.QualityProjection, ld.QualityProjection, 1e-6f), "QualityProjection mismatch");
@@ -1967,7 +1963,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 m.Save(dir);
-                var ld = MmtacModel.Load(dir);
+                var ld = MmtacModel.Load(dir, _accelerationType, _deviceId);
                 Assert(ld.NewsMemory.Count == m.NewsMemory.Count, "NewsMemory count mismatch");
                 Assert(ld.PriceMemory.Count == m.PriceMemory.Count, "PriceMemory count mismatch");
                 Assert(Math.Abs(ld.LastPriceTimestamp - m.LastPriceTimestamp) < 1e-9, "LastPriceTimestamp mismatch");
@@ -1989,7 +1985,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 m.Save(dir);
-                var ld = MmtacModel.Load(dir);
+                var ld = MmtacModel.Load(dir, _accelerationType, _deviceId);
                 new MmtacTrainer(ld, TC(lr: 0.002f, bs: 5, epochs: 4)).Train(inputs, targets);
                 float loss = new MmtacTrainer(ld, TC(epochs: 1)).Validate(inputs, targets);
                 Assert(float.IsFinite(loss) && loss >= 0f, $"invalid loss after continued training: {loss}");
@@ -2011,7 +2007,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             try
             {
                 m.Save(dir);
-                var ld = MmtacModel.Load(dir);
+                var ld = MmtacModel.Load(dir, _accelerationType, _deviceId);
                 var p1 = m.PredictWithMemory(inputs[2], 1500.0);
                 var p2 = ld.PredictWithMemory(inputs[2], 1500.0);
                 AssertPredictionsClose(p1, p2, 1e-5f, "rolling-memory prediction changed after reload");

@@ -460,6 +460,12 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 return 0f;
             }
 
+            using var sharedTextStoryScope = _model.BeginTrainingTextStoryCacheScope(
+                batchIndices,
+                batchStart,
+                batchCount,
+                allInputs);
+
             float totalLoss = 0f;
             int validCount = 0;
             bool discardBatch = false;
@@ -526,6 +532,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ZeroAllGradients();
                 return 0f;
             }
+
+            FlushSharedTextStoryGradients();
 
             ScaleAllGradients(1.0f / validCount);
 
@@ -1306,21 +1314,72 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         private void BackpropMultiStoryTextEncoder(float[,] dSH, MmtacForwardCache cache)
         {
-            if (dSH == null || cache?.StoryCaches == null || cache.StoryTokenCounts == null)
+            if (dSH == null || cache?.StoryTokenCounts == null)
                 return;
 
-            int storyCount = Math.Min(cache.StoryCaches.Count, dSH.GetLength(0));
+            int storyCount = Math.Min(cache.StoryTokenCounts.Length, dSH.GetLength(0));
             int ed = _config.Text.EmbeddingDim;
 
-            for (int s = 0; s < storyCount; s++)
+            for (int storyIndex = 0; storyIndex < storyCount; storyIndex++)
             {
-                int tokenCount = cache.StoryTokenCounts[s];
+                int tokenCount = cache.StoryTokenCounts[storyIndex];
                 if (tokenCount <= 0)
                     continue;
 
-                var dTokenHidden = _accel.ExpandMeanPoolGradient(dSH, s, tokenCount, ed);
+                int sharedId = cache.SharedTextStoryIds != null && storyIndex < cache.SharedTextStoryIds.Length
+                    ? cache.SharedTextStoryIds[storyIndex]
+                    : -1;
 
-                BackpropTextEncoder(dTokenHidden, cache.StoryCaches[s]);
+                if (sharedId >= 0)
+                {
+                    var pooledGrad = new float[ed];
+                    for (int d = 0; d < ed; d++)
+                    {
+                        pooledGrad[d] = dSH[storyIndex, d];
+                    }
+
+                    if (_model.TryAccumulateSharedTextStoryGradient(sharedId, pooledGrad))
+                    {
+                        continue;
+                    }
+                }
+
+                if (cache.StoryCaches == null || storyIndex >= cache.StoryCaches.Count || cache.StoryCaches[storyIndex] == null)
+                {
+                    continue;
+                }
+
+                var dTokenHidden = _accel.ExpandMeanPoolGradient(dSH, storyIndex, tokenCount, ed);
+                BackpropTextEncoder(dTokenHidden, cache.StoryCaches[storyIndex]);
+            }
+        }
+
+        private void FlushSharedTextStoryGradients()
+        {
+            var entries = _model.DrainSharedTextStoryTrainingEntries();
+
+            if (entries == null || entries.Count == 0)
+            {
+                return;
+            }
+
+            int ed = _config.Text.EmbeddingDim;
+
+            foreach (var entry in entries)
+            {
+                if (entry == null || entry.ForwardCache == null || entry.AccumulatedPooledGradient == null || entry.TokenCount <= 0)
+                {
+                    continue;
+                }
+
+                var pooledGrad = new float[1, ed];
+                for (int d = 0; d < ed; d++)
+                {
+                    pooledGrad[0, d] = entry.AccumulatedPooledGradient[d];
+                }
+
+                var dTokenHidden = _accel.ExpandMeanPoolGradient(pooledGrad, 0, entry.TokenCount, ed);
+                BackpropTextEncoder(dTokenHidden, entry.ForwardCache);
             }
         }
         private void BackpropTextEncoder(float[,] dTH, MmtacForwardCache cache)
@@ -2181,6 +2240,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             if (inputs.Length != targets.Length)
                 throw new ArgumentException("inputs and targets must have the same length.");
 
+            using var evalTextStoryCache = _model.BeginTemporaryEvalTextStoryEmbeddingCache();
+
             float total = 0f;
             int count = 0;
 
@@ -2436,6 +2497,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 throw new ArgumentNullException(nameof(targets));
             if (inputs.Length != targets.Length)
                 throw new ArgumentException("inputs and targets must have the same length.");
+
+            using var evalTextStoryCache = _model.BeginTemporaryEvalTextStoryEmbeddingCache();
 
             float total = 0f;
             int count = 0;

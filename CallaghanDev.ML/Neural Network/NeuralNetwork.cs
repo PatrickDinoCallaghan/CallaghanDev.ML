@@ -620,6 +620,102 @@ namespace CallaghanDev.ML
             return data.layers[^1].Activations.ToArray();
         }
 
+        /// <summary>
+        /// Stateless batched inference path used by transformer FFN blocks.
+        /// Unlike <see cref="ForwardPassOnly"/>, this method does not mutate layer
+        /// activations/derivatives, so it is safe to use for validation and transformer
+        /// forward passes that perform their own backward recomputation.
+        /// </summary>
+        public float[,] ForwardPassOnlyBatch(float[,] input)
+        {
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+            }
+
+            int rows = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+
+            if (rows == 0)
+            {
+                int outputDim = data.layers[^1].Size;
+                return new float[0, outputDim];
+            }
+
+            if (data.layers == null || data.layers.Length < 2)
+            {
+                throw new InvalidOperationException("Neural network must have at least input and output layers.");
+            }
+
+            if (inputDim != data.layers[0].Size)
+            {
+                throw new ArgumentException(
+                    $"Input matrix column count ({inputDim}) must match network input size ({data.layers[0].Size}).",
+                    nameof(input));
+            }
+
+            float[,] current = input;
+
+            for (int layerIndex = 1; layerIndex < data.layers.Length; layerIndex++)
+            {
+                var layer = data.layers[layerIndex];
+
+                current = accelerationManager.BatchDotProduct(layer.Weights, current);
+                current = accelerationManager.MatrixAddBias(current, layer.Biases);
+                ApplyActivationInPlace(current, layer.ActivationType);
+            }
+
+            return current;
+        }
+
+        private static void ApplyActivationInPlace(float[,] matrix, ActivationType activationType)
+        {
+            if (matrix == null)
+            {
+                throw new ArgumentNullException(nameof(matrix));
+            }
+
+            if (activationType == ActivationType.None)
+            {
+                return;
+            }
+
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+
+            Parallel.For(0, rows, i =>
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    float x = matrix[i, j];
+
+                    matrix[i, j] = activationType switch
+                    {
+                        ActivationType.Sigmoid => StableSigmoidLocal(x),
+                        ActivationType.Tanh => MathF.Tanh(x),
+                        ActivationType.Relu => x > 0f ? x : 0f,
+                        ActivationType.Leakyrelu => x > 0f ? x : 0.01f * x,
+                        ActivationType.Swish => x * StableSigmoidLocal(x),
+                        _ => x
+                    };
+                }
+            });
+        }
+
+        private static float StableSigmoidLocal(float x)
+        {
+            if (x >= 0f)
+            {
+                float z = MathF.Exp(-x);
+                return 1f / (1f + z);
+            }
+            else
+            {
+                float z = MathF.Exp(x);
+                return z / (1f + z);
+            }
+        }
+
         public float[] ComputeInputGradient(float[] dOutput, List<float[,]> weightGradients = null, List<float[]> biasGradients = null)
         {
             int L = data.layers.Length - 1;

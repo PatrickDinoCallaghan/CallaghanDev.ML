@@ -26,12 +26,16 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         //  Config & infrastructure 
         private readonly MmtacConfig _config;
         private readonly Random _random;
-        private readonly IAccelerationManager _accel;
         private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
         private readonly ConcurrentDictionary<int, bool[,]> _causalMaskCache = new ConcurrentDictionary<int, bool[,]>();
         private readonly ConcurrentDictionary<TokenSequenceCacheKey, float[]> _frozenTextStoryEmbeddingCache = new ConcurrentDictionary<TokenSequenceCacheKey, float[]>();
+        private Dictionary<TokenSequenceCacheKey, float[]> _temporaryEvalTextStoryEmbeddingCache;
+        private TrainingTextStoryCacheScope _activeTrainingTextStoryCacheScope;
         public MmtacConfig Config => _config;
-        public IAccelerationManager AccelerationManager => _accel;
+
+
+        private IAccelerationManager _accel;
+        public IAccelerationManager AccelerationManager { get { return _accel; }  }
 
         //  Text encoder weights 
         public float[,] TextTokenEmbedding { get; set; }
@@ -104,7 +108,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             // The previous implementation forced MultiThreadCPU, which made GPU/other
             // acceleration settings unreachable even when Runtime.AccelerationType was set.
             _accel = AccelerationFactory.Create(config.Runtime);
-
             _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
 
             // Copy runtime pruning settings from config. Do not keep the default
@@ -123,6 +126,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             InitContextTypeEmbedding();
             InitOutputHeads();
 
+            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
+            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
+            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
+            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
             Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
         }
         // 
@@ -865,13 +872,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         // 
 
         internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf)
-      ForwardWithPriceContextAndCache(
-          MultimodalInput input,
-          float[,] priceCtxHidden,
-          float[] priceCtxTimes,
-          MmtacForwardCache cache,
-          bool isTraining = true,
-          Random dropoutRng = null)
+      ForwardWithPriceContextAndCache(MultimodalInput input, float[,] priceCtxHidden, float[] priceCtxTimes, MmtacForwardCache cache, bool isTraining = true, Random dropoutRng = null)
         {
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
@@ -912,17 +913,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 dropoutRng: dropoutRng);
         }
 
-        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf)
-            ForwardWithPriceContextSliceAndCacheWithStoryTimeOffset(
-                MultimodalInput input,
-                int rowStart,
-                int rowCount,
-                float[,] priceCtxHidden,
-                float[] priceCtxTimes,
-                MmtacForwardCache cache,
-                float storyArrivalTimeOffset = 0f,
-                bool isTraining = true,
-                Random dropoutRng = null)
+        internal (float[,] reg, float[,] range, float[,] quality, float[,] dir, float[,] midDir, float[,] conf) ForwardWithPriceContextSliceAndCacheWithStoryTimeOffset(MultimodalInput input, int rowStart, int rowCount, float[,] priceCtxHidden, float[] priceCtxTimes, MmtacForwardCache cache, float storyArrivalTimeOffset = 0f, bool isTraining = true, Random dropoutRng = null)
         {
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
@@ -1434,6 +1425,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             var times = new float[storyCount];
 
             cache.StoryTokenCounts = new int[storyCount];
+            cache.SharedTextStoryIds = keepTextBackpropCache
+                ? Enumerable.Repeat(-1, storyCount).ToArray()
+                : null;
+
             if (keepTextBackpropCache)
             {
                 cache.PrepareStoryCaches(storyCount);
@@ -1446,22 +1441,17 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             for (int i = 0; i < storyCount; i++)
             {
                 var story = stories[i];
-                MmtacForwardCache storyCache = null;
-
-                if (keepTextBackpropCache)
-                {
-                    storyCache = cache.RentStoryCache();
-                }
 
                 if (object.ReferenceEquals(story, null))
                 {
                     times[i] = arrivalTimeOffset;
 
-                    if (storyCache != null)
+                    if (keepTextBackpropCache)
                     {
-                        storyCache.TextTokenIds = Array.Empty<int>();
-                        storyCache.TextEmbedded = new float[0, ed];
-                        storyCache.TextFinalHidden = new float[0, ed];
+                        var emptyCache = cache.RentStoryCache();
+                        emptyCache.TextTokenIds = Array.Empty<int>();
+                        emptyCache.TextEmbedded = new float[0, ed];
+                        emptyCache.TextFinalHidden = new float[0, ed];
                     }
 
                     cache.StoryTokenCounts[i] = 0;
@@ -1472,21 +1462,38 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                 if (story.TokenIds == null || story.TokenIds.Length == 0)
                 {
-                    if (storyCache != null)
+                    if (keepTextBackpropCache)
                     {
-                        storyCache.TextTokenIds = Array.Empty<int>();
-                        storyCache.TextEmbedded = new float[0, ed];
-                        storyCache.TextFinalHidden = new float[0, ed];
+                        var emptyCache = cache.RentStoryCache();
+                        emptyCache.TextTokenIds = Array.Empty<int>();
+                        emptyCache.TextEmbedded = new float[0, ed];
+                        emptyCache.TextFinalHidden = new float[0, ed];
                     }
 
                     cache.StoryTokenCounts[i] = 0;
                     continue;
                 }
 
-                cache.StoryTokenCounts[i] = Math.Min(story.TokenIds.Length, _config.Text.MaxSequenceLength);
-
                 if (keepTextBackpropCache)
                 {
+                    if (TryGetOrCreateSharedTrainingTextStory(story.TokenIds, out var sharedEntry))
+                    {
+                        // Keep StoryCaches aligned with story indices. The trainer sees
+                        // SharedTextStoryIds[i] >= 0 and accumulates the pooled gradient
+                        // into the shared entry instead of backpropagating this placeholder.
+                        cache.StoryCaches.Add(null);
+                        cache.SharedTextStoryIds[i] = sharedEntry.Id;
+                        cache.StoryTokenCounts[i] = sharedEntry.TokenCount;
+
+                        if (sharedEntry.PooledEmbedding != null && sharedEntry.PooledEmbedding.Length > 0)
+                        {
+                            _accel.SetRow(hidden, i, sharedEntry.PooledEmbedding, ed);
+                        }
+
+                        continue;
+                    }
+
+                    var storyCache = cache.RentStoryCache();
                     var tokenHidden = ForwardTextEncoderWithCache(story.TokenIds, storyCache);
                     int tokenCount = tokenHidden.GetLength(0);
                     cache.StoryTokenCounts[i] = tokenCount;
@@ -1500,10 +1507,18 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
 
                 float[] pooledEmbedding;
+                var cacheKey = BuildTokenCacheKey(story.TokenIds);
 
-                if (_config.Text.Freeze)
+                if (_temporaryEvalTextStoryEmbeddingCache != null)
                 {
-                    var cacheKey = BuildTokenCacheKey(story.TokenIds);
+                    if (!_temporaryEvalTextStoryEmbeddingCache.TryGetValue(cacheKey, out pooledEmbedding))
+                    {
+                        pooledEmbedding = EncodeAndPoolStoryNoCache(story.TokenIds);
+                        _temporaryEvalTextStoryEmbeddingCache[cacheKey] = pooledEmbedding;
+                    }
+                }
+                else if (_config.Text.Freeze)
+                {
                     pooledEmbedding = _frozenTextStoryEmbeddingCache.GetOrAdd(cacheKey, _ => EncodeAndPoolStoryNoCache(story.TokenIds));
                 }
                 else
@@ -1596,6 +1611,241 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             public override int GetHashCode()
             {
                 return _hash;
+            }
+        }
+
+        internal IDisposable BeginTemporaryEvalTextStoryEmbeddingCache()
+        {
+            if (_temporaryEvalTextStoryEmbeddingCache != null)
+            {
+                throw new InvalidOperationException("Temporary eval text story embedding cache is already active.");
+            }
+
+            _temporaryEvalTextStoryEmbeddingCache = new Dictionary<TokenSequenceCacheKey, float[]>();
+
+            return new DisposableAction(() =>
+            {
+                _temporaryEvalTextStoryEmbeddingCache = null;
+            });
+        }
+
+        internal IDisposable BeginTrainingTextStoryCacheScope(
+            int[] batchIndices,
+            int batchStart,
+            int batchCount,
+            MultimodalInput[] allInputs)
+        {
+            if (_activeTrainingTextStoryCacheScope != null)
+            {
+                throw new InvalidOperationException("Training text story cache scope is already active.");
+            }
+
+            var duplicateKeys = BuildDuplicateTextStoryKeySet(batchIndices, batchStart, batchCount, allInputs);
+            _activeTrainingTextStoryCacheScope = new TrainingTextStoryCacheScope(duplicateKeys);
+
+            return new DisposableAction(() =>
+            {
+                _activeTrainingTextStoryCacheScope = null;
+            });
+        }
+
+        private HashSet<TokenSequenceCacheKey> BuildDuplicateTextStoryKeySet(
+            int[] batchIndices,
+            int batchStart,
+            int batchCount,
+            MultimodalInput[] allInputs)
+        {
+            var counts = new Dictionary<TokenSequenceCacheKey, int>();
+
+            if (batchIndices == null || allInputs == null || batchCount <= 0)
+            {
+                return new HashSet<TokenSequenceCacheKey>();
+            }
+
+            int end = Math.Min(batchIndices.Length, batchStart + batchCount);
+
+            for (int bi = Math.Max(0, batchStart); bi < end; bi++)
+            {
+                int idx = batchIndices[bi];
+
+                if ((uint)idx >= (uint)allInputs.Length)
+                {
+                    continue;
+                }
+
+                var stories = allInputs[idx]?.NewsStories;
+
+                if (stories == null || stories.Length == 0)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < stories.Length; i++)
+                {
+                    var tokenIds = stories[i]?.TokenIds;
+
+                    if (tokenIds == null || tokenIds.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var key = BuildTokenCacheKey(tokenIds);
+                    counts.TryGetValue(key, out int count);
+                    counts[key] = count + 1;
+                }
+            }
+
+            var duplicates = new HashSet<TokenSequenceCacheKey>();
+
+            foreach (var kvp in counts)
+            {
+                if (kvp.Value > 1)
+                {
+                    duplicates.Add(kvp.Key);
+                }
+            }
+
+            return duplicates;
+        }
+
+        private bool TryGetOrCreateSharedTrainingTextStory(
+            int[] tokenIds,
+            out SharedTextStoryTrainingCacheEntry entry)
+        {
+            entry = null;
+
+            var scope = _activeTrainingTextStoryCacheScope;
+            if (scope == null || tokenIds == null || tokenIds.Length == 0 || scope.SharedKeys.Count == 0)
+            {
+                return false;
+            }
+
+            var key = BuildTokenCacheKey(tokenIds);
+
+            if (!scope.SharedKeys.Contains(key))
+            {
+                return false;
+            }
+
+            if (scope.EntriesByKey.TryGetValue(key, out entry))
+            {
+                return true;
+            }
+
+            int ed = _config.Text.EmbeddingDim;
+            var storyCache = new MmtacForwardCache(_config.Text.NumLayers, _config.Price.NumLayers);
+            var tokenHidden = ForwardTextEncoderWithCache(tokenIds, storyCache);
+            int tokenCount = tokenHidden.GetLength(0);
+            float[] pooled = tokenCount > 0 ? _accel.MeanPoolRows(tokenHidden) : new float[ed];
+
+            entry = new SharedTextStoryTrainingCacheEntry
+            {
+                Id = scope.NextId++,
+                TokenCount = tokenCount,
+                PooledEmbedding = pooled,
+                ForwardCache = storyCache
+            };
+
+            scope.EntriesByKey[key] = entry;
+            scope.EntriesById[entry.Id] = entry;
+            return true;
+        }
+
+        internal bool TryAccumulateSharedTextStoryGradient(int sharedId, float[] pooledGradient)
+        {
+            var scope = _activeTrainingTextStoryCacheScope;
+
+            if (scope == null || pooledGradient == null)
+            {
+                return false;
+            }
+
+            if (!scope.EntriesById.TryGetValue(sharedId, out var entry))
+            {
+                return false;
+            }
+
+            int ed = _config.Text.EmbeddingDim;
+
+            if (entry.AccumulatedPooledGradient == null)
+            {
+                entry.AccumulatedPooledGradient = new float[ed];
+            }
+
+            int n = Math.Min(ed, pooledGradient.Length);
+            for (int i = 0; i < n; i++)
+            {
+                entry.AccumulatedPooledGradient[i] += pooledGradient[i];
+            }
+
+            return true;
+        }
+
+        internal List<SharedTextStoryTrainingCacheEntry> DrainSharedTextStoryTrainingEntries()
+        {
+            var scope = _activeTrainingTextStoryCacheScope;
+
+            if (scope == null || scope.Drained)
+            {
+                return new List<SharedTextStoryTrainingCacheEntry>();
+            }
+
+            scope.Drained = true;
+            var entries = new List<SharedTextStoryTrainingCacheEntry>();
+
+            foreach (var entry in scope.EntriesById.Values)
+            {
+                if (entry != null && entry.AccumulatedPooledGradient != null && entry.TokenCount > 0)
+                {
+                    entries.Add(entry);
+                }
+            }
+
+            return entries;
+        }
+
+        internal sealed class SharedTextStoryTrainingCacheEntry
+        {
+            public int Id { get; set; }
+            public int TokenCount { get; set; }
+            public float[] PooledEmbedding { get; set; }
+            public MmtacForwardCache ForwardCache { get; set; }
+            public float[] AccumulatedPooledGradient { get; set; }
+        }
+
+        private sealed class TrainingTextStoryCacheScope
+        {
+            public TrainingTextStoryCacheScope(HashSet<TokenSequenceCacheKey> sharedKeys)
+            {
+                SharedKeys = sharedKeys ?? new HashSet<TokenSequenceCacheKey>();
+            }
+
+            public HashSet<TokenSequenceCacheKey> SharedKeys { get; }
+            public Dictionary<TokenSequenceCacheKey, SharedTextStoryTrainingCacheEntry> EntriesByKey { get; } = new Dictionary<TokenSequenceCacheKey, SharedTextStoryTrainingCacheEntry>();
+            public Dictionary<int, SharedTextStoryTrainingCacheEntry> EntriesById { get; } = new Dictionary<int, SharedTextStoryTrainingCacheEntry>();
+            public int NextId { get; set; }
+            public bool Drained { get; set; }
+        }
+
+        private sealed class DisposableAction : IDisposable
+        {
+            private readonly Action _dispose;
+            private bool _disposed;
+
+            public DisposableAction(Action dispose)
+            {
+                _dispose = dispose ?? throw new ArgumentNullException(nameof(dispose));
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+                _dispose();
             }
         }
 
@@ -1853,7 +2103,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             for (int i = 0; i < _config.Price.NumLayers; i++)
             {
-                PriceBlocks[i] = new TacamtBlock(ed, _config.Price.NumHeads, _config.Price.FeedForwardDim, _config.Runtime.FFNActivationType, _accel, _random, l2Lambda: _config.Reg.L2RegulationLamda, decayProjectionDim: _config.Decay.ProjectionDim, decayHiddenDim: _config.Decay.HiddenDim, decayMemAttnDropout: _config.Decay.MemAttentionDropout, decayMLPDropout: _config.Decay.MlpDropout, decayWeightDecay: _config.Decay.WeightDecay, decayTimeBases: _config.Decay.TimeEncodingBases);
+                PriceBlocks[i] = new TacamtBlock(ed, _config.Price.NumHeads, _config.Price.FeedForwardDim, _config.Runtime.FFNActivationType, _accel, _random, l2Lambda: _config.Reg.L2RegulationLamda, decayProjectionDim: _config.Decay.ProjectionDim, decayHiddenDim: _config.Decay.HiddenDim, decayMemAttnDropout: _config.Decay.MemAttentionDropout, decayMLPDropout: _config.Decay.MlpDropout, decayWeightDecay: _config.Decay.WeightDecay, decayTimeBases: _config.Decay.TimeEncodingBases, accelerationType: _config.Runtime.AccelerationType, accelerationDeviceId: _config.Runtime.AccelerationDeviceId);
             }
         }
 
@@ -2062,7 +2312,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             SaveMemory(dir);
             Tokenizer?.Save(Path.Combine(dir, "tokenizer"));
         }
-        public static MmtacModel Load(string dir)
+        public static MmtacModel Load(string dir, AccelerationType accelerationType, int accellerationDeviceIndex)
         {
             var d = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(Path.Combine(dir, "config.json")));
 
@@ -2098,25 +2348,18 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                 Global = new MmtacGlobalConfig
                 {
-                    GlobalFeatureDim = d.ContainsKey("GlobalFeatureDim")
-                        ? d["GlobalFeatureDim"].GetInt32()
-                        : 0,
+                    GlobalFeatureDim = d.ContainsKey("GlobalFeatureDim") ? d["GlobalFeatureDim"].GetInt32() : 0,
 
-                    BypassDecay = d.ContainsKey("GlobalBypassDecay")
-                        && d["GlobalBypassDecay"].GetBoolean()
+                    BypassDecay = d.ContainsKey("GlobalBypassDecay") && d["GlobalBypassDecay"].GetBoolean()
                 },
 
                 Output = new MmtacOutputConfig
                 {
                     UseConfidenceHead = d["UseConfidenceHead"].GetBoolean(),
 
-                    DirectionLossWeight = d.ContainsKey("DirectionLossWeight")
-                        ? d["DirectionLossWeight"].GetSingle()
-                        : 1f,
+                    DirectionLossWeight = d.ContainsKey("DirectionLossWeight") ? d["DirectionLossWeight"].GetSingle() : 1f,
 
-                    MidDirectionLossWeight = d.ContainsKey("MidDirectionLossWeight")
-                        ? d["MidDirectionLossWeight"].GetSingle()
-                        : 0.5f,
+                    MidDirectionLossWeight = d.ContainsKey("MidDirectionLossWeight") ? d["MidDirectionLossWeight"].GetSingle() : 0.5f,
 
                     RangeLossWeight = d.ContainsKey("RangeLossWeight")
                         ? d["RangeLossWeight"].GetSingle()
@@ -2195,28 +2438,22 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
                 Pruning = new MemoryPruningConfig
                 {
-                    AttentionScoreAlpha = d.ContainsKey("PruningAlpha")
-                        ? d["PruningAlpha"].GetSingle()
-                        : new MemoryPruningConfig().AttentionScoreAlpha,
+                    AttentionScoreAlpha = d.ContainsKey("PruningAlpha") ? d["PruningAlpha"].GetSingle() : new MemoryPruningConfig().AttentionScoreAlpha,
 
-                    MinQueryCountForPruning = d.ContainsKey("PruningMinQueryCount")
-                        ? d["PruningMinQueryCount"].GetInt32()
-                        : new MemoryPruningConfig().MinQueryCountForPruning,
+                    MinQueryCountForPruning = d.ContainsKey("PruningMinQueryCount") ? d["PruningMinQueryCount"].GetInt32() : new MemoryPruningConfig().MinQueryCountForPruning,
 
-                    NewEntryReserveFraction = d.ContainsKey("PruningReserveFraction")
-                        ? d["PruningReserveFraction"].GetSingle()
-                        : new MemoryPruningConfig().NewEntryReserveFraction,
+                    NewEntryReserveFraction = d.ContainsKey("PruningReserveFraction") ? d["PruningReserveFraction"].GetSingle() : new MemoryPruningConfig().NewEntryReserveFraction,
 
-                    UseAttentionBasedPruning = d.ContainsKey("PruningUseAttentionBased")
-                        ? d["PruningUseAttentionBased"].GetBoolean()
-                        : new MemoryPruningConfig().UseAttentionBasedPruning
+                    UseAttentionBasedPruning = d.ContainsKey("PruningUseAttentionBased") ? d["PruningUseAttentionBased"].GetBoolean() : new MemoryPruningConfig().UseAttentionBasedPruning
                 }
             };
 
             cfg.Validate();
-
+            cfg.Runtime.AccelerationType = accelerationType;
+            cfg.Runtime.AccelerationDeviceId = accellerationDeviceIndex;
             var m = new MmtacModel(cfg);
-
+            m.SetAccellerator(accelerationType, accellerationDeviceIndex); // Not really needed, but who cares
+            
             using (var s = new FileStream(Path.Combine(dir, "weights.bin"), FileMode.Open))
             using (var r = new BinaryReader(s))
             {
@@ -2282,23 +2519,21 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 }
 
                 if (s.Position < s.Length)
+                {
                     RM(r, m.ContextTypeEmbedding);
+                }
             }
 
             for (int i = 0; i < cfg.Text.NumLayers; i++)
             {
-                var loadedFfn = NeuralNetwork.Load(
-                    Path.Combine(dir, $"text_ffn_{i}"),
-                    cfg.Runtime.AccelerationType);
+                var loadedFfn = NeuralNetwork.Load(Path.Combine(dir, $"text_ffn_{i}"), cfg.Runtime.AccelerationType);
 
                 m.TextBlocks[i].ReplaceFeedForwardNetwork(loadedFfn);
             }
 
             for (int i = 0; i < cfg.Price.NumLayers; i++)
             {
-                m.PriceBlocks[i].FeedForwardNetwork = NeuralNetwork.Load(
-                    Path.Combine(dir, $"price_ffn_{i}"),
-                    cfg.Runtime.AccelerationType);
+                m.PriceBlocks[i].FeedForwardNetwork = NeuralNetwork.Load(Path.Combine(dir, $"price_ffn_{i}"), cfg.Runtime.AccelerationType);
             }
 
             m.LoadMemory(dir);
@@ -2310,8 +2545,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
             if (m.TextTokenEmbedding.GetLength(0) != cfg.Text.VocabSize)
             {
-                throw new InvalidOperationException(
-                    $"Text embedding row count ({m.TextTokenEmbedding.GetLength(0)}) does not match config TextVocabSize ({cfg.Text.VocabSize}).");
+                throw new InvalidOperationException($"Text embedding row count ({m.TextTokenEmbedding.GetLength(0)}) does not match config TextVocabSize ({cfg.Text.VocabSize}).");
             }
 
             var tokDir = Path.Combine(dir, "tokenizer");
@@ -2460,5 +2694,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
         #endregion
 
         #endregion
+
+        public void SetAccellerator(AccelerationType accelerationType, int accellerationDeviceIndex)
+        {
+            _accel = AccelerationFactory.Create(accelerationType, accellerationDeviceIndex);
+        }
     }
 }

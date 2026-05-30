@@ -406,6 +406,30 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         public float[,] FFNForwardBatch(float[,] input, int seqLen, int outputDim, Func<float[], float[]> forwardPassFn)
         {
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+            }
+
+            if (forwardPassFn == null)
+            {
+                throw new ArgumentNullException(nameof(forwardPassFn));
+            }
+
+            if (seqLen < 0 || seqLen > input.GetLength(0))
+            {
+                throw new ArgumentOutOfRangeException(nameof(seqLen));
+            }
+
+            if (forwardPassFn.Target is CallaghanDev.ML.NeuralNetwork network)
+            {
+                float[,] batchInput = seqLen == input.GetLength(0)
+                    ? input
+                    : SliceRows(input, 0, seqLen);
+
+                return network.ForwardPassOnlyBatch(batchInput);
+            }
+
             return _mutliThreadCPU.FFNForwardBatch(input, seqLen, outputDim, forwardPassFn);
         }
 

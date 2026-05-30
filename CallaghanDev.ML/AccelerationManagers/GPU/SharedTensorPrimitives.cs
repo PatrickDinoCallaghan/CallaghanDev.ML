@@ -8,6 +8,10 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
     public partial class AccelerationGPU : IAccelerationManager, IDisposable
     {
         private readonly Dictionary<(int r1, int c1, int c2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulCache = new();
+        private readonly Dictionary<(int r1, int c1, int r2), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matMulTransposeCache = new();
+        private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> a, MemoryBuffer2D<float, Stride2D.DenseX> b, MemoryBuffer2D<float, Stride2D.DenseX> c)> _matrixAddCache = new();
+        private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> input, MemoryBuffer1D<float, Stride1D.Dense> bias, MemoryBuffer2D<float, Stride2D.DenseX> output)> _matrixAddBiasCache = new();
+        private readonly Dictionary<(int rows, int cols, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> input, MemoryBuffer2D<float, Stride2D.DenseX> output)> _sliceRowsCache = new();
         private readonly Dictionary<(int outputDim, int inputDim, int inputRows, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
 
         private void InitSharedTensorKernels()
@@ -115,24 +119,24 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 return _mutliThreadCPU.MatrixMultiplyTranspose(A, B);
             }
 
-            var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(r1, c1));
-            var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(r2, c2));
-            var bufC = _accelerator.Allocate2DDenseX<float>(new Index2D(r1, r2));
-
-            try
+            var key = (r1, c1, r2);
+            if (!_matMulTransposeCache.TryGetValue(key, out var bufs))
             {
-                bufA.CopyFromCPU(A);
-                bufB.CopyFromCPU(B);
-                _matMulTransposeKernel(new Index2D(r1, r2), bufA.View, bufB.View, bufC.View);
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(r1, c1)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(r2, c2)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(r1, r2))
+                );
+                _matMulTransposeCache[key] = bufs;
+            }
 
-                var result = new float[r1, r2];
-                bufC.CopyToCPU(result);
-                return result;
-            }
-            finally
-            {
-                bufA.Dispose(); bufB.Dispose(); bufC.Dispose();
-            }
+            bufs.a.CopyFromCPU(A);
+            bufs.b.CopyFromCPU(B);
+            _matMulTransposeKernel(new Index2D(r1, r2), bufs.a.View, bufs.b.View, bufs.c.View);
+
+            var result = new float[r1, r2];
+            bufs.c.CopyToCPU(result);
+            return result;
         }
 
 
@@ -205,24 +209,24 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 return _mutliThreadCPU.MatrixAdd(A, B);
             }
 
-            var bufA = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
-            var bufB = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
-            var bufC = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
-
-            try
+            var key = (rows, cols);
+            if (!_matrixAddCache.TryGetValue(key, out var bufs))
             {
-                bufA.CopyFromCPU(A);
-                bufB.CopyFromCPU(B);
-                _matAddKernel(new Index2D(rows, cols), bufA.View, bufB.View, bufC.View);
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols))
+                );
+                _matrixAddCache[key] = bufs;
+            }
 
-                var result = new float[rows, cols];
-                bufC.CopyToCPU(result);
-                return result;
-            }
-            finally
-            {
-                bufA.Dispose(); bufB.Dispose(); bufC.Dispose();
-            }
+            bufs.a.CopyFromCPU(A);
+            bufs.b.CopyFromCPU(B);
+            _matAddKernel(new Index2D(rows, cols), bufs.a.View, bufs.b.View, bufs.c.View);
+
+            var result = new float[rows, cols];
+            bufs.c.CopyToCPU(result);
+            return result;
         }
         #endregion
 
@@ -239,24 +243,24 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 return _mutliThreadCPU.MatrixAddBias(matrix, bias);
             }
 
-            var bufIn = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
-            var bufBias = _accelerator.Allocate1D<float>(cols);
-            var bufOut = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
-
-            try
+            var key = (rows, cols);
+            if (!_matrixAddBiasCache.TryGetValue(key, out var bufs))
             {
-                bufIn.CopyFromCPU(matrix);
-                bufBias.CopyFromCPU(bias);
-                _matAddBiasKernel(new Index2D(rows, cols), bufIn.View, bufBias.View, bufOut.View);
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols))
+                );
+                _matrixAddBiasCache[key] = bufs;
+            }
 
-                var result = new float[rows, cols];
-                bufOut.CopyToCPU(result);
-                return result;
-            }
-            finally
-            {
-                bufIn.Dispose(); bufBias.Dispose(); bufOut.Dispose();
-            }
+            bufs.input.CopyFromCPU(matrix);
+            bufs.bias.CopyFromCPU(bias);
+            _matAddBiasKernel(new Index2D(rows, cols), bufs.input.View, bufs.bias.View, bufs.output.View);
+
+            var result = new float[rows, cols];
+            bufs.output.CopyToCPU(result);
+            return result;
         }
         private static void MatAddBiasKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView1D<float, Stride1D.Dense> bias, ArrayView2D<float, Stride2D.DenseX> result)
         {
@@ -377,23 +381,22 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 return _mutliThreadCPU.SliceRows(matrix, startRow, endRow);
             }
 
-            var bufMatrix = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols));
-            var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, cols));
-
-            try
+            var key = (rows, cols, rowCount);
+            if (!_sliceRowsCache.TryGetValue(key, out var bufs))
             {
-                bufMatrix.CopyFromCPU(matrix);
-                _sliceRowsKernel(new Index2D(rowCount, cols), bufMatrix.View, bufResult.View, startRow);
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, cols))
+                );
+                _sliceRowsCache[key] = bufs;
+            }
 
-                var result = new float[rowCount, cols];
-                bufResult.CopyToCPU(result);
-                return result;
-            }
-            finally
-            {
-                bufMatrix.Dispose();
-                bufResult.Dispose();
-            }
+            bufs.input.CopyFromCPU(matrix);
+            _sliceRowsKernel(new Index2D(rowCount, cols), bufs.input.View, bufs.output.View, startRow);
+
+            var result = new float[rowCount, cols];
+            bufs.output.CopyToCPU(result);
+            return result;
         }
 
         private static void SliceRowsKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> matrix, ArrayView2D<float, Stride2D.DenseX> result, int startRow)
@@ -733,6 +736,33 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 v.c.Dispose();
             }
 
+            foreach (var v in _matMulTransposeCache.Values)
+            {
+                v.a.Dispose();
+                v.b.Dispose();
+                v.c.Dispose();
+            }
+
+            foreach (var v in _matrixAddCache.Values)
+            {
+                v.a.Dispose();
+                v.b.Dispose();
+                v.c.Dispose();
+            }
+
+            foreach (var v in _matrixAddBiasCache.Values)
+            {
+                v.input.Dispose();
+                v.bias.Dispose();
+                v.output.Dispose();
+            }
+
+            foreach (var v in _sliceRowsCache.Values)
+            {
+                v.input.Dispose();
+                v.output.Dispose();
+            }
+
             foreach (var v in _batchDotCache.Values)
             {
                 v.w.Dispose();
@@ -741,6 +771,10 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
 
             _matMulCache.Clear();
+            _matMulTransposeCache.Clear();
+            _matrixAddCache.Clear();
+            _matrixAddBiasCache.Clear();
+            _sliceRowsCache.Clear();
             _batchDotCache.Clear();
         }
 

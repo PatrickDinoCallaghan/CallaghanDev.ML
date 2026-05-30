@@ -23,7 +23,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private bool _useDecayNetwork = true;
         private Random _dropoutRng;
         public bool UseDecayNetworkForCrossAttention => _useDecayNetwork;
-        public TacamtBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random,  float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8) : base(embeddingDim, numHeads, accel)
+        public TacamtBlock(int embeddingDim, int numHeads, int feedForwardDim, ActivationType ffnActivation, IAccelerationManager accel, Random random,  float l2Lambda = 0.01f, int decayProjectionDim = 8, int decayHiddenDim = 16, float decayMemAttnDropout = 0.1f, float decayMLPDropout = 0.1f, float decayWeightDecay = 0.0f, int decayTimeBases = 8, AccelerationType accelerationType = AccelerationType.MultiThreadCPU, int accelerationDeviceId = 0) : base(embeddingDim, numHeads, accel)
         {
             _rotaryPositionEmbedding = new RotaryPositionEmbedding(accel);
             SelfAttention = new MultiHeadAttention(embeddingDim, numHeads, accel, random);
@@ -50,8 +50,14 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             FeedForwardNetwork = new NeuralNetwork(new Parameters
             {
                 LayerWidths = new List<int> { embeddingDim, feedForwardDim, embeddingDim },
-                LayerActivations = new List<ActivationType> { ffnActivation, ffnActivation, ActivationType.None },
-                L2RegulationLamda = l2Lambda
+                LayerActivations = new List<ActivationType> { ActivationType.None, ffnActivation, ActivationType.None },
+                AccelerationType = accelerationType,
+                AccelerationDeviceId = accelerationDeviceId,
+                CostFunction = CostFunctionType.mse,
+                ActivationDistribution = ActivationDistribution.Normal,
+                L2RegulationLamda = l2Lambda,
+                inputActivationMin = Enumerable.Repeat(0f, embeddingDim).ToArray(),
+                inputActivationMax = Enumerable.Repeat(1f, embeddingDim).ToArray()
             });
 
             LNFFNGamma = InitGamma(embeddingDim);

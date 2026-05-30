@@ -16,8 +16,13 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private readonly Accelerator _accelerator;
         private readonly AccelerationMutliThreadCPU _mutliThreadCPU;
 
-        private const long GPU_ELEMENTWISE_THRESHOLD = 262_144;
-        private const long GPU_MATMUL_OP_THRESHOLD = 1_000_000;
+        // Transformer workloads in this project are often many medium-sized operations
+        // (for example 60-120 timesteps) rather than a few giant GEMMs. The previous
+        // thresholds silently routed those operations back to CPU. Keep the threshold
+        // low enough that CUDA/OpenCL is actually used for transformer hot paths, while
+        // still avoiding launch overhead for tiny scalar work.
+        private const long GPU_ELEMENTWISE_THRESHOLD = 4_096;
+        private const long GPU_MATMUL_OP_THRESHOLD = 32_768;
 
         private static bool ShouldUseGpu(long workUnits, long threshold = GPU_ELEMENTWISE_THRESHOLD)
         {
