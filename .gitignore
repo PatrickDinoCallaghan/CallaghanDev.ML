@@ -376,3 +376,4 @@ FodyWeavers.xsd
 /Archive
 /CallaghanDev.ML.LLMChat/Model/mistral-7b-instruct-v0.1.Q4_K_M.gguf
 /CallaghanDev.ML/AccelerationManagers/GPUAccelleration.zip
+/CallaghanDev.ML/Transformers/PriceTAC/README.md
