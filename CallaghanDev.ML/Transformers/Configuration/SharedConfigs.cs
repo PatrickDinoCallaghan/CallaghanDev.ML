@@ -66,7 +66,7 @@ namespace CallaghanDev.ML.Transformers.Configuration
         /// </summary>
         public float ConfidenceLossWeight { get; set; } = 1.0f;
 
-
+        public int? RandomSeed { get; set; } = null;
 
         //  Validation 
 

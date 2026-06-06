@@ -981,18 +981,30 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         private void Test_Signal_DirectionAndMidDirectionCanLearnOppositeLabels()
         {
             var (inputs, targets) = OppositeDirectionData(n: 24, seqLen: 6);
-            var m = new PriceTacModel(Cfg(embDim: 24, numHeads: 4, numLayers: 1, ffnDim: 48), new Random(42));
-            new PriceTacTrainer(m, TC(lr: 0.003f, bs: 8, epochs: 90)).Train(inputs, targets);
+
+            var cfg = Cfg(embDim: 24, numHeads: 4, numLayers: 1, ffnDim: 48);
+
+            // This test is specifically about proving the two classification heads can
+            // learn opposite labels. Do not make the mid-direction head half-strength
+            // and then require the same hard separation margin.
+            cfg.Output.DirectionLossWeight = 1f;
+            cfg.Output.MidDirectionLossWeight = 1f;
+
+            var m = new PriceTacModel(cfg, new Random(42));
+
+            // Full-batch training removes minibatch-order noise from this signal test.
+            new PriceTacTrainer(m, TC(lr: 0.003f, bs: inputs.Length, epochs: 160, clip: true, seed: 42))
+                .Train(inputs, targets);
 
             var up = m.PredictNext(inputs[0]);
             var down = m.PredictNext(inputs[inputs.Length - 1]);
 
             Assert(up.DirectionProb > down.DirectionProb + 0.05f,
                 $"direction head did not separate. up={up.DirectionProb:F6}, down={down.DirectionProb:F6}");
+
             Assert(down.MidWindowDirectionProb > up.MidWindowDirectionProb + 0.05f,
                 $"mid-direction head did not learn opposite label. up={up.MidWindowDirectionProb:F6}, down={down.MidWindowDirectionProb:F6}");
         }
-
         private void Test_Signal_RangeHeadLearnsRangeTarget()
         {
             var (inputs, targets) = RangeSignalData(n: 24, seqLen: 6);
@@ -1461,7 +1473,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             return cfg;
         }
 
-        private static TrainingConfig TC(float lr = 0.001f, int bs = 4, int epochs = 10, bool clip = true)
+        private static TrainingConfig TC(float lr = 0.001f, int bs = 4, int epochs = 10, bool clip = true, int? seed = 42)
         {
             return new TrainingConfig
             {
@@ -1471,7 +1483,8 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
                 UseGradientClipping = clip,
                 GradientClipThreshold = 1f,
                 ConfidenceLossWeight = 1f,
-                Verbose = false
+                Verbose = false,
+                RandomSeed = seed
             };
         }
 

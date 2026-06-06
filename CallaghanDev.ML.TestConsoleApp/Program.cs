@@ -13,20 +13,20 @@ namespace CallaghanDev.ML.TestConsoleApp
             var sw = Stopwatch.StartNew();
             TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU, 0);
             sw.Stop();
-            Console.WriteLine($"Finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
+            Console.WriteLine($"{Enums.AccelerationType.MultiThreadCPU} Tests finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
             Console.ReadKey();
 
             sw = Stopwatch.StartNew();
             TransformerTestSuite.Run(Enums.AccelerationType.CPU, 0);
             sw.Stop();
-            Console.WriteLine($"Finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
+            Console.WriteLine($"{Enums.AccelerationType.CPU} Tests finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
             Console.ReadKey();
 
 
             sw = Stopwatch.StartNew();
             TransformerTestSuite.Run(Enums.AccelerationType.GPU, 0);
             sw.Stop();
-            Console.WriteLine($"Finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
+            Console.WriteLine($"{Enums.AccelerationType.GPU} Tests finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
             Console.ReadKey();
 
             Console.ForegroundColor = ConsoleColor.Cyan;

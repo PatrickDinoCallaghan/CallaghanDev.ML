@@ -10,7 +10,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 {
     public partial class AccelerationGPU : IAccelerationManager, IDisposable
     {
-        private const bool AlwaysParallel = false; // Just for testing purposes. Forgot to turn it off.
+        private const bool AlwaysParallel = true; // Just for testing purposes. Forgot to turn it off.
 
         private readonly Context _context;
         private readonly Accelerator _accelerator;

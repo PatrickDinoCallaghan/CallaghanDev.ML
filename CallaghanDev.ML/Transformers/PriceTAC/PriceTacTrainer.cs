@@ -43,8 +43,19 @@ namespace CallaghanDev.ML.Transformers.PriceTAC
             _trainConfig = trainConfig ?? throw new ArgumentNullException(nameof(trainConfig));
             _gradients = new PriceTacGradients(_config);
             _accel = model.AccelerationManager;
-            _random = new Random();
-            _dropoutRng = new Random(_random.Next());
+
+            if (_trainConfig.RandomSeed.HasValue)
+            {
+                int seed = _trainConfig.RandomSeed.Value;
+                _random = new Random(seed);
+                _dropoutRng = new Random(unchecked(seed ^ 0x5F3759DF));
+            }
+            else
+            {
+                _random = new Random();
+                _dropoutRng = new Random(_random.Next());
+            }
+
             _rotaryPositionEmbedding = new RotaryPositionEmbedding(_accel);
             _trainingForwardCache = new PriceTacForwardCache(_config.Price.NumLayers);
             _priceContextTrainingInput = new PriceTacInput();

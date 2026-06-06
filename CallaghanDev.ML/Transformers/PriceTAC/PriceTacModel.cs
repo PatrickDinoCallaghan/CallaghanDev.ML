@@ -1,6 +1,7 @@
 using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.AccelerationManagers.GPU;
 using CallaghanDev.ML.Enums;
+using CallaghanDev.ML.Extensions;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using CallaghanDev.ML.Transformers.TACAMT;
@@ -884,10 +885,12 @@ namespace CallaghanDev.ML.Transformers.PriceTAC
             int fd = _config.Price.InputFeatureDim;
             int ed = _config.Price.EmbeddingDim;
             float std = MathF.Sqrt(2.0f / (fd + ed));
+
             PriceInputProjection = InitWeights(ed, fd, std);
             PriceInputProjectionBias = new float[ed];
 
             PriceBlocks = new TacamtBlock[_config.Price.NumLayers];
+
             for (int i = 0; i < _config.Price.NumLayers; i++)
             {
                 PriceBlocks[i] = new TacamtBlock(
@@ -906,6 +909,66 @@ namespace CallaghanDev.ML.Transformers.PriceTAC
                     decayTimeBases: _config.Decay.TimeEncodingBases,
                     accelerationType: _config.Runtime.AccelerationType,
                     accelerationDeviceId: _config.Runtime.AccelerationDeviceId);
+
+                // TacamtBlock's NeuralNetwork constructor currently seeds its FFN with
+                // Data.InitializeData() -> new Random(), so PriceTacModel's Random(42)
+                // does not actually make the whole model deterministic unless we
+                // reinitialize the FFN here using the model RNG.
+                DeterministicallyInitializeFeedForwardNetwork(PriceBlocks[i].FeedForwardNetwork);
+            }
+        }
+
+        private void DeterministicallyInitializeFeedForwardNetwork(CallaghanDev.ML.NeuralNetwork network)
+        {
+            if (network == null)
+                throw new ArgumentNullException(nameof(network));
+
+            var state = network.GetInternalData();
+
+            if (state?.layers == null)
+                return;
+
+            for (int layerIndex = 1; layerIndex < state.layers.Length; layerIndex++)
+            {
+                var layer = state.layers[layerIndex];
+
+                if (layer == null)
+                    continue;
+
+                if (layer.Weights != null)
+                    FillDeterministicFfnWeights(layer.Weights);
+
+                if (layer.Biases != null)
+                    Array.Clear(layer.Biases, 0, layer.Biases.Length);
+
+                if (layer.Activations != null)
+                    Array.Clear(layer.Activations, 0, layer.Activations.Length);
+
+                if (layer.Derivatives != null)
+                    Array.Clear(layer.Derivatives, 0, layer.Derivatives.Length);
+
+                if (layer.Deltas != null)
+                    Array.Clear(layer.Deltas, 0, layer.Deltas.Length);
+
+                layer.ActivationsBatch = null;
+                layer.DerivativesBatch = null;
+                layer.DeltasBatch = null;
+            }
+        }
+
+        private void FillDeterministicFfnWeights(float[,] weights)
+        {
+            int rows = weights.GetLength(0);
+            int cols = weights.GetLength(1);
+
+            float std = MathF.Sqrt(2.0f / Math.Max(1, rows + cols));
+
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    weights[r, c] = SampleGaussian() * std;
+                }
             }
         }
 
