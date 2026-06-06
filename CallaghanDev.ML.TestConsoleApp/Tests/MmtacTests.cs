@@ -2055,20 +2055,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
         // Helpers
         // ---------------------------------------------------------------------
 
-        private MmtacConfig Cfg(
-            int vocabSize = 50,
-            int embDim = 16,
-            int numHeads = 2,
-            int numLayers = 1,
-            int ffnDim = 32,
-            int priceFeatures = 5,
-            int priceSeqLen = 12,
-            bool useConf = false,
-            bool freezeText = false,
-            int globalDim = 0,
-            bool decayEnabled = true,
-            bool bypassDecay = true,
-            bool priceContextEnabled = false)
+        private MmtacConfig Cfg(int vocabSize = 50, int embDim = 16, int numHeads = 2, int numLayers = 1, int ffnDim = 32, int priceFeatures = 5, int priceSeqLen = 12, bool useConf = false, bool freezeText = false, int globalDim = 0, bool decayEnabled = true, bool bypassDecay = true, bool priceContextEnabled = false)
         {
             var cfg = new MmtacConfig
             {
@@ -3187,13 +3174,7 @@ namespace CallaghanDev.ML.TestConsoleApp.Tests
             return (inputs, targets, timestamps);
         }
 
-        private float AverageCarryCloseErrorWithMemory(
-            MmtacModel model,
-            MultimodalInput[] inputs,
-            ModelTarget[][] targets,
-            double[] timestamps,
-            int maxPriceMemory,
-            double timeUnitsPerPosition = 1.0)
+        private float AverageCarryCloseErrorWithMemory(MmtacModel model, MultimodalInput[] inputs, ModelTarget[][] targets, double[] timestamps, int maxPriceMemory, double timeUnitsPerPosition = 1.0)
         {
             if (inputs == null)
                 throw new ArgumentNullException(nameof(inputs));

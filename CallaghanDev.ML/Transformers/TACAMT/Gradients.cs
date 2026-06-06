@@ -1,3 +1,4 @@
+using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
@@ -26,6 +27,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         /// Index 0 = news context gradient, Index 1 = price memory context gradient.
         /// </summary>
         public float[,] ContextTypeEmbeddingGrad { get; set; }
+
+        private readonly SparseRowGradientTracker _textEmbeddingRows = new SparseRowGradientTracker();
+        internal SparseRowGradientTracker TextEmbeddingRows => _textEmbeddingRows;
 
         public Gradients(MultimodalTransformerConfig config)
         {
@@ -64,7 +68,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         public void Zero()
         {
-            ZM(TextEmbeddingGrad);
+            _textEmbeddingRows.ZeroTrackedRowsAndClear(TextEmbeddingGrad);
             foreach (var g in TextAttnGrads)
             {
                 g.Zero();
@@ -95,6 +99,37 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
 
             ZM(ContextTypeEmbeddingGrad);
+        }
+
+        public void MarkTextRows(int[] tokenIds, int tokenCount)
+        {
+            _textEmbeddingRows.MarkRows(tokenIds, 0, tokenCount, TextEmbeddingGrad.GetLength(0));
+        }
+
+        public float TextEmbeddingSquaredNorm()
+        {
+            return _textEmbeddingRows.SquaredNorm(TextEmbeddingGrad);
+        }
+
+        public void ScaleTextEmbeddingGrad(float scale)
+        {
+            _textEmbeddingRows.Scale(TextEmbeddingGrad, scale);
+        }
+
+        public void UpdateTextEmbedding(float[,] embedding, float learningRate)
+        {
+            _textEmbeddingRows.UpdateRows(embedding, TextEmbeddingGrad, learningRate);
+        }
+
+        public void AddSparseTextEmbeddingRowsFrom(Gradients source)
+        {
+            if (source == null)
+            {
+                return;
+            }
+
+            source._textEmbeddingRows.AddRowsTo(TextEmbeddingGrad, source.TextEmbeddingGrad);
+            _textEmbeddingRows.MergeFrom(source._textEmbeddingRows);
         }
 
         private void ZM(float[,] m) 

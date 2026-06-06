@@ -74,16 +74,16 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 if (_trainConfig.Verbose)
                     Console.WriteLine($"\n=== Epoch {epoch + 1}/{_trainConfig.Epochs} ===");
 
-                var shuffled = Enumerable.Range(0, totalSamples).OrderBy(_ => _random.Next()).ToArray();
+                var shuffled = CreateSequentialIndices(totalSamples);
+                ShuffleInPlace(shuffled);
                 float epochLoss = 0f;
                 int numBatches = 0;
 
                 for (int i = 0; i < shuffled.Length; i += _trainConfig.BatchSize)
                 {
                     int batchSize = Math.Min(_trainConfig.BatchSize, shuffled.Length - i);
-                    var batchIndices = shuffled.Skip(i).Take(batchSize).ToArray();
 
-                    float batchLoss = TrainBatch(batchIndices, textSequences, priceInputs, priceTargets, confidenceTargets, currentLR);
+                    float batchLoss = TrainBatch(shuffled, i, batchSize, textSequences, priceInputs, priceTargets, confidenceTargets, currentLR);
                     epochLoss += batchLoss;
                     numBatches++;
 
@@ -168,13 +168,27 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         }
         private float TrainBatch(int[] batchIndices, int[][] allText, float[][,] allPriceInputs, float[][,] allPriceTargets, float[][] allConfTargets, float learningRate)
         {
+            if (batchIndices == null)
+                throw new ArgumentNullException(nameof(batchIndices));
+
+            return TrainBatch(batchIndices, 0, batchIndices.Length, allText, allPriceInputs, allPriceTargets, allConfTargets, learningRate);
+        }
+
+        private float TrainBatch(int[] batchIndices, int start, int count, int[][] allText, float[][,] allPriceInputs, float[][,] allPriceTargets, float[][] allConfTargets, float learningRate)
+        {
+            if (batchIndices == null)
+                throw new ArgumentNullException(nameof(batchIndices));
+            if (start < 0 || count < 0 || start + count > batchIndices.Length)
+                throw new ArgumentOutOfRangeException(nameof(start));
+
             ZeroAllGradients();
 
             float totalLoss = 0f;
             int validCount = 0;
 
-            foreach (int idx in batchIndices)
+            for (int batchOffset = 0; batchOffset < count; batchOffset++)
             {
+                int idx = batchIndices[start + batchOffset];
                 var textTokens = allText == null ? null : allText[idx];
                 var priceSeq = allPriceInputs[idx];
                 int seqLen = priceSeq.GetLength(0);
@@ -390,21 +404,15 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 _accel.VectorAccumulate(blockGrads.LNFFNGrads.BetaGrad, dLNFFNBeta);
  
                 int seqLen = dFFResidual.GetLength(0);
-                var dNormedCross_from_ffn = new float[seqLen, embDim];
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var dOutRow = _accel.ExtractRow(dFFResidual, i, embDim);
-                    var ffnInput = blockCache.FFNInputRows[i];
-                    if (ffnInput == null)
-                        throw new Exception($"FFNInputRows[{i}] is null (layer {layer})");
-
-                    block.FeedForwardNetwork.ForwardPassOnly(ffnInput);
-                    var dInputRow = block.FeedForwardNetwork.ComputeInputGradient(dOutRow, _priceFFNWeightGrads[layer], _priceFFNBiasGrads[layer]);
-                    _accel.SetRow(dNormedCross_from_ffn, i, dInputRow, embDim);
-                }
+                var dNormedCross_from_ffn = block.FeedForwardNetwork.ComputeInputGradientBatch(
+                    blockCache.NormedCross,
+                    dFFResidual,
+                    _priceFFNWeightGrads[layer],
+                    _priceFFNBiasGrads[layer]);
 
 
-                var dNormedCross = _accel.MatrixAdd(dFFResidual, dNormedCross_from_ffn);
+                _accel.MatrixAddInPlace(dNormedCross_from_ffn, dFFResidual);
+                var dNormedCross = dNormedCross_from_ffn;
 
                 // ================================================
                 // Backprop through Cross-Attention LayerNorm
@@ -448,7 +456,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     // Accumulate text gradients
                     _accel.MatrixAddInPlace(dTextHiddenTotal, dTextFromK);
                     _accel.MatrixAddInPlace(dTextHiddenTotal, dTextFromV);
-                    dNormedSelf = _accel.MatrixAdd(dCrossResidual, dNormedSelf_from_cross);
+                    _accel.MatrixAddInPlace(dNormedSelf_from_cross, dCrossResidual);
+                    dNormedSelf = dNormedSelf_from_cross;
                 }
                 else
                 {
@@ -477,17 +486,24 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 _rotaryPositionEmbedding.ApplyBackwardInPlace(dSelfQ, dSelfK, numHeads);
 
-                var dBlockInput = new float[seqLen, embDim];
-
-
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfQ, block.SelfAttention.WQ, selfAttnGrads.WQ_Grad, selfAttnGrads.BiasQ_Grad, dBlockInput);
-
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfK, block.SelfAttention.WK, selfAttnGrads.WK_Grad, selfAttnGrads.BiasK_Grad, dBlockInput);
-
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dSelfV, block.SelfAttention.WV, selfAttnGrads.WV_Grad, selfAttnGrads.BiasV_Grad, dBlockInput);
+                var dBlockInput = _accel.BackpropQKV(
+                    blockCache.BlockInput,
+                    dSelfQ,
+                    dSelfK,
+                    dSelfV,
+                    block.SelfAttention.WQ,
+                    block.SelfAttention.WK,
+                    block.SelfAttention.WV,
+                    selfAttnGrads.WQ_Grad,
+                    selfAttnGrads.BiasQ_Grad,
+                    selfAttnGrads.WK_Grad,
+                    selfAttnGrads.BiasK_Grad,
+                    selfAttnGrads.WV_Grad,
+                    selfAttnGrads.BiasV_Grad);
 
                 // Residual connection: dX_prev = dSelfResidual + dBlockInput
-                dX = _accel.MatrixAdd(dSelfResidual, dBlockInput);
+                _accel.MatrixAddInPlace(dBlockInput, dSelfResidual);
+                dX = dBlockInput;
             }
 
             // Backprop through price input projection
@@ -527,19 +543,13 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
 
                 // FFN backward
-                int seqLen = dFFResidual.GetLength(0);
-                var dNormed1_from_ffn = new float[seqLen, embDim];
-         
-
-
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var dOutRow = _accel.ExtractRow(dFFResidual, i, embDim);
-                    block.FeedForwardNetwork.ForwardPassOnly(cache.TextFFNInputs[layer][i]);
-                    var dInputRow = block.FeedForwardNetwork.ComputeInputGradient(dOutRow, _textFFNWeightGrads[layer], _textFFNBiasGrads[layer]);
-                    _accel.SetRow(dNormed1_from_ffn, i, dInputRow, embDim);
-                }
-                var dNormed1 = _accel.MatrixAdd(dFFResidual, dNormed1_from_ffn);
+                var dNormed1_from_ffn = block.FeedForwardNetwork.ComputeInputGradientBatch(
+                    cache.TextFFNInputs[layer],
+                    dFFResidual,
+                    _textFFNWeightGrads[layer],
+                    _textFFNBiasGrads[layer]);
+                _accel.MatrixAddInPlace(dNormed1_from_ffn, dFFResidual);
+                var dNormed1 = dNormed1_from_ffn;
 
 
                 // LayerNorm 1 backward
@@ -552,6 +562,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 // Attention backward
                 var attnCache = cache.TextAttentionCaches[layer];
+                int seqLen = dFFResidual.GetLength(0);
                 float scale = 1.0f / MathF.Sqrt(headDim);
 
                 var dConcatenated = new float[seqLen, embDim];
@@ -562,16 +573,27 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
                 _rotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, numHeads);
 
-                var dInput = new float[seqLen, embDim];
+                var dInput = _accel.BackpropQKV(
+                    attnCache.Input,
+                    dQ,
+                    dK,
+                    dV,
+                    block.Attention.WQ,
+                    block.Attention.WK,
+                    block.Attention.WV,
+                    textAttnGrads.WQ_Grad,
+                    textAttnGrads.BiasQ_Grad,
+                    textAttnGrads.WK_Grad,
+                    textAttnGrads.BiasK_Grad,
+                    textAttnGrads.WV_Grad,
+                    textAttnGrads.BiasV_Grad);
 
-                _accel.BackpropLinearProjection(attnCache.Input, dQ, block.Attention.WQ, textAttnGrads.WQ_Grad, textAttnGrads.BiasQ_Grad, dInput);
-                _accel.BackpropLinearProjection(attnCache.Input, dK, block.Attention.WK, textAttnGrads.WK_Grad, textAttnGrads.BiasK_Grad, dInput);
-                _accel.BackpropLinearProjection(attnCache.Input, dV, block.Attention.WV, textAttnGrads.WV_Grad, textAttnGrads.BiasV_Grad, dInput);
-
-                dX = _accel.MatrixAdd(dAttnResidual, dInput);
+                _accel.MatrixAddInPlace(dInput, dAttnResidual);
+                dX = dInput;
             }
             int textSeqLen = dX.GetLength(0);
      
+            _gradients.MarkTextRows(cache.TextTokenIds, textSeqLen);
             _accel.AccumulateTokenEmbeddingGrad(_gradients.TextEmbeddingGrad, dX, cache.TextTokenIds, textSeqLen, embDim);
         }
 
@@ -580,7 +602,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             // --- Text Encoder ---
             if (!_config.Text.Freeze)
             {
-                _accel.MatrixUpdate(_model.TextTokenEmbedding, _gradients.TextEmbeddingGrad, lr);
+                _gradients.UpdateTextEmbedding(_model.TextTokenEmbedding, lr);
 
                 for (int i = 0; i < _config.Text.NumLayers; i++)
                 {
@@ -691,7 +713,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             if (!_config.Text.Freeze)
             {
-                sum += _accel.MatrixSquaredNorm(_gradients.TextEmbeddingGrad);
+                sum += _gradients.TextEmbeddingSquaredNorm();
                 foreach (var g in _gradients.TextAttnGrads)
                 {
                     sum += _accel.MatrixSquaredNorm(g.WQ_Grad) + _accel.MatrixSquaredNorm(g.WK_Grad)
@@ -763,7 +785,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         {
             if (!_config.Text.Freeze)
             {
-                _accel.MatrixScaleInPlace(_gradients.TextEmbeddingGrad, scale);
+                _gradients.ScaleTextEmbeddingGrad(scale);
 
                 foreach (var g in _gradients.TextAttnGrads)
                 {
@@ -854,6 +876,24 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             return result;*/
 
             return _accel.SliceRows(matrix, startRow, endRow);
+        }
+
+
+        private static int[] CreateSequentialIndices(int count)
+        {
+            var indices = new int[count];
+            for (int i = 0; i < count; i++)
+                indices[i] = i;
+            return indices;
+        }
+
+        private void ShuffleInPlace(int[] data)
+        {
+            for (int i = data.Length - 1; i > 0; i--)
+            {
+                int j = _random.Next(i + 1);
+                (data[i], data[j]) = (data[j], data[i]);
+            }
         }
 
 

@@ -1,4 +1,5 @@
 ﻿using CallaghanDev.ML.Transformers.Configuration;
+using CallaghanDev.ML.Transformers;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -22,6 +23,9 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         public float[] OutputBiasGrad { get; set; }
 
         private readonly bool _usesDiscreteTokens;
+        private readonly SparseRowGradientTracker _tokenEmbeddingRows = new SparseRowGradientTracker();
+
+        internal SparseRowGradientTracker TokenEmbeddingRows => _tokenEmbeddingRows;
 
         public TransformerGradients(TransformerConfig config)
         {
@@ -76,7 +80,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         {
             if (_usesDiscreteTokens)
             {
-                ZeroMatrix(TokenEmbeddingGrad);
+                _tokenEmbeddingRows.ZeroTrackedRowsAndClear(TokenEmbeddingGrad);
             }
             else
             {
@@ -98,6 +102,38 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             }
             ZeroMatrix(OutputProjectionGrad);
             Array.Clear(OutputBiasGrad, 0, OutputBiasGrad.Length);
+        }
+
+
+        public void MarkTokenRows(int[] tokenIds, int tokenStart, int tokenCount)
+        {
+            if (!_usesDiscreteTokens)
+            {
+                return;
+            }
+
+            _tokenEmbeddingRows.MarkRows(tokenIds, tokenStart, tokenCount, TokenEmbeddingGrad.GetLength(0));
+        }
+
+        public float TokenEmbeddingSquaredNorm()
+        {
+            return _usesDiscreteTokens ? _tokenEmbeddingRows.SquaredNorm(TokenEmbeddingGrad) : 0f;
+        }
+
+        public void ScaleTokenEmbeddingGrad(float scale)
+        {
+            if (_usesDiscreteTokens)
+            {
+                _tokenEmbeddingRows.Scale(TokenEmbeddingGrad, scale);
+            }
+        }
+
+        public void UpdateTokenEmbedding(float[,] tokenEmbedding, float learningRate)
+        {
+            if (_usesDiscreteTokens)
+            {
+                _tokenEmbeddingRows.UpdateRows(tokenEmbedding, TokenEmbeddingGrad, learningRate);
+            }
         }
 
         private void ZeroMatrix(float[,] matrix)

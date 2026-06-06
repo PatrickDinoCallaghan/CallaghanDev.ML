@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <None Remove="AccelerationManagers\GPUAccelleration.zip" />
+    <None Remove="Transformers\PriceTAC\README.md" />
   </ItemGroup>
 
   <ItemGroup>

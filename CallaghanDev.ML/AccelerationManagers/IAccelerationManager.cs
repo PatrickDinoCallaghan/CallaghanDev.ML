@@ -39,6 +39,17 @@ namespace CallaghanDev.ML.AccelerationManagers
         float[,] MatrixAddBias(float[,] matrix, float[] bias);
 
         /// <summary>
+        /// Fused batch matrix-vector dot products plus bias: computes (weights * inputRows[i]) + bias.
+        /// This avoids allocating an intermediate BatchDotProduct result before MatrixAddBias.
+        /// </summary>
+        float[,] BatchDotProductAddBias(float[,] weights, float[,] inputMatrix, float[] bias);
+
+        /// <summary>
+        /// Offset-aware fused batch dot plus bias over input rows [rowStart, rowStart + rowCount).
+        /// </summary>
+        float[,] BatchDotProductAddBias(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount, float[] bias);
+
+        /// <summary>
         /// Batch matrix-vector dot products: computes weights * inputRows[i] for each row.
         /// Replaces row-by-row CalculateDotProduct loops in MatMulWithBias/ProjectToVocab.
         /// </summary>
@@ -116,6 +127,17 @@ namespace CallaghanDev.ML.AccelerationManagers
         (float[,] output, float[] means, float[] variances, float[,] normalized) LayerNormForward(float[,] input, float[] gamma, float[] beta, float epsilon = 1e-5f);
 
         /// <summary>
+        /// Fused residual add + layer norm for inference paths that do not need a residual cache.
+        /// </summary>
+        float[,] ResidualLayerNorm(float[,] input, float[,] subLayer, float[] gamma, float[] beta, float epsilon = 1e-5f);
+
+        /// <summary>
+        /// Fused residual add + layer norm forward for training paths. Returns the residual as well
+        /// as the standard layer norm cache tensors.
+        /// </summary>
+        (float[,] output, float[] means, float[] variances, float[,] normalized, float[,] residual) ResidualLayerNormForward(float[,] input, float[,] subLayer, float[] gamma, float[] beta, float epsilon = 1e-5f);
+
+        /// <summary>
         /// Layer norm backward, parallelized across rows.
         /// </summary>
         (float[,] dInput, float[] dGamma, float[] dBeta) LayerNormBackward(float[,] dOut, float[,] normalized, float[] gamma, float[,] input, float[] mean, float[] variance, float epsilon = 1e-5f);
@@ -180,10 +202,16 @@ namespace CallaghanDev.ML.AccelerationManagers
         /// </summary>
         void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int seqLen, int embeddingDim);
 
+        void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int tokenStart, int seqLen, int embeddingDim);
+
         (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen);
+
+        (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int targetStart, int effectiveLen);
 
 
         (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int effectiveLen);
+
+        (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int targetStart, int effectiveLen);
 
 
 
@@ -232,7 +260,7 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         (float[,,] decayBias, ContentAwareDecayCache cache) ContentAwareDecayForward(float[,] queryEmbeddings, float[,] keyEmbeddings, float[,] timeDiffs, float[] keyTimesFromRef, CallaghanDev.ML.Transformers.TACAMT.ContentAwareDecayNetwork network, bool isTraining = false, Random dropoutRng = null);
 
-        float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax);
+        float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax, bool needBackwardCache = true);
 
         float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null);
 
@@ -245,6 +273,8 @@ namespace CallaghanDev.ML.AccelerationManagers
         float[] ProjectGlobalFeatures(float[] globalFeatures, float[,] projection, float[] bias);
 
         float[,] EmbedTokenIds(int[] tokenIds, float[,] embedding, int embeddingDim);
+
+        float[,] EmbedTokenIds(int[] tokenIds, int tokenStart, int tokenCount, float[,] embedding, int embeddingDim);
 
         float[] MeanPoolRows(float[,] matrix);
 

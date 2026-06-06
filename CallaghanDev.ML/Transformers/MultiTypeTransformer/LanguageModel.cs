@@ -1,10 +1,9 @@
-﻿using CallaghanDev.ML.AccelerationManagers;
+using CallaghanDev.ML.AccelerationManagers;
 using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Extensions;
 using CallaghanDev.ML.Transformers.Configuration;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 {
@@ -119,7 +118,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             int seqLen = tokenIds.Length;
             var embedded = EmbedTokens(tokenIds, seqLen);
-            return ForwardFromEmbedding(embedded, seqLen);
+            return ForwardFromEmbedding(embedded);
         }
 
         public float[,] Forward(float[,] inputSequence)
@@ -129,13 +128,47 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             ValidateContinuousSequence(inputSequence);
 
-            int seqLen = inputSequence.GetLength(0);
             var embedded = EmbedContinuous(inputSequence);
-            return ForwardFromEmbedding(embedded, seqLen);
+            return ForwardFromEmbedding(embedded);
+        }
+
+        internal float[,] ForwardTokenSlice(int[] tokenIds, int tokenStart, int tokenCount)
+        {
+            if (!_config.Data.UsesDiscreteTokens)
+                throw new InvalidOperationException("Use ForwardContinuousSlice(float[,], int, int) for continuous input data types.");
+
+            ValidateTokenSlice(tokenIds, tokenStart, tokenCount);
+
+            var embedded = _accel.EmbedTokenIds(tokenIds, tokenStart, tokenCount, TokenEmbedding, _config.EmbeddingDim);
+            return ForwardFromEmbedding(embedded);
+        }
+
+        internal float[,] ForwardContinuousSlice(float[,] inputSequence, int rowStart, int rowCount)
+        {
+            if (_config.Data.UsesDiscreteTokens)
+                throw new InvalidOperationException("Use ForwardTokenSlice(int[], int, int) for discrete token data types.");
+
+            ValidateContinuousSlice(inputSequence, rowStart, rowCount);
+
+            var embedded = _accel.BatchDotProductAddBias(InputProjection, inputSequence, rowStart, rowCount, InputProjectionBias);
+            return ForwardFromEmbedding(embedded);
         }
 
 
         private float[,] EmbedTokens(int[] tokenIds, int seqLen)
+        {
+            // Exact int[] inputs can use the accelerator's row-copy implementation.
+            // The IReadOnlyList overload below remains for List<int> generation state
+            // so generation does not allocate tokens.ToArray() every step.
+            if (seqLen == tokenIds.Length)
+            {
+                return _accel.EmbedTokenIds(tokenIds, TokenEmbedding, _config.EmbeddingDim);
+            }
+
+            return EmbedTokens((IReadOnlyList<int>)tokenIds, seqLen);
+        }
+
+        private float[,] EmbedTokens(IReadOnlyList<int> tokenIds, int seqLen)
         {
             var embedded = new float[seqLen, _config.EmbeddingDim];
 
@@ -154,25 +187,296 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         private float[,] EmbedContinuous(float[,] inputSequence)
         {
-            var projected = _accel.BatchDotProduct(InputProjection, inputSequence);
-            return _accel.MatrixAddBias(projected, InputProjectionBias);
+            return _accel.BatchDotProductAddBias(InputProjection, inputSequence, InputProjectionBias);
         }
-        private float[,] ForwardFromEmbedding(float[,] embedded, int seqLen)
+        private float[,] ForwardFromEmbedding(float[,] embedded)
         {
-            bool[,] mask = _config.UseDecoderOnly ? _accel.CreateCausalMask(seqLen) : null;
+            return ProjectToOutput(ForwardHiddenFromEmbedding(embedded));
+        }
+
+        private float[,] ForwardHiddenFromTokens(IReadOnlyList<int> tokenIds)
+        {
+            int seqLen = tokenIds.Count;
+            var embedded = EmbedTokens(tokenIds, seqLen);
+            return ForwardHiddenFromEmbedding(embedded);
+        }
+
+        private float[,] ForwardHiddenFromContinuous(float[,] inputSequence)
+        {
+            var embedded = EmbedContinuous(inputSequence);
+            return ForwardHiddenFromEmbedding(embedded);
+        }
+
+        private float[,] ForwardHiddenFromEmbedding(float[,] embedded)
+        {
+            bool causal = _config.UseDecoderOnly;
             var x = embedded;
 
             foreach (var block in Blocks)
             {
-                x = block.Forward(x, mask);
+                // Avoid allocating an O(seqLen^2) causal bool[,] mask. The attention
+                // backend already has a causal fast path.
+                x = block.Forward(x, selfMask: null, causal: causal);
             }
-            return ProjectToOutput(x);
+
+            return x;
         }
 
         private float[,] ProjectToOutput(float[,] hidden)
         {
-            var logits = _accel.BatchDotProduct(OutputProjection, hidden);
-            return _accel.MatrixAddBias(logits, OutputBias);
+            return _accel.ProjectOutputBatch(
+                hidden,
+                OutputProjection,
+                OutputBias,
+                hidden.GetLength(0),
+                _config.EffectiveOutputDim);
+        }
+
+        private float[] ProjectLastTokenOnly(float[,] hidden)
+        {
+            if (hidden == null)
+            {
+                throw new ArgumentNullException(nameof(hidden));
+            }
+
+            int seqLen = hidden.GetLength(0);
+            int embeddingDim = hidden.GetLength(1);
+            if (seqLen <= 0)
+            {
+                throw new ArgumentException("Hidden states must contain at least one row.", nameof(hidden));
+            }
+            if (embeddingDim != _config.EmbeddingDim)
+            {
+                throw new ArgumentException($"Hidden width must be {_config.EmbeddingDim}, got {embeddingDim}.", nameof(hidden));
+            }
+
+            int lastPos = seqLen - 1;
+            int outputDim = _config.EffectiveOutputDim;
+            var logits = new float[outputDim];
+
+            for (int o = 0; o < outputDim; o++)
+            {
+                float sum = OutputBias[o];
+                for (int e = 0; e < embeddingDim; e++)
+                {
+                    sum += OutputProjection[o, e] * hidden[lastPos, e];
+                }
+                logits[o] = sum;
+            }
+
+            return logits;
+        }
+
+        private sealed class DecoderGenerationLayerCache
+        {
+            public readonly float[,] Keys;
+            public readonly float[,] Values;
+            public int Length;
+
+            public DecoderGenerationLayerCache(int maxSequenceLength, int embeddingDim)
+            {
+                Keys = new float[maxSequenceLength, embeddingDim];
+                Values = new float[maxSequenceLength, embeddingDim];
+                Length = 0;
+            }
+        }
+
+        private DecoderGenerationLayerCache[] CreateDecoderGenerationCaches()
+        {
+            var caches = new DecoderGenerationLayerCache[_config.NumLayers];
+            for (int i = 0; i < caches.Length; i++)
+            {
+                caches[i] = new DecoderGenerationLayerCache(_config.MaxSequenceLength, _config.EmbeddingDim);
+            }
+            return caches;
+        }
+
+        private float[,] ForwardDecoderTokenFromId(int tokenId, int absolutePosition, DecoderGenerationLayerCache[] caches)
+        {
+            var embedded = new float[1, _config.EmbeddingDim];
+            for (int j = 0; j < _config.EmbeddingDim; j++)
+            {
+                embedded[0, j] = TokenEmbedding[tokenId, j];
+            }
+
+            return ForwardDecoderTokenFromEmbedding(embedded, absolutePosition, caches);
+        }
+
+        private float[,] ForwardDecoderTokenFromEmbedding(float[,] tokenEmbedding, int absolutePosition, DecoderGenerationLayerCache[] caches)
+        {
+            if (tokenEmbedding == null)
+            {
+                throw new ArgumentNullException(nameof(tokenEmbedding));
+            }
+            if (caches == null || caches.Length != _config.NumLayers)
+            {
+                throw new ArgumentException("Decoder cache does not match the model layer count.", nameof(caches));
+            }
+            if (tokenEmbedding.GetLength(0) != 1 || tokenEmbedding.GetLength(1) != _config.EmbeddingDim)
+            {
+                throw new ArgumentException($"Token embedding must have shape [1,{_config.EmbeddingDim}].", nameof(tokenEmbedding));
+            }
+
+            var x = tokenEmbedding;
+            for (int layer = 0; layer < _config.NumLayers; layer++)
+            {
+                var block = Blocks[layer];
+                var attentionOutput = DecoderSelfAttentionStep(block.Attention, x, absolutePosition, caches[layer]);
+                var normedSelf = _accel.ResidualLayerNorm(x, attentionOutput, block.LN1Gamma, block.LN1Beta);
+
+                var ffnOutput = _accel.FFNForwardBatch(normedSelf, 1, _config.EmbeddingDim, block.FeedForwardNetwork.ForwardPassOnly);
+                x = _accel.ResidualLayerNorm(normedSelf, ffnOutput, block.LN2Gamma, block.LN2Beta);
+            }
+
+            return x;
+        }
+
+        private float[,] DecoderSelfAttentionStep(MultiHeadAttention attention, float[,] input, int absolutePosition, DecoderGenerationLayerCache cache)
+        {
+            if (attention == null)
+            {
+                throw new ArgumentNullException(nameof(attention));
+            }
+            if (cache == null)
+            {
+                throw new ArgumentNullException(nameof(cache));
+            }
+            if (cache.Length != absolutePosition)
+            {
+                throw new InvalidOperationException($"Decoder KV cache length {cache.Length} does not match requested absolute position {absolutePosition}.");
+            }
+            if (cache.Length >= _config.MaxSequenceLength)
+            {
+                throw new InvalidOperationException("Decoder KV cache is full.");
+            }
+
+            var (q, k, v) = _accel.ProjectQKV(input, attention.WQ, attention.BiasQ, attention.WK, attention.BiasK, attention.WV, attention.BiasV);
+            ApplyRotaryPositionSingleRow(q, k, _config.NumHeads, absolutePosition);
+
+            int writeRow = cache.Length;
+            int embeddingDim = _config.EmbeddingDim;
+            for (int col = 0; col < embeddingDim; col++)
+            {
+                cache.Keys[writeRow, col] = k[0, col];
+                cache.Values[writeRow, col] = v[0, col];
+            }
+            cache.Length++;
+
+            int keyLen = cache.Length;
+            int numHeads = _config.NumHeads;
+            int headDim = embeddingDim / numHeads;
+            float scale = 1.0f / MathF.Sqrt(headDim);
+            var concatenated = new float[1, embeddingDim];
+
+            for (int head = 0; head < numHeads; head++)
+            {
+                int offset = head * headDim;
+                float maxScore = float.NegativeInfinity;
+
+                for (int key = 0; key < keyLen; key++)
+                {
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        int col = offset + d;
+                        dot += q[0, col] * cache.Keys[key, col];
+                    }
+
+                    float score = dot * scale;
+                    if (score > maxScore)
+                    {
+                        maxScore = score;
+                    }
+                }
+
+                float sumExp = 0f;
+                for (int key = 0; key < keyLen; key++)
+                {
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        int col = offset + d;
+                        dot += q[0, col] * cache.Keys[key, col];
+                    }
+
+                    sumExp += MathF.Exp((dot * scale) - maxScore);
+                }
+
+                float invSumExp = sumExp > 0f ? 1.0f / sumExp : 0f;
+                for (int key = 0; key < keyLen; key++)
+                {
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        int col = offset + d;
+                        dot += q[0, col] * cache.Keys[key, col];
+                    }
+
+                    float weight = MathF.Exp((dot * scale) - maxScore) * invSumExp;
+                    if (weight == 0f)
+                    {
+                        continue;
+                    }
+
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        int col = offset + d;
+                        concatenated[0, col] += weight * cache.Values[key, col];
+                    }
+                }
+            }
+
+            return _accel.ProjectOutputBatch(concatenated, attention.WO, attention.BiasO, 1, embeddingDim);
+        }
+
+        private static void ApplyRotaryPositionSingleRow(float[,] q, float[,] k, int numHeads, int absolutePosition)
+        {
+            if (q == null) throw new ArgumentNullException(nameof(q));
+            if (k == null) throw new ArgumentNullException(nameof(k));
+            if (q.GetLength(0) != 1 || k.GetLength(0) != 1)
+            {
+                throw new ArgumentException("Incremental RoPE expects single-row Q and K matrices.");
+            }
+
+            int embeddingDim = q.GetLength(1);
+            if (k.GetLength(1) != embeddingDim)
+            {
+                throw new ArgumentException("Q and K must have the same embedding dimension.");
+            }
+            if (numHeads <= 0 || embeddingDim % numHeads != 0)
+            {
+                throw new ArgumentException("Embedding dimension must be divisible by number of heads.", nameof(numHeads));
+            }
+
+            int headDim = embeddingDim / numHeads;
+            if ((headDim & 1) != 0)
+            {
+                throw new ArgumentException("RoPE requires an even per-head dimension.");
+            }
+
+            const float baseTheta = 10000f;
+            for (int head = 0; head < numHeads; head++)
+            {
+                int offset = head * headDim;
+                for (int pair = 0; pair < headDim / 2; pair++)
+                {
+                    int even = offset + pair * 2;
+                    int odd = even + 1;
+                    float theta = absolutePosition / MathF.Pow(baseTheta, (2.0f * pair) / headDim);
+                    float cos = MathF.Cos(theta);
+                    float sin = MathF.Sin(theta);
+
+                    float q0 = q[0, even];
+                    float q1 = q[0, odd];
+                    q[0, even] = (q0 * cos) - (q1 * sin);
+                    q[0, odd] = (q0 * sin) + (q1 * cos);
+
+                    float k0 = k[0, even];
+                    float k1 = k[0, odd];
+                    k[0, even] = (k0 * cos) - (k1 * sin);
+                    k[0, odd] = (k0 * sin) + (k1 * cos);
+                }
+            }
         }
 
         public int[] Generate(int[] promptTokens, int maxNewTokens, float temperature = 1.0f)
@@ -189,18 +493,44 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             var tokens = new List<int>(promptTokens);
             if (tokens.Count >= _config.MaxSequenceLength || maxNewTokens == 0)
-                return tokens.Take(_config.MaxSequenceLength).ToArray();
+                return tokens.ToArray();
 
-            for (int i = 0; i < maxNewTokens && tokens.Count < _config.MaxSequenceLength; i++)
+            if (!_config.UseDecoderOnly)
             {
-                var logits = Forward(tokens.ToArray());
-                int lastPos = logits.GetLength(0) - 1;
-                var lastLogits = new float[_config.VocabSize];
+                for (int i = 0; i < maxNewTokens && tokens.Count < _config.MaxSequenceLength; i++)
+                {
+                    var hidden = ForwardHiddenFromTokens(tokens);
+                    var lastLogits = ProjectLastTokenOnly(hidden);
 
-                for (int j = 0; j < _config.VocabSize; j++)
-                    lastLogits[j] = logits[lastPos, j] / temperature;
+                    for (int j = 0; j < lastLogits.Length; j++)
+                        lastLogits[j] /= temperature;
 
-                tokens.Add(SampleFromLogits(lastLogits));
+                    tokens.Add(SampleFromLogits(lastLogits));
+                }
+
+                return tokens.ToArray();
+            }
+
+            var caches = CreateDecoderGenerationCaches();
+            float[,] lastHidden = null;
+            for (int pos = 0; pos < tokens.Count; pos++)
+            {
+                lastHidden = ForwardDecoderTokenFromId(tokens[pos], pos, caches);
+            }
+
+            for (int generated = 0; generated < maxNewTokens && tokens.Count < _config.MaxSequenceLength; generated++)
+            {
+                var lastLogits = ProjectLastTokenOnly(lastHidden);
+                for (int j = 0; j < lastLogits.Length; j++)
+                    lastLogits[j] /= temperature;
+
+                int nextToken = SampleFromLogits(lastLogits);
+                tokens.Add(nextToken);
+
+                if (tokens.Count < _config.MaxSequenceLength && generated + 1 < maxNewTokens)
+                {
+                    lastHidden = ForwardDecoderTokenFromId(nextToken, tokens.Count - 1, caches);
+                }
             }
 
             return tokens.ToArray();
@@ -215,15 +545,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             ValidateContinuousSequence(inputSequence);
 
-            var output = Forward(inputSequence);
-            int lastPos = output.GetLength(0) - 1;
-            int outputDim = _config.EffectiveOutputDim;
-            var result = new float[outputDim];
-
-            for (int j = 0; j < outputDim; j++)
-                result[j] = output[lastPos, j];
-
-            return result;
+            var hidden = ForwardHiddenFromContinuous(inputSequence);
+            return ProjectLastTokenOnly(hidden);
         }
         private int SampleFromLogits(float[] logits)
         {
@@ -238,29 +561,26 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                 if (logits[i] > max) max = logits[i];
             }
 
-            var exp = new float[logits.Length];
             float sum = 0f;
             for (int i = 0; i < logits.Length; i++)
             {
-                exp[i] = MathF.Exp(logits[i] - max);
-                sum += exp[i];
+                sum += MathF.Exp(logits[i] - max);
             }
 
             if (sum <= 0f || float.IsNaN(sum) || float.IsInfinity(sum))
                 throw new InvalidOperationException("Cannot sample because softmax normalization is invalid.");
 
-            float r = _random.NextSingle();
+            float threshold = _random.NextSingle() * sum;
             float cumulative = 0f;
-            float invSum = 1.0f / sum;
 
-            for (int i = 0; i < exp.Length; i++)
+            for (int i = 0; i < logits.Length; i++)
             {
-                cumulative += exp[i] * invSum;
-                if (r < cumulative)
+                cumulative += MathF.Exp(logits[i] - max);
+                if (threshold < cumulative)
                     return i;
             }
 
-            return exp.Length - 1;
+            return logits.Length - 1;
         }
         private void ValidateTokenSequence(int[] tokenIds)
         {
@@ -276,6 +596,25 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                 int token = tokenIds[i];
                 if ((uint)token >= (uint)_config.VocabSize)
                     throw new ArgumentOutOfRangeException(nameof(tokenIds), $"Token id {token} at position {i} is outside [0, {_config.VocabSize}).");
+            }
+        }
+
+        private void ValidateTokenSlice(int[] tokenIds, int tokenStart, int tokenCount)
+        {
+            if (tokenIds == null)
+                throw new ArgumentNullException(nameof(tokenIds));
+            if (tokenCount <= 0)
+                throw new ArgumentException("Token slice must contain at least one token.", nameof(tokenCount));
+            if (tokenStart < 0 || tokenStart + tokenCount > tokenIds.Length)
+                throw new ArgumentOutOfRangeException(nameof(tokenStart));
+            if (tokenCount > _config.MaxSequenceLength)
+                throw new ArgumentException($"Token sequence length {tokenCount} exceeds MaxSequenceLength {_config.MaxSequenceLength}.", nameof(tokenCount));
+
+            for (int i = 0; i < tokenCount; i++)
+            {
+                int token = tokenIds[tokenStart + i];
+                if ((uint)token >= (uint)_config.VocabSize)
+                    throw new ArgumentOutOfRangeException(nameof(tokenIds), $"Token id {token} at position {tokenStart + i} is outside [0, {_config.VocabSize}).");
             }
         }
 
@@ -298,6 +637,34 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
                 for (int j = 0; j < featureDim; j++)
                     if (float.IsNaN(inputSequence[i, j]) || float.IsInfinity(inputSequence[i, j]))
                         throw new ArgumentException($"Input value at [{i},{j}] is not finite: {inputSequence[i, j]}.", nameof(inputSequence));
+        }
+
+        private void ValidateContinuousSlice(float[,] inputSequence, int rowStart, int rowCount)
+        {
+            if (inputSequence == null)
+                throw new ArgumentNullException(nameof(inputSequence));
+
+            int seqLen = inputSequence.GetLength(0);
+            int featureDim = inputSequence.GetLength(1);
+
+            if (rowCount <= 0)
+                throw new ArgumentException("Input sequence slice must contain at least one row.", nameof(rowCount));
+            if (rowStart < 0 || rowStart + rowCount > seqLen)
+                throw new ArgumentOutOfRangeException(nameof(rowStart));
+            if (rowCount > _config.MaxSequenceLength)
+                throw new ArgumentException($"Input sequence length {rowCount} exceeds MaxSequenceLength {_config.MaxSequenceLength}.", nameof(rowCount));
+            if (featureDim != _config.InputFeatureDim)
+                throw new ArgumentException($"Input feature dimension must be {_config.InputFeatureDim}, got {featureDim}.", nameof(inputSequence));
+
+            for (int i = 0; i < rowCount; i++)
+            {
+                int row = rowStart + i;
+                for (int j = 0; j < featureDim; j++)
+                {
+                    if (float.IsNaN(inputSequence[row, j]) || float.IsInfinity(inputSequence[row, j]))
+                        throw new ArgumentException($"Input value at [{row},{j}] is not finite: {inputSequence[row, j]}.", nameof(inputSequence));
+                }
+            }
         }
         #region Save / Load
 

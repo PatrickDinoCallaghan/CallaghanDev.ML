@@ -495,6 +495,24 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
         }
 
+        public (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int targetStart, int effectiveLen)
+        {
+            if (targets == null) throw new ArgumentNullException(nameof(targets));
+            if (targetStart < 0 || effectiveLen < 0 || targetStart + effectiveLen > targets.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(targetStart), $"Invalid target slice: start={targetStart}, count={effectiveLen}, length={targets.Length}.");
+            }
+
+            if (targetStart == 0)
+            {
+                return CrossEntropyLossAndGradient(logits, targets, effectiveLen);
+            }
+
+            var targetSlice = new int[effectiveLen];
+            Array.Copy(targets, targetStart, targetSlice, 0, effectiveLen);
+            return CrossEntropyLossAndGradient(logits, targetSlice, effectiveLen);
+        }
+
         public (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int effectiveLen)
         {
             if (predictions == null) throw new ArgumentNullException(nameof(predictions));
@@ -563,6 +581,39 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bufDOutput.Dispose();
                 bufLoss.Dispose();
             }
+        }
+
+        public (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int targetStart, int effectiveLen)
+        {
+            if (predictions == null) throw new ArgumentNullException(nameof(predictions));
+            if (targets == null) throw new ArgumentNullException(nameof(targets));
+            if (targetStart < 0 || effectiveLen < 0 || targetStart + effectiveLen > targets.GetLength(0))
+            {
+                throw new ArgumentOutOfRangeException(nameof(targetStart), $"Invalid target row slice: start={targetStart}, count={effectiveLen}, rows={targets.GetLength(0)}.");
+            }
+
+            int rows = predictions.GetLength(0);
+            int outputDim = predictions.GetLength(1);
+            if (targets.GetLength(1) != outputDim || effectiveLen > rows)
+            {
+                throw new ArgumentException("MSE dimensions do not match.");
+            }
+
+            if (targetStart == 0 && targets.GetLength(0) == rows)
+            {
+                return MSELossAndGradient(predictions, targets, effectiveLen);
+            }
+
+            var targetSlice = new float[rows, outputDim];
+            for (int i = 0; i < effectiveLen; i++)
+            {
+                for (int j = 0; j < outputDim; j++)
+                {
+                    targetSlice[i, j] = targets[targetStart + i, j];
+                }
+            }
+
+            return MSELossAndGradient(predictions, targetSlice, effectiveLen);
         }
 
         public float[,] BackpropOutputProjection(float[,] dLogits, float[,] input, float[,] weights, float[,] weightGrad, float[] biasGrad, int seqLen, int outputDim, int embeddingDim)
@@ -724,6 +775,25 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bufDX.Dispose();
                 bufTokenIds.Dispose();
             }
+        }
+
+        public void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int tokenStart, int seqLen, int embeddingDim)
+        {
+            if (tokenIds == null) throw new ArgumentNullException(nameof(tokenIds));
+            if (tokenStart < 0 || seqLen < 0 || tokenStart + seqLen > tokenIds.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(tokenStart), $"Invalid token slice: start={tokenStart}, count={seqLen}, length={tokenIds.Length}.");
+            }
+
+            if (tokenStart == 0)
+            {
+                AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, seqLen, embeddingDim);
+                return;
+            }
+
+            var tokenIdSlice = new int[seqLen];
+            Array.Copy(tokenIds, tokenStart, tokenIdSlice, 0, seqLen);
+            AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIdSlice, seqLen, embeddingDim);
         }
 
         public float MatrixSquaredNorm(float[,] matrix)

@@ -126,11 +126,6 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             InitContextTypeEmbedding();
             InitOutputHeads();
 
-            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
-            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
-            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
-            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
-            Console.WriteLine($"Accelleration Type:{Config.Runtime.AccelerationType}");
         }
         // 
         // Tokeniser helpers
@@ -734,10 +729,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 bc.SelfAttnOutput = selfAttnOutput;
 
                 var selfProjected = ComputeProjection(selfAttnOutput, block.SelfAttention.WO, block.SelfAttention.BiasO);
-                var selfResidual = _accel.MatrixAdd(x, selfProjected);
+                var (normedSelf, selfMean, selfVar, selfNorm, selfResidual) = _accel.ResidualLayerNormForward(x, selfProjected, block.LNSelfGamma, block.LNSelfBeta);
                 bc.SelfResidualInput = selfResidual;
 
-                var (normedSelf, selfMean, selfVar, selfNorm) = _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
                 bc.LNSelfCache.Input = selfResidual;
                 bc.LNSelfCache.Mean = selfMean;
                 bc.LNSelfCache.Variance = selfVar;
@@ -803,10 +797,9 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     bc.CrossAttnOutput = crossAttnOutput;
 
                     var crossProjected = ComputeProjection(crossAttnOutput, block.CrossAttention.WO, block.CrossAttention.BiasO);
-                    var crossResidual = _accel.MatrixAdd(normedSelf, crossProjected);
+                    var (ncr, crossMean, crossVar, crossNorm, crossResidual) = _accel.ResidualLayerNormForward(normedSelf, crossProjected, block.LnCrossGamma, block.LnCrossBeta);
                     bc.CrossResidualInput = crossResidual;
 
-                    var (ncr, crossMean, crossVar, crossNorm) = _accel.LayerNormForward(crossResidual, block.LnCrossGamma, block.LnCrossBeta);
                     bc.LNCrossCache.Input = crossResidual;
                     bc.LNCrossCache.Mean = crossMean;
                     bc.LNCrossCache.Variance = crossVar;
@@ -836,27 +829,13 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                     normedCross = ncr;
                 }
 
-                float[][] ffnInputRows = null;
-                if (isTraining)
-                {
-                    ffnInputRows = new float[seqLen][];
-                    for (int i = 0; i < seqLen; i++)
-                    {
-                        var row = new float[ed];
-                        for (int j = 0; j < ed; j++)
-                            row[j] = normedCross[i, j];
-                        ffnInputRows[i] = row;
-                    }
-                }
-
                 var ffnOutput = _accel.FFNForwardBatch(normedCross, seqLen, ed, block.FeedForwardNetwork.ForwardPassOnly);
-                bc.FFNInputRows = ffnInputRows;
+                bc.FFNInputRows = null;
                 bc.FFNOutput = ffnOutput;
 
-                var ffnResidual = _accel.MatrixAdd(normedCross, ffnOutput);
+                var (normedFfn, ffnMean, ffnVar, ffnNorm, ffnResidual) = _accel.ResidualLayerNormForward(normedCross, ffnOutput, block.LNFFNGamma, block.LNFFNBeta);
                 bc.FFNResidualInput = ffnResidual;
 
-                var (normedFfn, ffnMean, ffnVar, ffnNorm) = _accel.LayerNormForward(ffnResidual, block.LNFFNGamma, block.LNFFNBeta);
                 bc.LNFFNCache.Input = ffnResidual;
                 bc.LNFFNCache.Mean = ffnMean;
                 bc.LNFFNCache.Variance = ffnVar;
@@ -1921,9 +1900,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ac.AttentionOutput = attnOut;
 
                 var projected = ComputeProjection(attnOut, block.Attention.WO, block.Attention.BiasO);
-                var residual1 = _accel.MatrixAdd(x, projected);
                 var ln1c = cache.TextLN1Caches[layer];
-                var (normed1, mean1, var1, normalized1) = _accel.LayerNormForward(residual1, block.LN1Gamma, block.LN1Beta);
+                var (normed1, mean1, var1, normalized1, residual1) = _accel.ResidualLayerNormForward(x, projected, block.LN1Gamma, block.LN1Beta);
                 ln1c.Input = residual1;
                 ln1c.Mean = mean1;
                 ln1c.Variance = var1;
@@ -1933,9 +1911,8 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 var ffnOut = _accel.FFNForwardBatch(normed1, seqLen, ed, block.FeedForwardNetwork.ForwardPassOnly);
                 cache.TextFFNOutputs.Add(ffnOut);
 
-                var residual2 = _accel.MatrixAdd(normed1, ffnOut);
                 var ln2c = cache.TextLN2Caches[layer];
-                var (normed2, mean2, var2, normalized2) = _accel.LayerNormForward(residual2, block.LN2Gamma, block.LN2Beta);
+                var (normed2, mean2, var2, normalized2, residual2) = _accel.ResidualLayerNormForward(normed1, ffnOut, block.LN2Gamma, block.LN2Beta);
                 ln2c.Input = residual2;
                 ln2c.Mean = mean2;
                 ln2c.Variance = var2;
@@ -2003,8 +1980,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 throw new ArgumentOutOfRangeException(nameof(rowStart), $"Invalid price row slice: start={rowStart}, count={rowCount}, rows={rows}.");
             }
 
-            var projected = _accel.BatchDotProduct(PriceInputProjection, ps, rowStart, rowCount);
-            return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
+            return _accel.BatchDotProductAddBias(PriceInputProjection, ps, rowStart, rowCount, PriceInputProjectionBias);
         }
 
         // 
@@ -2013,8 +1989,7 @@ namespace CallaghanDev.ML.Transformers.MMTAC
 
         internal float[,] ComputeProjection(float[,] input, float[,] w, float[] b)
         {
-            var p = _accel.BatchDotProduct(w, input);
-            return _accel.MatrixAddBias(p, b);
+            return _accel.BatchDotProductAddBias(w, input, b);
         }
 
         private bool[,] CreateCausalMask(int sl)

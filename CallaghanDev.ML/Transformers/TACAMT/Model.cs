@@ -7,6 +7,7 @@ using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.CrossAttentionMultimodal;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -34,6 +35,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         private readonly Random _random;
         private readonly IAccelerationManager _accel;
         private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
+        private readonly ConcurrentDictionary<int, bool[,]> _causalMaskCache = new ConcurrentDictionary<int, bool[,]>();
         public MultimodalTransformerConfig Config => _config;
         public IAccelerationManager AccelerationManager => _accel;
 
@@ -1205,6 +1207,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         private float[,] ComputeProjectionWithOptionalRows(float[,] input, float[,] w, float[] b, bool[] includeRows)
         {
+            if (includeRows == null)
+                return _accel.BatchDotProductAddBias(w, input, b);
+
             var p = _accel.BatchDotProduct(w, input);
             int rows = p.GetLength(0);
             int cols = p.GetLength(1);
@@ -1319,12 +1324,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 blockCache.SelfAttnOutput = selfAttnOutput;
 
                 var selfProjected = ComputeProjection(selfAttnOutput, block.SelfAttention.WO, block.SelfAttention.BiasO);
-                var selfResidual = _accel.MatrixAdd(x, selfProjected);
+                var (normedSelf, selfMean, selfVariance, selfNormalized, selfResidual) =
+                    _accel.ResidualLayerNormForward(x, selfProjected, block.LNSelfGamma, block.LNSelfBeta);
 
                 blockCache.SelfResidualInput = selfResidual;
-
-                var (normedSelf, selfMean, selfVariance, selfNormalized) =
-                    _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
 
                 blockCache.LNSelfCache.Input = selfResidual;
                 blockCache.LNSelfCache.Mean = selfMean;
@@ -1385,12 +1388,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                         block.CrossAttention.BiasO,
                         blockCache.CrossAttentionHasValidKey);
 
-                    var crossResidual = _accel.MatrixAdd(normedSelf, crossProjected);
+                    var (normedCross, crossMean, crossVariance, crossNormalized, crossResidual) =
+                        _accel.ResidualLayerNormForward(normedSelf, crossProjected, block.LnCrossGamma, block.LnCrossBeta);
 
                     blockCache.CrossResidualInput = crossResidual;
-
-                    var (normedCross, crossMean, crossVariance, crossNormalized) =
-                        _accel.LayerNormForward(crossResidual, block.LnCrossGamma, block.LnCrossBeta);
 
                     blockCache.LNCrossCache.Input = crossResidual;
                     blockCache.LNCrossCache.Mean = crossMean;
@@ -1425,33 +1426,19 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     crossNormed = normedCross;
                 }
 
-                var ffnInputRows = new float[seqLen][];
-
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var row = new float[embeddingDim];
-
-                    for (int j = 0; j < embeddingDim; j++)
-                        row[j] = crossNormed[i, j];
-
-                    ffnInputRows[i] = row;
-                }
-
                 var ffnOutput = _accel.FFNForwardBatch(
                     crossNormed,
                     seqLen,
                     embeddingDim,
                     block.FeedForwardNetwork.ForwardPassOnly);
 
-                blockCache.FFNInputRows = ffnInputRows;
+                blockCache.FFNInputRows = null;
                 blockCache.FFNOutput = ffnOutput;
 
-                var ffnResidual = _accel.MatrixAdd(crossNormed, ffnOutput);
+                var (normedFfn, ffnMean, ffnVariance, ffnNormalized, ffnResidual) =
+                    _accel.ResidualLayerNormForward(crossNormed, ffnOutput, block.LNFFNGamma, block.LNFFNBeta);
 
                 blockCache.FFNResidualInput = ffnResidual;
-
-                var (normedFfn, ffnMean, ffnVariance, ffnNormalized) =
-                    _accel.LayerNormForward(ffnResidual, block.LNFFNGamma, block.LNFFNBeta);
 
                 blockCache.LNFFNCache.Input = ffnResidual;
                 blockCache.LNFFNCache.Mean = ffnMean;
@@ -1556,13 +1543,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     ac
                 );
 
-                var ar = _accel.MatrixAdd(x, ao);
-
                 // ---- LN1 ----
                 var l1c = cache.TextLN1Caches[layer];
 
-                var (n1, m1, v1, nr1) =
-                    _accel.LayerNormForward(ar, b.LN1Gamma, b.LN1Beta);  // FIX 2: was b.LNSelfGamma, b.LNSelfBeta
+                var (n1, m1, v1, nr1, ar) =
+                    _accel.ResidualLayerNormForward(x, ao, b.LN1Gamma, b.LN1Beta);  // FIX 2: was b.LNSelfGamma, b.LNSelfBeta
 
                 l1c.Input = ar;
                 l1c.Mean = m1;
@@ -1580,12 +1565,10 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 cache.TextFFNInputs.Add(n1);
                 cache.TextFFNOutputs.Add(fo);
 
-                var fr = _accel.MatrixAdd(n1, fo);
-
                 // ---- LN2 ----
                 var l2c = cache.TextLN2Caches[layer];
 
-                var (n2, m2, v2, nr2) = _accel.LayerNormForward(fr, b.LN2Gamma, b.LN2Beta);  // FIX 3: was b.LNFFNGamma, b.LNFFNBeta
+                var (n2, m2, v2, nr2, fr) = _accel.ResidualLayerNormForward(n1, fo, b.LN2Gamma, b.LN2Beta);  // FIX 3: was b.LNFFNGamma, b.LNFFNBeta
 
                 l2c.Input = fr;
                 l2c.Mean = m2;
@@ -1893,38 +1876,26 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 throw new ArgumentException("rowStart + rowCount exceeds ps row count.");
             }
 
-            var projected = _accel.BatchDotProduct(PriceInputProjection, ps, rowStart, rowCount);
-
-            return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
+            return _accel.BatchDotProductAddBias(PriceInputProjection, ps, rowStart, rowCount, PriceInputProjectionBias);
         }
         private bool[,] CreateCausalMask(int sl)
         {
-            var m = new bool[sl, sl];
-
-            for (int i = 0; i < sl; i++)
+            if (sl < 0)
             {
-                for (int j = 0; j <= i; j++)
-                {
-                    m[i, j] = true;
-                }
+                throw new ArgumentOutOfRangeException(nameof(sl));
             }
-            return m;
+
+            if (sl == 0)
+            {
+                return new bool[0, 0];
+            }
+
+            return _causalMaskCache.GetOrAdd(sl, length => _accel.CreateCausalMask(length));
         }
 
         private float[,] ComputeProjection(float[,] input, float[,] w, float[] b)
         {
-            var p = _accel.BatchDotProduct(w, input);
-            int r = p.GetLength(0), c = p.GetLength(1);
-            var res = new float[r, c];
-
-            for (int i = 0; i < r; i++)
-            {
-                for (int j = 0; j < c; j++)
-                {
-                    res[i, j] = p[i, j] + b[j];
-                }
-            }
-            return res;
+            return _accel.BatchDotProductAddBias(w, input, b);
         }
 
         private float[,] AttentionForwardWithCache(MultiHeadAttention attn, float[,] qs, float[,] ks, float[,] vs, bool[,] mask, AttentionCache cache)

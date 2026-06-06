@@ -124,8 +124,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             var selfAttnOut = accel.MultiHeadAttentionForward(selfQ, selfK, selfV, numHeads, scale, selfAttnMask);
             var selfProjected = ComputeProjection(selfAttnOut, SelfAttention.WO, SelfAttention.BiasO, accel);
 
-            var selfResidual = accel.MatrixAdd(x, selfProjected);
-            var (normedSelf, _, _, _) = accel.LayerNormForward(selfResidual, LNSelfGamma, LNSelfBeta);
+            var normedSelf = accel.ResidualLayerNorm(x, selfProjected, LNSelfGamma, LNSelfBeta);
 
             float[,] normedCross;
             if (textHidden != null)
@@ -139,9 +138,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 var crossAttnOut = accel.MultiHeadAttentionForward(crossQ, crossK, crossV, numHeads, scale, null);
                 var crossProjected = ComputeProjection(crossAttnOut, CrossAttention.WO, CrossAttention.BiasO, accel);
 
-                var crossResidual = accel.MatrixAdd(normedSelf, crossProjected);
-                var (normedCrossResult, _, _, _) = accel.LayerNormForward(crossResidual, LNCrossGamma, LNCrossBeta);
-                normedCross = normedCrossResult;
+                normedCross = accel.ResidualLayerNorm(normedSelf, crossProjected, LNCrossGamma, LNCrossBeta);
             }
             else
             {
@@ -149,16 +146,8 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 normedCross = normedCrossResult;
             }
 
-            var ffOutput = new float[priceSeqLen, _embeddingDim];
-            for (int i = 0; i < priceSeqLen; i++)
-            {
-                var inputRow = accel.ExtractRow(normedCross, i, _embeddingDim);
-                var outputRow = FeedForwardNetwork.ForwardPassOnly(inputRow);
-                accel.SetRow(ffOutput, i, outputRow, _embeddingDim);
-            }
-
-            var ffResidual = accel.MatrixAdd(normedCross, ffOutput);
-            var (normedFF, _, _, _) = accel.LayerNormForward(ffResidual, LNFFNGamma, LNFFNBeta);
+            var ffOutput = accel.FFNForwardBatch(normedCross, priceSeqLen, _embeddingDim, FeedForwardNetwork.ForwardPassOnly);
+            var normedFF = accel.ResidualLayerNorm(normedCross, ffOutput, LNFFNGamma, LNFFNBeta);
 
             return normedFF;
         }
@@ -181,9 +170,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             return result;*/
 
 
-            var projected = accel.BatchDotProduct(weight, input);
-
-            return accel.MatrixAddBias(projected, bias);
+            return accel.BatchDotProductAddBias(weight, input, bias);
         }
     }
 

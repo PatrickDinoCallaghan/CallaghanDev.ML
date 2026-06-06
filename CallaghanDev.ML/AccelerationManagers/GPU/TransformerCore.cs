@@ -15,12 +15,27 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
             _layerNormForwardKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(LayerNormForwardKernel);
 
+            _residualLayerNormKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, float>(ResidualLayerNormKernel);
+            _residualLayerNormForwardKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, float>(ResidualLayerNormForwardKernel);
+
             _layerNormBackwardKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, float>(LayerNormBackwardKernel);
 
             _multiHeadAttentionWeightsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<int, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int, float, int>(MultiHeadAttentionWeightsKernel);
             _multiHeadAttentionOutputKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int>(MultiHeadAttentionOutputKernel);
 
             _scaledDotProductAttentionWeightsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<int, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, int, float, int, int>(ScaledDotProductAttentionWeightsKernel);
+
+            _multiHeadAttentionBackwardKernel = _accelerator.LoadAutoGroupedStreamKernel<
+                Index1D,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<float, Stride2D.DenseX>,
+                ArrayView2D<int, Stride2D.DenseX>,
+                int, int, float, int, int>(MultiHeadAttentionBackwardKernel);
 
 
             _projectQKVKernel =
@@ -390,6 +405,72 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             for (int j = 0; j < features; j++)
             {
                 output[batch, j] = gamma[j] * (input[batch, j] - mean) / stdDev + beta[j];
+            }
+        }
+
+        #endregion
+
+        #region ResidualLayerNorm Kernels
+
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, float> _residualLayerNormKernel;
+        private Action<Index1D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, float> _residualLayerNormForwardKernel;
+
+        private static void ResidualLayerNormKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView2D<float, Stride2D.DenseX> subLayer, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, float epsilon)
+        {
+            int features = (int)input.Extent.Y;
+
+            float mean = 0.0f;
+            for (int j = 0; j < features; j++)
+            {
+                mean += input[batch, j] + subLayer[batch, j];
+            }
+            mean /= features;
+
+            float variance = 0.0f;
+            for (int j = 0; j < features; j++)
+            {
+                float diff = (input[batch, j] + subLayer[batch, j]) - mean;
+                variance += diff * diff;
+            }
+            variance /= features;
+
+            float invStd = 1.0f / XMath.Sqrt(variance + epsilon);
+            for (int j = 0; j < features; j++)
+            {
+                float n = ((input[batch, j] + subLayer[batch, j]) - mean) * invStd;
+                output[batch, j] = gamma[j] * n + beta[j];
+            }
+        }
+
+        private static void ResidualLayerNormForwardKernel(Index1D batch, ArrayView2D<float, Stride2D.DenseX> input, ArrayView2D<float, Stride2D.DenseX> subLayer, ArrayView1D<float, Stride1D.Dense> gamma, ArrayView1D<float, Stride1D.Dense> beta, ArrayView2D<float, Stride2D.DenseX> output, ArrayView1D<float, Stride1D.Dense> means, ArrayView1D<float, Stride1D.Dense> variances, ArrayView2D<float, Stride2D.DenseX> normalized, ArrayView2D<float, Stride2D.DenseX> residual, float epsilon)
+        {
+            int features = (int)input.Extent.Y;
+
+            float mean = 0.0f;
+            for (int j = 0; j < features; j++)
+            {
+                float value = input[batch, j] + subLayer[batch, j];
+                residual[batch, j] = value;
+                mean += value;
+            }
+            mean /= features;
+            means[batch] = mean;
+
+            float variance = 0.0f;
+            for (int j = 0; j < features; j++)
+            {
+                float diff = residual[batch, j] - mean;
+                variance += diff * diff;
+            }
+            variance /= features;
+            variances[batch] = variance;
+
+            float invStd = 1.0f / XMath.Sqrt(variance + epsilon);
+            for (int j = 0; j < features; j++)
+            {
+                float n = (residual[batch, j] - mean) * invStd;
+                normalized[batch, j] = n;
+                output[batch, j] = gamma[j] * n + beta[j];
             }
         }
 
@@ -778,6 +859,18 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             return MultiHeadAttentionBackwardCore(Q, K, V, dConcatenated, numHeads, scale, mask: null, useDecoderMask: useDecoderMask);
         }
 
+        private Action<
+            Index1D,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<float, Stride2D.DenseX>,
+            ArrayView2D<int, Stride2D.DenseX>,
+            int, int, float, int, int> _multiHeadAttentionBackwardKernel;
+
         private (float[,] dQ, float[,] dK, float[,] dV) MultiHeadAttentionBackwardCore(float[,] Q, float[,] K, float[,] V, float[,] dConcatenated, int numHeads, float scale, bool[,] mask, bool useDecoderMask)
         {
             if (Q == null) throw new ArgumentNullException(nameof(Q));
@@ -816,225 +909,229 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
 
             int headDim = embeddingDim / numHeads;
-            var dQFull = new float[seqLenQ, embeddingDim];
-            var dKFull = new float[seqLenK, embeddingDim];
-            var dVFull = new float[seqLenK, embeddingDim];
-
-            var weights = new float[seqLenK];
-            var dAttn = new float[seqLenK];
-            var activeIndices = new int[seqLenK];
-            var qRow = new float[headDim];
-            var doutRow = new float[headDim];
-            var dqRow = new float[headDim];
-
-            for (int head = 0; head < numHeads; head++)
+            long workUnits = (long)numHeads * seqLenQ * seqLenK * headDim * 3L;
+            if (!ShouldUseGpu(workUnits, GPU_MATMUL_OP_THRESHOLD))
             {
-                int offset = head * headDim;
+                return mask != null
+                    ? _mutliThreadCPU.MultiHeadAttentionBackward(Q, K, V, dConcatenated, numHeads, scale, mask)
+                    : _mutliThreadCPU.MultiHeadAttentionBackward(Q, K, V, dConcatenated, numHeads, scale, useDecoderMask);
+            }
 
-                for (int i = 0; i < seqLenQ; i++)
+            int attentionRows = numHeads * seqLenQ;
+            var bufQ = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, embeddingDim));
+            var bufK = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenK, embeddingDim));
+            var bufV = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenK, embeddingDim));
+            var bufDConcatenated = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, embeddingDim));
+            var bufDQ = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, embeddingDim));
+            var bufDK = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenK, embeddingDim));
+            var bufDV = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenK, embeddingDim));
+            int hasMask = mask != null ? 1 : 0;
+            int useDecoder = useDecoderMask ? 1 : 0;
+            var bufMask = hasMask == 1
+                ? _accelerator.Allocate2DDenseX<int>(new Index2D(seqLenQ, seqLenK))
+                : _accelerator.Allocate2DDenseX<int>(new Index2D(1, 1));
+
+            try
+            {
+                bufQ.CopyFromCPU(Q);
+                bufK.CopyFromCPU(K);
+                bufV.CopyFromCPU(V);
+                bufDConcatenated.CopyFromCPU(dConcatenated);
+                bufDQ.MemSetToZero();
+                bufDK.MemSetToZero();
+                bufDV.MemSetToZero();
+
+                if (hasMask == 1)
                 {
-                    Array.Clear(weights, 0, weights.Length);
-                    Array.Clear(dAttn, 0, dAttn.Length);
-                    Array.Clear(dqRow, 0, dqRow.Length);
-
-                    for (int k = 0; k < headDim; k++)
-                    {
-                        int col = offset + k;
-                        qRow[k] = Q[i, col];
-                        doutRow[k] = dConcatenated[i, col];
-                    }
-
-                    float maxScore = float.NegativeInfinity;
-                    int activeCount = 0;
-
-                    if (mask != null)
+                    var intMask = new int[seqLenQ, seqLenK];
+                    for (int i = 0; i < seqLenQ; i++)
                     {
                         for (int j = 0; j < seqLenK; j++)
                         {
-                            if (!mask[i, j])
-                            {
-                                continue;
-                            }
-
-                            float dot = 0.0f;
-                            for (int k = 0; k < headDim; k++)
-                            {
-                                dot += qRow[k] * K[j, offset + k];
-                            }
-
-                            float score = dot * scale;
-                            weights[j] = score;
-                            activeIndices[activeCount++] = j;
-
-                            if (score > maxScore)
-                            {
-                                maxScore = score;
-                            }
+                            intMask[i, j] = mask[i, j] ? 1 : 0;
                         }
                     }
-                    else
-                    {
-                        int visibleKeys = useDecoderMask ? Math.Min(i + 1, seqLenK) : seqLenK;
-                        activeCount = visibleKeys;
-
-                        for (int j = 0; j < visibleKeys; j++)
-                        {
-                            float dot = 0.0f;
-                            for (int k = 0; k < headDim; k++)
-                            {
-                                dot += qRow[k] * K[j, offset + k];
-                            }
-
-                            float score = dot * scale;
-                            weights[j] = score;
-
-                            if (score > maxScore)
-                            {
-                                maxScore = score;
-                            }
-                        }
-                    }
-
-                    if (activeCount == 0 || float.IsNegativeInfinity(maxScore))
-                    {
-                        continue;
-                    }
-
-                    float sumExp = 0.0f;
-
-                    if (mask != null)
-                    {
-                        for (int n = 0; n < activeCount; n++)
-                        {
-                            int j = activeIndices[n];
-                            float w = MathF.Exp(weights[j] - maxScore);
-                            weights[j] = w;
-                            sumExp += w;
-                        }
-                    }
-                    else
-                    {
-                        for (int j = 0; j < activeCount; j++)
-                        {
-                            float w = MathF.Exp(weights[j] - maxScore);
-                            weights[j] = w;
-                            sumExp += w;
-                        }
-                    }
-
-                    if (sumExp <= 0.0f)
-                    {
-                        continue;
-                    }
-
-                    float invSumExp = 1.0f / sumExp;
-
-                    if (mask != null)
-                    {
-                        for (int n = 0; n < activeCount; n++)
-                        {
-                            int j = activeIndices[n];
-                            weights[j] *= invSumExp;
-                        }
-                    }
-                    else
-                    {
-                        for (int j = 0; j < activeCount; j++)
-                        {
-                            weights[j] *= invSumExp;
-                        }
-                    }
-
-                    float rowDot = 0.0f;
-
-                    if (mask != null)
-                    {
-                        for (int n = 0; n < activeCount; n++)
-                        {
-                            int j = activeIndices[n];
-                            float w = weights[j];
-                            float dAttnJ = 0.0f;
-
-                            for (int k = 0; k < headDim; k++)
-                            {
-                                int col = offset + k;
-                                float dout = doutRow[k];
-                                dVFull[j, col] += w * dout;
-                                dAttnJ += dout * V[j, col];
-                            }
-
-                            dAttn[j] = dAttnJ;
-                            rowDot += w * dAttnJ;
-                        }
-                    }
-                    else
-                    {
-                        for (int j = 0; j < activeCount; j++)
-                        {
-                            float w = weights[j];
-                            float dAttnJ = 0.0f;
-
-                            for (int k = 0; k < headDim; k++)
-                            {
-                                int col = offset + k;
-                                float dout = doutRow[k];
-                                dVFull[j, col] += w * dout;
-                                dAttnJ += dout * V[j, col];
-                            }
-
-                            dAttn[j] = dAttnJ;
-                            rowDot += w * dAttnJ;
-                        }
-                    }
-
-                    if (mask != null)
-                    {
-                        for (int n = 0; n < activeCount; n++)
-                        {
-                            int j = activeIndices[n];
-                            float dDot = weights[j] * (dAttn[j] - rowDot) * scale;
-
-                            if (dDot == 0.0f)
-                            {
-                                continue;
-                            }
-
-                            for (int k = 0; k < headDim; k++)
-                            {
-                                int col = offset + k;
-                                dqRow[k] += dDot * K[j, col];
-                                dKFull[j, col] += dDot * qRow[k];
-                            }
-                        }
-                    }
-                    else
-                    {
-                        for (int j = 0; j < activeCount; j++)
-                        {
-                            float dDot = weights[j] * (dAttn[j] - rowDot) * scale;
-
-                            if (dDot == 0.0f)
-                            {
-                                continue;
-                            }
-
-                            for (int k = 0; k < headDim; k++)
-                            {
-                                int col = offset + k;
-                                dqRow[k] += dDot * K[j, col];
-                                dKFull[j, col] += dDot * qRow[k];
-                            }
-                        }
-                    }
-
-                    for (int k = 0; k < headDim; k++)
-                    {
-                        dQFull[i, offset + k] += dqRow[k];
-                    }
+                    bufMask.CopyFromCPU(intMask);
                 }
+
+                _multiHeadAttentionBackwardKernel(
+                    new Index1D(attentionRows),
+                    bufQ.View,
+                    bufK.View,
+                    bufV.View,
+                    bufDConcatenated.View,
+                    bufDQ.View,
+                    bufDK.View,
+                    bufDV.View,
+                    bufMask.View,
+                    numHeads,
+                    headDim,
+                    scale,
+                    hasMask,
+                    useDecoder);
+
+                var dQFull = new float[seqLenQ, embeddingDim];
+                var dKFull = new float[seqLenK, embeddingDim];
+                var dVFull = new float[seqLenK, embeddingDim];
+                bufDQ.CopyToCPU(dQFull);
+                bufDK.CopyToCPU(dKFull);
+                bufDV.CopyToCPU(dVFull);
+                return (dQFull, dKFull, dVFull);
+            }
+            finally
+            {
+                bufQ.Dispose();
+                bufK.Dispose();
+                bufV.Dispose();
+                bufDConcatenated.Dispose();
+                bufDQ.Dispose();
+                bufDK.Dispose();
+                bufDV.Dispose();
+                bufMask.Dispose();
+            }
+        }
+
+        private static void MultiHeadAttentionBackwardKernel(
+            Index1D index,
+            ArrayView2D<float, Stride2D.DenseX> Q,
+            ArrayView2D<float, Stride2D.DenseX> K,
+            ArrayView2D<float, Stride2D.DenseX> V,
+            ArrayView2D<float, Stride2D.DenseX> dConcatenated,
+            ArrayView2D<float, Stride2D.DenseX> dQ,
+            ArrayView2D<float, Stride2D.DenseX> dK,
+            ArrayView2D<float, Stride2D.DenseX> dV,
+            ArrayView2D<int, Stride2D.DenseX> mask,
+            int numHeads,
+            int headDim,
+            float scale,
+            int hasMask,
+            int useDecoderMask)
+        {
+            int attentionRow = index;
+            int seqLenQ = (int)Q.Extent.X;
+            int seqLenK = (int)K.Extent.X;
+            int head = attentionRow / seqLenQ;
+            int queryIndex = attentionRow - head * seqLenQ;
+            int offset = head * headDim;
+
+            int usableKeyLen = seqLenK;
+            if (useDecoderMask != 0 && queryIndex + 1 < seqLenK)
+            {
+                usableKeyLen = queryIndex + 1;
             }
 
-            return (dQFull, dKFull, dVFull);
+            float maxScore = float.NegativeInfinity;
+            int activeCount = 0;
+
+            for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+            {
+                if (keyIndex >= usableKeyLen || (hasMask != 0 && mask[queryIndex, keyIndex] == 0))
+                {
+                    continue;
+                }
+
+                float dot = 0.0f;
+                for (int d = 0; d < headDim; d++)
+                {
+                    int col = offset + d;
+                    dot += Q[queryIndex, col] * K[keyIndex, col];
+                }
+
+                float score = dot * scale;
+                if (score > maxScore)
+                {
+                    maxScore = score;
+                }
+                activeCount++;
+            }
+
+            if (activeCount == 0 || float.IsNegativeInfinity(maxScore))
+            {
+                return;
+            }
+
+            float sumExp = 0.0f;
+            for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+            {
+                if (keyIndex >= usableKeyLen || (hasMask != 0 && mask[queryIndex, keyIndex] == 0))
+                {
+                    continue;
+                }
+
+                float dot = 0.0f;
+                for (int d = 0; d < headDim; d++)
+                {
+                    int col = offset + d;
+                    dot += Q[queryIndex, col] * K[keyIndex, col];
+                }
+                sumExp += XMath.Exp((dot * scale) - maxScore);
+            }
+
+            if (sumExp <= 0.0f)
+            {
+                return;
+            }
+
+            float invSumExp = 1.0f / sumExp;
+            float rowDot = 0.0f;
+
+            for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+            {
+                if (keyIndex >= usableKeyLen || (hasMask != 0 && mask[queryIndex, keyIndex] == 0))
+                {
+                    continue;
+                }
+
+                float dot = 0.0f;
+                for (int d = 0; d < headDim; d++)
+                {
+                    int col = offset + d;
+                    dot += Q[queryIndex, col] * K[keyIndex, col];
+                }
+
+                float weight = XMath.Exp((dot * scale) - maxScore) * invSumExp;
+                float dAttn = 0.0f;
+                for (int d = 0; d < headDim; d++)
+                {
+                    int col = offset + d;
+                    float dout = dConcatenated[queryIndex, col];
+                    Atomic.Add(ref dV[keyIndex, col], weight * dout);
+                    dAttn += dout * V[keyIndex, col];
+                }
+
+                rowDot += weight * dAttn;
+            }
+
+            for (int keyIndex = 0; keyIndex < seqLenK; keyIndex++)
+            {
+                if (keyIndex >= usableKeyLen || (hasMask != 0 && mask[queryIndex, keyIndex] == 0))
+                {
+                    continue;
+                }
+
+                float dot = 0.0f;
+                float dAttn = 0.0f;
+                for (int d = 0; d < headDim; d++)
+                {
+                    int col = offset + d;
+                    dot += Q[queryIndex, col] * K[keyIndex, col];
+                    dAttn += dConcatenated[queryIndex, col] * V[keyIndex, col];
+                }
+
+                float weight = XMath.Exp((dot * scale) - maxScore) * invSumExp;
+                float dDot = weight * (dAttn - rowDot) * scale;
+                if (dDot == 0.0f)
+                {
+                    continue;
+                }
+
+                for (int d = 0; d < headDim; d++)
+                {
+                    int col = offset + d;
+                    Atomic.Add(ref dQ[queryIndex, col], dDot * K[keyIndex, col]);
+                    Atomic.Add(ref dK[keyIndex, col], dDot * Q[queryIndex, col]);
+                }
+            }
         }
 
         #endregion
@@ -1317,13 +1414,13 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
             var bufInput = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, inputDim));
 
-            var bufWQ = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
-            var bufWK = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
-            var bufWV = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
+            var bufWQ = GetResidentMatrixReadOnly(WQ);
+            var bufWK = GetResidentMatrixReadOnly(WK);
+            var bufWV = GetResidentMatrixReadOnly(WV);
 
-            var bufBiasQ = _accelerator.Allocate1D<float>(outputDim);
-            var bufBiasK = _accelerator.Allocate1D<float>(outputDim);
-            var bufBiasV = _accelerator.Allocate1D<float>(outputDim);
+            var bufBiasQ = GetResidentVectorReadOnly(biasQ);
+            var bufBiasK = GetResidentVectorReadOnly(biasK);
+            var bufBiasV = GetResidentVectorReadOnly(biasV);
 
             var bufQ = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
             var bufK = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
@@ -1332,14 +1429,6 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             try
             {
                 bufInput.CopyFromCPU(input);
-
-                bufWQ.CopyFromCPU(WQ);
-                bufWK.CopyFromCPU(WK);
-                bufWV.CopyFromCPU(WV);
-
-                bufBiasQ.CopyFromCPU(biasQ);
-                bufBiasK.CopyFromCPU(biasK);
-                bufBiasV.CopyFromCPU(biasV);
 
                 _projectQKVKernel(
                     new Index1D(rows * outputDim),
@@ -1367,14 +1456,6 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             finally
             {
                 bufInput.Dispose();
-
-                bufWQ.Dispose();
-                bufWK.Dispose();
-                bufWV.Dispose();
-
-                bufBiasQ.Dispose();
-                bufBiasK.Dispose();
-                bufBiasV.Dispose();
 
                 bufQ.Dispose();
                 bufK.Dispose();
@@ -1820,20 +1901,16 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
 
             var bufInput = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, inputDim));
-            var bufWK = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
-            var bufWV = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim));
-            var bufBiasK = _accelerator.Allocate1D<float>(outputDim);
-            var bufBiasV = _accelerator.Allocate1D<float>(outputDim);
+            var bufWK = GetResidentMatrixReadOnly(WK);
+            var bufWV = GetResidentMatrixReadOnly(WV);
+            var bufBiasK = GetResidentVectorReadOnly(biasK);
+            var bufBiasV = GetResidentVectorReadOnly(biasV);
             var bufK = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
             var bufV = _accelerator.Allocate2DDenseX<float>(new Index2D(rows, outputDim));
 
             try
             {
                 bufInput.CopyFromCPU(input);
-                bufWK.CopyFromCPU(WK);
-                bufWV.CopyFromCPU(WV);
-                bufBiasK.CopyFromCPU(biasK);
-                bufBiasV.CopyFromCPU(biasV);
 
                 _projectKVKernel(
                     new Index1D(rows * outputDim),
@@ -1854,10 +1931,6 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             finally
             {
                 bufInput.Dispose();
-                bufWK.Dispose();
-                bufWV.Dispose();
-                bufBiasK.Dispose();
-                bufBiasV.Dispose();
                 bufK.Dispose();
                 bufV.Dispose();
             }

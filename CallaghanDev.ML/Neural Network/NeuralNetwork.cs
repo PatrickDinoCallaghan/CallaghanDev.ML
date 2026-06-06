@@ -660,8 +660,7 @@ namespace CallaghanDev.ML
             {
                 var layer = data.layers[layerIndex];
 
-                current = accelerationManager.BatchDotProduct(layer.Weights, current);
-                current = accelerationManager.MatrixAddBias(current, layer.Biases);
+                current = accelerationManager.BatchDotProductAddBias(layer.Weights, current, layer.Biases);
                 ApplyActivationInPlace(current, layer.ActivationType);
             }
 
@@ -765,8 +764,248 @@ namespace CallaghanDev.ML
             return dInput;
         }
 
+        /// <summary>
+        /// Batched equivalent of calling ForwardPassOnly(row) followed by
+        /// ComputeInputGradient(dOutputRow, ... ) for every row. Used by transformer
+        /// FFN backprop to avoid per-token layer-state mutation and ExtractRow/SetRow
+        /// allocation churn.
+        /// </summary>
+        public float[,] ComputeInputGradientBatch(float[,] input, float[,] dOutput, List<float[,]> weightGradients = null, List<float[]> biasGradients = null)
+        {
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+            }
+            if (dOutput == null)
+            {
+                throw new ArgumentNullException(nameof(dOutput));
+            }
+            if (data.layers == null || data.layers.Length < 2)
+            {
+                throw new InvalidOperationException("Neural network must have at least input and output layers.");
+            }
+
+            int batchSize = input.GetLength(0);
+            int inputDim = input.GetLength(1);
+            int outputDim = dOutput.GetLength(1);
+            int outputLayerIdx = data.layers.Length - 1;
+
+            if (dOutput.GetLength(0) != batchSize)
+            {
+                throw new ArgumentException("dOutput row count must match input row count.", nameof(dOutput));
+            }
+            if (inputDim != data.layers[0].Size)
+            {
+                throw new ArgumentException($"Input matrix column count ({inputDim}) must match network input size ({data.layers[0].Size}).", nameof(input));
+            }
+            if (outputDim != data.layers[outputLayerIdx].Size)
+            {
+                throw new ArgumentException($"dOutput column count ({outputDim}) must match network output size ({data.layers[outputLayerIdx].Size}).", nameof(dOutput));
+            }
+
+            bool accumulateGradients = weightGradients != null || biasGradients != null;
+            if (accumulateGradients)
+            {
+                if (weightGradients == null || biasGradients == null)
+                {
+                    throw new ArgumentException("weightGradients and biasGradients must either both be null or both be supplied.");
+                }
+                if (weightGradients.Count != outputLayerIdx || biasGradients.Count != outputLayerIdx)
+                {
+                    throw new ArgumentException("Gradient storage must contain one entry per non-input layer.");
+                }
+            }
+
+            if (batchSize == 0)
+            {
+                return new float[0, inputDim];
+            }
+
+            var activations = new float[data.layers.Length][,];
+            var derivatives = new float[data.layers.Length][,];
+            activations[0] = input;
+
+            for (int layerIdx = 1; layerIdx < data.layers.Length; layerIdx++)
+            {
+                var layer = data.layers[layerIdx];
+                var z = accelerationManager.BatchDotProductAddBias(layer.Weights, activations[layerIdx - 1], layer.Biases);
+
+                var act = new float[batchSize, layer.Size];
+                var der = new float[batchSize, layer.Size];
+                FillActivationAndDerivative(z, layer.ActivationType, act, der);
+
+                activations[layerIdx] = act;
+                derivatives[layerIdx] = der;
+            }
+
+            var currentDeltas = new float[batchSize, outputDim];
+            for (int row = 0; row < batchSize; row++)
+            {
+                for (int col = 0; col < outputDim; col++)
+                {
+                    currentDeltas[row, col] = dOutput[row, col] * derivatives[outputLayerIdx][row, col];
+                }
+            }
+
+            if (accumulateGradients)
+            {
+                AccumulateGradientsBatch(outputLayerIdx, currentDeltas, activations[outputLayerIdx - 1], weightGradients, biasGradients);
+            }
+
+            for (int layerIdx = outputLayerIdx - 1; layerIdx > 0; layerIdx--)
+            {
+                var layer = data.layers[layerIdx];
+                var layerAbove = data.layers[layerIdx + 1];
+                int layerSize = layer.Size;
+
+                // currentDeltas [batch, aboveSize] * W_above [aboveSize, layerSize]
+                // gives the pre-activation gradient for this layer in one accelerated GEMM.
+                var hiddenDeltas = accelerationManager.MatrixMultiply(currentDeltas, layerAbove.Weights);
+                for (int row = 0; row < batchSize; row++)
+                {
+                    for (int j = 0; j < layerSize; j++)
+                    {
+                        hiddenDeltas[row, j] *= derivatives[layerIdx][row, j];
+                    }
+                }
+
+                currentDeltas = hiddenDeltas;
+
+                if (accumulateGradients)
+                {
+                    AccumulateGradientsBatch(layerIdx, currentDeltas, activations[layerIdx - 1], weightGradients, biasGradients);
+                }
+            }
+
+            var firstHiddenLayer = data.layers[1];
+            // currentDeltas [batch, firstHiddenSize] * W_first [firstHiddenSize, inputDim]
+            // is the batched gradient with respect to the network input.
+            return accelerationManager.MatrixMultiply(currentDeltas, firstHiddenLayer.Weights);
+        }
+
+        private static void FillActivationAndDerivative(float[,] preActivation, ActivationType activationType, float[,] activation, float[,] derivative)
+        {
+            int rows = preActivation.GetLength(0);
+            int cols = preActivation.GetLength(1);
+
+            for (int row = 0; row < rows; row++)
+            {
+                for (int col = 0; col < cols; col++)
+                {
+                    float z = preActivation[row, col];
+
+                    switch (activationType)
+                    {
+                        case ActivationType.None:
+                            activation[row, col] = z;
+                            derivative[row, col] = 1f;
+                            break;
+
+                        case ActivationType.Sigmoid:
+                            {
+                                float s = StableSigmoidLocal(z);
+                                activation[row, col] = s;
+                                derivative[row, col] = s * (1f - s);
+                                break;
+                            }
+
+                        case ActivationType.Tanh:
+                            {
+                                float t = MathF.Tanh(z);
+                                activation[row, col] = t;
+                                derivative[row, col] = 1f - (t * t);
+                                break;
+                            }
+
+                        case ActivationType.Relu:
+                            activation[row, col] = z > 0f ? z : 0f;
+                            derivative[row, col] = z >= 0f ? 1f : 0f;
+                            break;
+
+                        case ActivationType.Leakyrelu:
+                            activation[row, col] = z > 0f ? z : 0.01f * z;
+                            // Match the existing Functions.GetActivationDerivative implementation.
+                            derivative[row, col] = z <= 0f ? 0.1f : 1f;
+                            break;
+
+                        case ActivationType.Swish:
+                            {
+                                float s = StableSigmoidLocal(z);
+                                activation[row, col] = z * s;
+                                derivative[row, col] = s + z * s * (1f - s);
+                                break;
+                            }
+
+                        default:
+                            activation[row, col] = z;
+                            derivative[row, col] = 1f;
+                            break;
+                    }
+                }
+            }
+        }
+
+        private void AccumulateGradientsBatch(int layerIdx, float[,] deltas, float[,] prevActivations, List<float[,]> weightGradients, List<float[]> biasGradients)
+        {
+            int gradIdx = layerIdx - 1;
+            var wGrad = weightGradients[gradIdx];
+            var bGrad = biasGradients[gradIdx];
+            int rows = deltas.GetLength(0);
+            int layerSize = deltas.GetLength(1);
+            int prevSize = prevActivations.GetLength(1);
+
+            if (prevActivations.GetLength(0) != rows)
+            {
+                throw new ArgumentException("Previous activations row count must match delta row count.", nameof(prevActivations));
+            }
+            if (wGrad.GetLength(0) != layerSize || wGrad.GetLength(1) != prevSize)
+            {
+                throw new ArgumentException("Weight gradient shape does not match layer shape.", nameof(weightGradients));
+            }
+            if (bGrad.Length != layerSize)
+            {
+                throw new ArgumentException("Bias gradient length does not match layer size.", nameof(biasGradients));
+            }
+
+            var deltaT = TransposeMatrixLocal(deltas);
+            var weightDelta = accelerationManager.MatrixMultiply(deltaT, prevActivations);
+
+            for (int i = 0; i < layerSize; i++)
+            {
+                float b = bGrad[i];
+                for (int row = 0; row < rows; row++)
+                {
+                    b += deltas[row, i];
+                }
+                bGrad[i] = b;
+
+                for (int j = 0; j < prevSize; j++)
+                {
+                    wGrad[i, j] += weightDelta[i, j];
+                }
+            }
+        }
+
+        private static float[,] TransposeMatrixLocal(float[,] matrix)
+        {
+            int rows = matrix.GetLength(0);
+            int cols = matrix.GetLength(1);
+            var transposed = new float[cols, rows];
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    transposed[j, i] = matrix[i, j];
+                }
+            }
+            return transposed;
+        }
+
         public void ApplyExternalGradients(List<float[,]> weightGradients, List<float[]> biasGradients, float learningRate)
         {
+            if (weightGradients == null) throw new ArgumentNullException(nameof(weightGradients));
+            if (biasGradients == null) throw new ArgumentNullException(nameof(biasGradients));
+
             for (int idx = 0; idx < weightGradients.Count; idx++)
             {
                 int layerIdx = idx + 1;
@@ -774,21 +1013,8 @@ namespace CallaghanDev.ML
                 var wGrad = weightGradients[idx];
                 var bGrad = biasGradients[idx];
 
-                int rows = layer.Weights.GetLength(0);
-                int cols = layer.Weights.GetLength(1);
-
-                for (int i = 0; i < rows; i++)
-                {
-                    for (int j = 0; j < cols; j++)
-                    {
-                        layer.Weights[i, j] -= learningRate * wGrad[i, j];
-                    }
-                }
-
-                for (int i = 0; i < layer.Biases.Length; i++)
-                {
-                    layer.Biases[i] -= learningRate * bGrad[i];
-                }
+                accelerationManager.MatrixUpdate(layer.Weights, wGrad, learningRate);
+                accelerationManager.VectorUpdate(layer.Biases, bGrad, learningRate);
             }
         }
 

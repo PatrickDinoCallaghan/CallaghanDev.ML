@@ -1,79 +1,43 @@
-﻿using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.Configuration;
-using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace CallaghanDev.ML.Transformers.MMTAC
+namespace CallaghanDev.ML.Transformers.PriceTAC
 {
-    public class MmtacGradients
+    public sealed class PriceTacGradients
     {
-        // Text encoder
-        public float[,] TextEmbeddingGrad { get; set; }
-        public List<AttentionGradients> TextAttnGrads { get; set; }
-        public List<LayerNormGradients> TextLN1Grads { get; set; }
-        public List<LayerNormGradients> TextLN2Grads { get; set; }
-
-        // Price input projection
         public float[,] PriceInputProjectionGrad { get; set; }
         public float[] PriceInputProjectionBiasGrad { get; set; }
 
-        // Global feature projection
         public float[,] GlobalFeatureProjectionGrad { get; set; }
         public float[] GlobalFeatureBiasGrad { get; set; }
 
-        // Price decoder blocks
-        public List<MmtacBlockGradients> PriceBlockGrads { get; set; }
+        public List<PriceTacBlockGradients> PriceBlockGrads { get; set; }
 
-        // Regression head: High, Low, Close (3 outputs, linear)
         public float[,] RegressionProjectionGrad { get; set; }
         public float[] RegressionBiasGrad { get; set; }
 
-        // Range head (softplus)
         public float[,] RangeProjectionGrad { get; set; }
         public float[] RangeBiasGrad { get; set; }
 
-        // Quality head (sigmoid)
         public float[,] QualityProjectionGrad { get; set; }
         public float[] QualityBiasGrad { get; set; }
 
-        // Direction head (sigmoid BCE)
         public float[,] DirectionProjectionGrad { get; set; }
         public float[] DirectionBiasGrad { get; set; }
 
-        // MidWindowDirection head (sigmoid BCE)
         public float[,] MidDirectionProjectionGrad { get; set; }
         public float[] MidDirectionBiasGrad { get; set; }
 
-        // Confidence head (optional sigmoid BCE)
         public float[,] ConfidenceProjectionGrad { get; set; }
         public float[] ConfidenceBiasGrad { get; set; }
 
-        // Context-type embedding: 3 rows - news(0), price(1), global(2)
+        // Shape-compatible with MMTAC context helpers: row 1 price-memory, row 2 global.
         public float[,] ContextTypeEmbeddingGrad { get; set; }
 
-        private readonly SparseRowGradientTracker _textEmbeddingRows = new SparseRowGradientTracker();
-        internal SparseRowGradientTracker TextEmbeddingRows => _textEmbeddingRows;
-
-        public MmtacGradients(MmtacConfig cfg)
+        public PriceTacGradients(PriceTacConfig cfg)
         {
-            int textEd = cfg.Text.EmbeddingDim;
             int priceEd = cfg.Price.EmbeddingDim;
-
-            TextEmbeddingGrad = new float[cfg.Text.VocabSize, textEd];
-            TextAttnGrads = new List<AttentionGradients>();
-            TextLN1Grads = new List<LayerNormGradients>();
-            TextLN2Grads = new List<LayerNormGradients>();
-
-            for (int i = 0; i < cfg.Text.NumLayers; i++)
-            {
-                TextAttnGrads.Add(new AttentionGradients(textEd));
-                TextLN1Grads.Add(new LayerNormGradients(textEd));
-                TextLN2Grads.Add(new LayerNormGradients(textEd));
-            }
 
             PriceInputProjectionGrad = new float[priceEd, cfg.Price.InputFeatureDim];
             PriceInputProjectionBiasGrad = new float[priceEd];
@@ -84,15 +48,13 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 GlobalFeatureBiasGrad = new float[priceEd];
             }
 
-            PriceBlockGrads = new List<MmtacBlockGradients>();
+            PriceBlockGrads = new List<PriceTacBlockGradients>();
             for (int i = 0; i < cfg.Price.NumLayers; i++)
             {
-                PriceBlockGrads.Add(new MmtacBlockGradients(priceEd, cfg.Price.NumHeads, cfg.Decay.ProjectionDim, cfg.Decay.HiddenDim, cfg.Decay.TimeEncodingBases));
+                PriceBlockGrads.Add(new PriceTacBlockGradients(priceEd, cfg.Price.NumHeads, cfg.Decay.ProjectionDim, cfg.Decay.HiddenDim, cfg.Decay.TimeEncodingBases));
             }
 
-            // Output head gradients
-            int rDim = MmtacOutputConfig.RegressionOutputCount; // 3 high low close
-
+            int rDim = PriceTacOutputConfig.RegressionOutputCount;
             RegressionProjectionGrad = new float[rDim, priceEd];
             RegressionBiasGrad = new float[rDim];
             RangeProjectionGrad = new float[1, priceEd];
@@ -110,24 +72,11 @@ namespace CallaghanDev.ML.Transformers.MMTAC
                 ConfidenceBiasGrad = new float[1];
             }
 
-            ContextTypeEmbeddingGrad = new float[MmtacConfig.ContextTypeCount, priceEd];
+            ContextTypeEmbeddingGrad = new float[PriceTacConfig.ContextTypeCount, priceEd];
         }
 
         public void Zero()
         {
-            Zero(includeText: true);
-        }
-
-        public void Zero(bool includeText)
-        {
-            if (includeText)
-            {
-                _textEmbeddingRows.ZeroTrackedRowsAndClear(TextEmbeddingGrad);
-                foreach (var g in TextAttnGrads) g.Zero();
-                foreach (var g in TextLN1Grads) g.Zero();
-                foreach (var g in TextLN2Grads) g.Zero();
-            }
-
             ZeroMatrix(PriceInputProjectionGrad);
             Array.Clear(PriceInputProjectionBiasGrad, 0, PriceInputProjectionBiasGrad.Length);
 
@@ -163,32 +112,10 @@ namespace CallaghanDev.ML.Transformers.MMTAC
             ZeroMatrix(ContextTypeEmbeddingGrad);
         }
 
-        public void MarkTextRows(int[] tokenIds, int tokenCount)
-        {
-            _textEmbeddingRows.MarkRows(tokenIds, 0, tokenCount, TextEmbeddingGrad.GetLength(0));
-        }
-
-        public float TextEmbeddingSquaredNorm()
-        {
-            return _textEmbeddingRows.SquaredNorm(TextEmbeddingGrad);
-        }
-
-        public void ScaleTextEmbeddingGrad(float scale)
-        {
-            _textEmbeddingRows.Scale(TextEmbeddingGrad, scale);
-        }
-
-        public void UpdateTextEmbedding(float[,] embedding, float learningRate)
-        {
-            _textEmbeddingRows.UpdateRows(embedding, TextEmbeddingGrad, learningRate);
-        }
-
         private static void ZeroMatrix(float[,] m)
         {
-            if (m == null)
-                return;
-
-            Array.Clear(m, 0, m.Length);
+            if (m != null)
+                Array.Clear(m, 0, m.Length);
         }
     }
 }

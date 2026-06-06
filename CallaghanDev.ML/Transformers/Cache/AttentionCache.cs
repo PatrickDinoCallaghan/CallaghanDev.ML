@@ -15,6 +15,10 @@ namespace CallaghanDev.ML.Transformers.Cache
         public float[,] AttentionWeights { get; set; }
         public float[,] AttentionOutput { get; set; }
         public float[,] Input { get; set; }
+        public bool IsSegmented { get; set; }
+        public int SegmentLength { get; set; }
+        public int SegmentCount { get; set; }
+        public bool Causal { get; set; }
         public void Reset()
         {
             Q = null;
@@ -26,6 +30,10 @@ namespace CallaghanDev.ML.Transformers.Cache
             AttentionOutput = null;
 
             Input = null;
+            IsSegmented = false;
+            SegmentLength = 0;
+            SegmentCount = 0;
+            Causal = false;
         }
     }
     public class ForwardCache
@@ -40,13 +48,21 @@ namespace CallaghanDev.ML.Transformers.Cache
 
         public List<float[,]> FFNOutputs { get; set; }
 
-        public List<float[][]> FFNInputs { get; set; }
+        public List<float[,]> FFNInputs { get; set; }
 
         public float[,] EmbeddedInput { get; set; }
 
         public int[] TokenIds { get; set; }
 
+        public int TokenStart { get; set; }
+
+        public int TokenCount { get; set; }
+
         public float[,] ContinuousInput { get; set; }
+
+        public int ContinuousInputRowStart { get; set; }
+
+        public int ContinuousInputRowCount { get; set; }
 
         public ForwardCache(int numLayers)
         {
@@ -55,7 +71,7 @@ namespace CallaghanDev.ML.Transformers.Cache
             LN1Caches = new List<LayerNormCache>();
             LN2Caches = new List<LayerNormCache>();
             FFNOutputs = new List<float[,]>();
-            FFNInputs = new List<float[][]>();
+            FFNInputs = new List<float[,]>();
 
             for (int i = 0; i < numLayers; i++)
             {
@@ -69,6 +85,10 @@ namespace CallaghanDev.ML.Transformers.Cache
     public class LayerNormCache
     {
         public float[,] Input { get; set; }
+        public bool IsSegmented { get; set; }
+        public int SegmentLength { get; set; }
+        public int SegmentCount { get; set; }
+        public bool Causal { get; set; }
         public float[] Mean { get; set; }
         public float[] Variance { get; set; }
         public float[,] Normalized { get; set; }
@@ -76,6 +96,10 @@ namespace CallaghanDev.ML.Transformers.Cache
         public void Reset()
         {
             Input = null;
+            IsSegmented = false;
+            SegmentLength = 0;
+            SegmentCount = 0;
+            Causal = false;
             Mean = null;
             Variance = null;
             Normalized = null;

@@ -4,6 +4,7 @@ using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.Transformers.Cache;
 using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
+using System.Collections.Concurrent;
 
 
 namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
@@ -18,6 +19,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         private readonly Random _random;
         private readonly IAccelerationManager _accel;
         private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
+        private readonly ConcurrentDictionary<int, bool[,]> _causalMaskCache = new ConcurrentDictionary<int, bool[,]>();
         public MultimodalTransformerConfig Config => _config;
         public IAccelerationManager AccelerationManager => _accel;
         public float[,] TextTokenEmbedding { get; set; }
@@ -133,7 +135,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             bool[,] mask = null;
             if (_config.Text.UseDecoderOnly)
-                mask = _accel.CreateCausalMask(seqLen);
+                mask = CreateCausalMask(seqLen);
 
             var x = embedded;
             foreach (var block in TextBlocks)
@@ -152,7 +154,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             bool[,] mask = null;
             if (_config.Text.UseDecoderOnly)
-                mask = _accel.CreateCausalMask(seqLen);
+                mask = CreateCausalMask(seqLen);
 
             var x = embedded;
             for (int layer = 0; layer < _config.Text.NumLayers; layer++)
@@ -164,33 +166,20 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 attnCache.Input = x;
                 var attnOutput = AttentionForwardWithCache(block.Attention, x, x, x, mask, attnCache);
 
-                var attnResidual = _accel.MatrixAdd(x, attnOutput);
-
                 var ln1Cache = cache.TextLN1Caches[layer];
-                var (normed1, ln1Means, ln1Vars, ln1Normalized) = _accel.LayerNormForward(attnResidual, block.LN1Gamma, block.LN1Beta);
+                var (normed1, ln1Means, ln1Vars, ln1Normalized, attnResidual) = _accel.ResidualLayerNormForward(x, attnOutput, block.LN1Gamma, block.LN1Beta);
                 ln1Cache.Input = attnResidual;
                 ln1Cache.Mean = ln1Means;
                 ln1Cache.Variance = ln1Vars;
                 ln1Cache.Normalized = ln1Normalized;
 
-                var ffnInputRows = new float[seqLen][];
-                var ffOutput = new float[seqLen, _config.Text.EmbeddingDim];
+                var ffOutput = _accel.FFNForwardBatch(normed1, seqLen, _config.Text.EmbeddingDim, block.FeedForwardNetwork.ForwardPassOnly);
 
-                for (int i = 0; i < seqLen; i++)
-                {
-                    var inputRow = _accel.ExtractRow(normed1, i, _config.Text.EmbeddingDim);
-                    ffnInputRows[i] = inputRow;
-                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-                    _accel.SetRow(ffOutput, i, outputRow, _config.Text.EmbeddingDim);
-                }
-
-                cache.TextFFNInputs.Add(ffnInputRows);
+                cache.TextFFNInputs.Add(normed1);
                 cache.TextFFNOutputs.Add(ffOutput);
 
-                var ffResidual = _accel.MatrixAdd(normed1, ffOutput);
-
                 var ln2Cache = cache.TextLN2Caches[layer];
-                var (normed2, ln2Means, ln2Vars, ln2Normalized) = _accel.LayerNormForward(ffResidual, block.LN2Gamma, block.LN2Beta);
+                var (normed2, ln2Means, ln2Vars, ln2Normalized, ffResidual) = _accel.ResidualLayerNormForward(normed1, ffOutput, block.LN2Gamma, block.LN2Beta);
                 ln2Cache.Input = ffResidual;
                 ln2Cache.Mean = ln2Means;
                 ln2Cache.Variance = ln2Vars;
@@ -206,14 +195,12 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private (float[,] predictions, float[,] confidence) ProjectToOutput(float[,] hidden)
         {
-            var predRaw = _accel.BatchDotProduct(OutputProjection, hidden);
-            var predictions = _accel.MatrixAddBias(predRaw, OutputBias);
+            var predictions = _accel.BatchDotProductAddBias(OutputProjection, hidden, OutputBias);
 
             float[,] confidence = null;
             if (_config.Output.UseConfidenceHead)
             {
-                var confRaw = _accel.BatchDotProduct(ConfidenceProjection, hidden);
-                confidence = _accel.MatrixAddBias(confRaw, ConfidenceBias);
+                confidence = _accel.BatchDotProductAddBias(ConfidenceProjection, hidden, ConfidenceBias);
                 _accel.SigmoidInPlace(confidence);
             }
 
@@ -263,9 +250,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 }
             }
 
-            var projected = _accel.BatchDotProduct(PriceInputProjection, priceSequence);
-
-            return _accel.MatrixAddBias(projected, PriceInputProjectionBias);
+            return _accel.BatchDotProductAddBias(PriceInputProjection, priceSequence, PriceInputProjectionBias);
         }
 
         /*
@@ -330,8 +315,15 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias)
         {
-            var projected = _accel.BatchDotProduct(weight, input);
-            return _accel.MatrixAddBias(projected, bias);
+            return _accel.BatchDotProductAddBias(weight, input, bias);
+        }
+
+        private bool[,] CreateCausalMask(int seqLen)
+        {
+            if (seqLen <= 0)
+                return _accel.CreateCausalMask(seqLen);
+
+            return _causalMaskCache.GetOrAdd(seqLen, length => _accel.CreateCausalMask(length));
         }
 
         private float[,] AttentionForwardWithCache(MultiHeadAttention attention, float[,] qSource, float[,] kvSource_K, float[,] kvSource_V, bool[,] mask, AttentionCache cache)
@@ -453,7 +445,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             if (_config.Price.UseDecoderOnly)
             {
                 //mask = CreateCausalMask(seqLen);
-                mask = _accel.CreateCausalMask(seqLen);
+                mask = CreateCausalMask(seqLen);
             }
 
             var x = embedded;
@@ -489,7 +481,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
             bool[,] selfMask = null;
             if (_config.Price.UseDecoderOnly)
-                selfMask = _accel.CreateCausalMask(seqLen);
+                selfMask = CreateCausalMask(seqLen);
 
             var x = embedded;
 
@@ -514,11 +506,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 blockCache.SelfAttnOutput = selfAttnOut;
 
                 var selfProjected = ComputeProjection(selfAttnOut, block.SelfAttention.WO, block.SelfAttention.BiasO);
-                var selfResidual = _accel.MatrixAdd(x, selfProjected);
+                var (normedSelf, selfMeans, selfVars, selfNormed, selfResidual) = _accel.ResidualLayerNormForward(x, selfProjected, block.LNSelfGamma, block.LNSelfBeta);
 
                 blockCache.SelfResidualInput = selfResidual;
-
-                var (normedSelf, selfMeans, selfVars, selfNormed) = _accel.LayerNormForward(selfResidual, block.LNSelfGamma, block.LNSelfBeta);
 
                 blockCache.LNSelfCache.Input = selfResidual;
                 blockCache.LNSelfCache.Mean = selfMeans;
@@ -544,12 +534,10 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                     blockCache.CrossAttnOutput = crossAttnOut;
 
                     var crossProjected = ComputeProjection(crossAttnOut, block.CrossAttention.WO, block.CrossAttention.BiasO);
-                    var crossResidual = _accel.MatrixAdd(normedSelf, crossProjected);
+                    var (normedCrossResult, crossMeans, crossVars, crossNormedVals, crossResidual) =
+                        _accel.ResidualLayerNormForward(normedSelf, crossProjected, block.LNCrossGamma, block.LNCrossBeta);
 
                     blockCache.CrossResidualInput = crossResidual;
-
-                    var (normedCrossResult, crossMeans, crossVars, crossNormedVals) =
-                        _accel.LayerNormForward(crossResidual, block.LNCrossGamma, block.LNCrossBeta);
 
                     blockCache.LNCrossCache.Input = crossResidual;
                     blockCache.LNCrossCache.Mean = crossMeans;
@@ -578,27 +566,14 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 }
 
                 // === FFN ===
-                var ffnInputRows = new float[seqLen][];
-                var ffOutput = new float[seqLen, embDim];
+                var ffOutput = _accel.FFNForwardBatch(normedCross, seqLen, embDim, block.FeedForwardNetwork.ForwardPassOnly);
 
-                for (int i = 0; i < seqLen; i++)
-                {
-                    // Bug fix: use price embDim, not _config.Text.EmbeddingDim.
-                    var inputRow = _accel.ExtractRow(normedCross, i, embDim);
-                    ffnInputRows[i] = inputRow;
-
-                    var outputRow = block.FeedForwardNetwork.ForwardPassOnly(inputRow);
-                    _accel.SetRow(ffOutput, i, outputRow, embDim);
-                }
-
-                blockCache.FFNInputRows = ffnInputRows;
+                blockCache.FFNInputRows = null;
                 blockCache.FFNOutput = ffOutput;
 
-                var ffResidual = _accel.MatrixAdd(normedCross, ffOutput);
+                var (normedFF, ffMeans, ffVars, ffNormedVals, ffResidual) =
+                    _accel.ResidualLayerNormForward(normedCross, ffOutput, block.LNFFNGamma, block.LNFFNBeta);
                 blockCache.FFNResidualInput = ffResidual;
-
-                var (normedFF, ffMeans, ffVars, ffNormedVals) =
-                    _accel.LayerNormForward(ffResidual, block.LNFFNGamma, block.LNFFNBeta);
 
                 blockCache.LNFFNCache.Input = ffResidual;
                 blockCache.LNFFNCache.Mean = ffMeans;

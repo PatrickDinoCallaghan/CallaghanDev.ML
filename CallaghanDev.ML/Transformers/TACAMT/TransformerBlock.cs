@@ -154,7 +154,8 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 scale,
                 attentionBias,
                 out _,
-                out _);
+                out _,
+                needBackwardCache: false);
 
             return ComputeProjectionWithOptionalRows(
                 attnOutput,
@@ -182,6 +183,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
     bool[] includeRows,
     IAccelerationManager accel)
         {
+            if (includeRows == null)
+                return accel.BatchDotProductAddBias(weight, input, bias);
+
             var projected = accel.BatchDotProduct(weight, input);
             int rows = projected.GetLength(0);
             int cols = projected.GetLength(1);
@@ -227,19 +231,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
         private float[,] ComputeProjection(float[,] input, float[,] weight, float[] bias, IAccelerationManager accel)
         {
-            var projected = accel.BatchDotProduct(weight, input);
-            int rows = projected.GetLength(0), cols = projected.GetLength(1);
-            var result = new float[rows, cols];
-
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    result[i, j] = projected[i, j] + bias[j];
-                }
-            }
-
-            return result;
+            return accel.BatchDotProductAddBias(weight, input, bias);
         }
     }
 }

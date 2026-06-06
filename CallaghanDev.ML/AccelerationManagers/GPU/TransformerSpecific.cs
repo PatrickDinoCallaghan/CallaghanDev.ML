@@ -623,15 +623,13 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             }
 
             var bufHidden = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, embDim));
-            var bufProj = _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, embDim));
-            var bufBias = _accelerator.Allocate1D<float>(outputDim);
+            var bufProj = GetResidentMatrixReadOnly(outputProjection);
+            var bufBias = GetResidentVectorReadOnly(outputBias);
             var bufResult = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLen, outputDim));
 
             try
             {
                 bufHidden.CopyFromCPU(hidden);
-                bufProj.CopyFromCPU(outputProjection);
-                bufBias.CopyFromCPU(outputBias);
 
                 _projectOutputBatchKernel(new Index2D(seqLen, outputDim), bufHidden.View, bufProj.View, bufBias.View, bufResult.View);
 
@@ -642,8 +640,6 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             finally
             {
                 bufHidden.Dispose();
-                bufProj.Dispose();
-                bufBias.Dispose();
                 bufResult.Dispose();
             }
         }
@@ -655,12 +651,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             return _mutliThreadCPU.ContentAwareDecayForward(queryEmbeddings, keyEmbeddings, timeDiffs, keyTimesFromRef, network, isTraining, dropoutRng);
         }
 
-        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax, bool needBackwardCache = true)
         {
-            return ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, null, out attentionWeights, out scoresPreSoftmax);
+            return ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, null, out attentionWeights, out scoresPreSoftmax, needBackwardCache);
         }
 
-        private float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, float[,] timeDiffs, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        private float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, float[,] timeDiffs, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax, bool needBackwardCache = true)
         {
             int seqLenQ = Q.GetLength(0);
             int seqLenK = K.GetLength(0);
@@ -679,11 +675,11 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
             if (!ShouldUseGpu((long)numHeads * seqLenQ * seqLenK * headDim, GPU_MATMUL_OP_THRESHOLD))
             {
-                return _mutliThreadCPU.ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, out attentionWeights, out scoresPreSoftmax);
+                return _mutliThreadCPU.ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, out attentionWeights, out scoresPreSoftmax, needBackwardCache);
             }
 
-            attentionWeights = new float[numHeads][,];
-            scoresPreSoftmax = new float[numHeads][,];
+            attentionWeights = needBackwardCache ? new float[numHeads][,] : null;
+            scoresPreSoftmax = needBackwardCache ? new float[numHeads][,] : null;
             var concatenated = new float[seqLenQ, embeddingDim];
 
             var bufQ = _accelerator.Allocate2DDenseX<float>(new Index2D(seqLenQ, embeddingDim));
@@ -754,20 +750,23 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                     _contentAwareWeightedSumKernel(new Index2D(seqLenQ, headDim), bufWeights.View, bufVHead.View, bufHeadOutput.View);
                     _assembleHeadOutputKernel(new Index2D(seqLenQ, headDim), bufHeadOutput.View, bufConcatenated.View, headDim, startIdx);
 
-                    var weightsHead = new float[1, seqLenQ, seqLenK];
-                    var scoresHead = new float[1, seqLenQ, seqLenK];
-                    bufWeights.CopyToCPU(weightsHead);
-                    bufScoresWithBias.CopyToCPU(scoresHead);
-
-                    attentionWeights[head] = new float[seqLenQ, seqLenK];
-                    scoresPreSoftmax[head] = new float[seqLenQ, seqLenK];
-
-                    for (int i = 0; i < seqLenQ; i++)
+                    if (needBackwardCache)
                     {
-                        for (int j = 0; j < seqLenK; j++)
+                        var weightsHead = new float[1, seqLenQ, seqLenK];
+                        var scoresHead = new float[1, seqLenQ, seqLenK];
+                        bufWeights.CopyToCPU(weightsHead);
+                        bufScoresWithBias.CopyToCPU(scoresHead);
+
+                        attentionWeights[head] = new float[seqLenQ, seqLenK];
+                        scoresPreSoftmax[head] = new float[seqLenQ, seqLenK];
+
+                        for (int i = 0; i < seqLenQ; i++)
                         {
-                            attentionWeights[head][i, j] = weightsHead[0, i, j];
-                            scoresPreSoftmax[head][i, j] = scoresHead[0, i, j];
+                            for (int j = 0; j < seqLenK; j++)
+                            {
+                                attentionWeights[head][i, j] = weightsHead[0, i, j];
+                                scoresPreSoftmax[head][i, j] = scoresHead[0, i, j];
+                            }
                         }
                     }
                 }
@@ -833,7 +832,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bc.DecayCache = null;
             }
 
-            var output = ContentAwareCrossAttentionForward(Q, K, V, PriceNumHeads, scale, decayBias, timeDiffs, out var attentionWeights, out var scoresPreSoftmax);
+            var output = ContentAwareCrossAttentionForward(Q, K, V, PriceNumHeads, scale, decayBias, timeDiffs, out var attentionWeights, out var scoresPreSoftmax, needBackwardCache: true);
             bc.CrossAttentionWeights = attentionWeights;
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
             return output;
@@ -955,6 +954,33 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 bufEmbedding.Dispose();
                 bufOutput.Dispose();
             }
+        }
+
+        public float[,] EmbedTokenIds(int[] tokenIds, int tokenStart, int tokenCount, float[,] embedding, int embeddingDim)
+        {
+            if (tokenIds == null || tokenCount == 0)
+            {
+                return new float[0, embeddingDim];
+            }
+
+            if (tokenStart < 0 || tokenCount < 0 || tokenStart + tokenCount > tokenIds.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(tokenStart), $"Invalid token slice: start={tokenStart}, count={tokenCount}, length={tokenIds.Length}.");
+            }
+
+            if (tokenStart == 0 && tokenCount == tokenIds.Length)
+            {
+                return EmbedTokenIds(tokenIds, embedding, embeddingDim);
+            }
+
+            if (!ShouldUseGpu((long)tokenCount * embeddingDim))
+            {
+                return _mutliThreadCPU.EmbedTokenIds(tokenIds, tokenStart, tokenCount, embedding, embeddingDim);
+            }
+
+            var tokenSlice = new int[tokenCount];
+            Array.Copy(tokenIds, tokenStart, tokenSlice, 0, tokenCount);
+            return EmbedTokenIds(tokenSlice, embedding, embeddingDim);
         }
 
         public float[] MeanPoolRows(float[,] matrix)

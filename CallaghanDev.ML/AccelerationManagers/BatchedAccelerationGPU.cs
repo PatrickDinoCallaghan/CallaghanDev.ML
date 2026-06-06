@@ -11,12 +11,12 @@ namespace CallaghanDev.ML.AccelerationManagers
 {
     public class AccelerationGPUBatch : IDisposable
     {
-       private struct LayerBuffers
+        private struct LayerBuffers
         {
             public MemoryBuffer2D<float, Stride2D.DenseX> X, W, A, D;
             public MemoryBuffer1D<float, Stride1D.Dense> B;
             public bool Initialized;
-        }
+        } 
 
         private readonly Dictionary<int, LayerBuffers> _buffers = new();
         private readonly Accelerator _accelerator;

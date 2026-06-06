@@ -216,7 +216,9 @@
                 Console.WriteLine("\n  Failed tests:");
                 Console.ResetColor();
                 foreach (var f in _failures)
+                {
                     Console.WriteLine($"    • {f}");
+                }
             }
 
             Console.WriteLine();

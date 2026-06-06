@@ -1,11 +1,10 @@
 using CallaghanDev.ML.Enums;
-using CallaghanDev.ML.Transformers;
 using CallaghanDev.ML.Transformers.TACAMT;
-using System;
-using System.Collections.Generic;
+using System.Buffers;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace CallaghanDev.ML.AccelerationManagers
 {
@@ -152,6 +151,81 @@ namespace CallaghanDev.ML.AccelerationManagers
             return workUnits >= PARALLEL_THRESHOLD;
         }
 
+        private static ReadOnlySpan<float> MatrixReadOnlySpan(float[,] matrix)
+        {
+            int length = matrix.Length;
+            return length == 0
+                ? ReadOnlySpan<float>.Empty
+                : MemoryMarshal.CreateReadOnlySpan(ref matrix[0, 0], length);
+        }
+
+        private static Span<float> MatrixWritableSpan(float[,] matrix)
+        {
+            int length = matrix.Length;
+            return length == 0
+                ? Span<float>.Empty
+                : MemoryMarshal.CreateSpan(ref matrix[0, 0], length);
+        }
+
+        private static float DotVectorized(ReadOnlySpan<float> left, int leftOffset, ReadOnlySpan<float> right, int rightOffset, int count)
+        {
+            int vectorWidth = Vector<float>.Count;
+            int i = 0;
+            var sumVector = Vector<float>.Zero;
+
+            for (; i <= count - vectorWidth; i += vectorWidth)
+            {
+                var a = new Vector<float>(left.Slice(leftOffset + i, vectorWidth));
+                var b = new Vector<float>(right.Slice(rightOffset + i, vectorWidth));
+                sumVector += a * b;
+            }
+
+            float sum = 0f;
+            for (int v = 0; v < vectorWidth; v++)
+            {
+                sum += sumVector[v];
+            }
+
+            for (; i < count; i++)
+            {
+                sum += left[leftOffset + i] * right[rightOffset + i];
+            }
+
+            return sum;
+        }
+
+        private static void CopyTransposedColumn(float[,] source, float[] destination, int column, int sourceRows, int sourceCols)
+        {
+            var sourceSpan = MatrixReadOnlySpan(source);
+            int dstBase = column * sourceRows;
+            for (int row = 0; row < sourceRows; row++)
+            {
+                destination[dstBase + row] = sourceSpan[(row * sourceCols) + column];
+            }
+        }
+
+        private static void ComputeMatMulRow(float[,] A, float[] transposedB, float[,] C, int row, int colsA, int colsB)
+        {
+            var aSpan = MatrixReadOnlySpan(A);
+            var cSpan = MatrixWritableSpan(C);
+            int aBase = row * colsA;
+            int cBase = row * colsB;
+            for (int col = 0; col < colsB; col++)
+            {
+                cSpan[cBase + col] = DotVectorized(aSpan, aBase, transposedB, col * colsA, colsA);
+            }
+        }
+
+        private static void ComputeMatMulTransposeCell(float[,] A, float[,] B, float[,] C, int flat, int rowsB, int colsA, int colsB)
+        {
+            var aSpan = MatrixReadOnlySpan(A);
+            var bSpan = MatrixReadOnlySpan(B);
+            var cSpan = MatrixWritableSpan(C);
+            int row = flat / rowsB;
+            int col = flat - row * rowsB;
+            cSpan[flat] = DotVectorized(aSpan, row * colsA, bSpan, col * colsB, colsA);
+        }
+
         private static long MeasureBestTicks(Func<float> action, int repetitions)
         {
             long best = long.MaxValue;
@@ -252,44 +326,30 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             var C = new float[rowsA, colsB];
-            const int BLOCK = 32;
-            int rowBlocks = (rowsA + BLOCK - 1) / BLOCK;
-            int colBlocks = (colsB + BLOCK - 1) / BLOCK;
-            long tileCountLong = (long)rowBlocks * colBlocks;
-
-            if (tileCountLong > int.MaxValue)
+            if (rowsA == 0 || colsB == 0 || colsA == 0)
             {
-                return SingleThreadCPU.MatrixMultiply(A, B);
+                return C;
             }
 
-            int tileCount = (int)tileCountLong;
+            int transposedLength = colsB * colsA;
+            float[] rented = ArrayPool<float>.Shared.Rent(transposedLength);
 
-            Parallel.For(0, tileCount, _parallelOptions, tile =>
+            try
             {
-                int rb = tile / colBlocks;
-                int cb = tile - rb * colBlocks;
-                int ii = rb * BLOCK;
-                int jj = cb * BLOCK;
-                int iMax = Math.Min(ii + BLOCK, rowsA);
-                int jMax = Math.Min(jj + BLOCK, colsB);
-
-                for (int kk = 0; kk < colsA; kk += BLOCK)
+                Parallel.For(0, colsB, _parallelOptions, j =>
                 {
-                    int kMax = Math.Min(kk + BLOCK, colsA);
-                    for (int i = ii; i < iMax; i++)
-                    {
-                        for (int j = jj; j < jMax; j++)
-                        {
-                            float sum = C[i, j];
-                            for (int k = kk; k < kMax; k++)
-                            {
-                                sum += A[i, k] * B[k, j];
-                            }
-                            C[i, j] = sum;
-                        }
-                    }
-                }
-            });
+                    CopyTransposedColumn(B, rented, j, colsA, colsB);
+                });
+
+                Parallel.For(0, rowsA, _parallelOptions, i =>
+                {
+                    ComputeMatMulRow(A, rented, C, i, colsA, colsB);
+                });
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(rented);
+            }
 
             return C;
         }
@@ -316,8 +376,12 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             var C = new float[rowsA, rowsB];
-            long cellCountLong = (long)rowsA * rowsB;
+            if (rowsA == 0 || rowsB == 0 || colsA == 0)
+            {
+                return C;
+            }
 
+            long cellCountLong = (long)rowsA * rowsB;
             if (cellCountLong > int.MaxValue)
             {
                 return SingleThreadCPU.MatrixMultiplyTranspose(A, B);
@@ -326,14 +390,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             int cellCount = (int)cellCountLong;
             Parallel.For(0, cellCount, _parallelOptions, flat =>
             {
-                int i = flat / rowsB;
-                int j = flat - i * rowsB;
-                float sum = 0.0f;
-                for (int k = 0; k < colsA; k++)
-                {
-                    sum += A[i, k] * B[j, k];
-                }
-                C[i, j] = sum;
+                ComputeMatMulTransposeCell(A, B, C, flat, rowsB, colsA, colsB);
             });
 
             return C;
@@ -417,6 +474,60 @@ namespace CallaghanDev.ML.AccelerationManagers
             return result;
         }
 
+        public float[,] BatchDotProductAddBias(float[,] weights, float[,] inputMatrix, float[] bias)
+        {
+            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+            return BatchDotProductAddBias(weights, inputMatrix, 0, inputMatrix.GetLength(0), bias);
+        }
+
+        public float[,] BatchDotProductAddBias(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount, float[] bias)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+            if (bias == null) throw new ArgumentNullException(nameof(bias));
+            if (rowStart < 0 || rowCount < 0) throw new ArgumentOutOfRangeException();
+            if (rowStart + rowCount > inputMatrix.GetLength(0)) throw new ArgumentException("Invalid row slice.");
+
+            int outputDim = weights.GetLength(0);
+            int inputDim = weights.GetLength(1);
+            if (inputMatrix.GetLength(1) != inputDim)
+            {
+                throw new ArgumentException($"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+            }
+            if (bias.Length != outputDim)
+            {
+                throw new ArgumentException("Bias length must match output dimension.", nameof(bias));
+            }
+
+            long workUnits = (long)rowCount * outputDim * inputDim;
+            if (!ShouldParallelize(workUnits))
+            {
+                return SingleThreadCPU.BatchDotProductAddBias(weights, inputMatrix, rowStart, rowCount, bias);
+            }
+
+            var result = new float[rowCount, outputDim];
+            if (rowCount == 0 || outputDim == 0 || inputDim == 0)
+            {
+                return result;
+            }
+
+            Parallel.For(0, rowCount, _parallelOptions, i =>
+            {
+                int srcRow = rowStart + i;
+                for (int j = 0; j < outputDim; j++)
+                {
+                    float sum = 0.0f;
+                    for (int k = 0; k < inputDim; k++)
+                    {
+                        sum += weights[j, k] * inputMatrix[srcRow, k];
+                    }
+                    result[i, j] = sum + bias[j];
+                }
+            });
+
+            return result;
+        }
+
         public float[,] BatchDotProduct(float[,] weights, float[,] inputMatrix)
         {
             if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
@@ -444,24 +555,26 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             var result = new float[rowCount, outputDim];
-            long cellCountLong = (long)rowCount * outputDim;
-            if (cellCountLong > int.MaxValue)
+            if (rowCount == 0 || outputDim == 0 || inputDim == 0)
             {
-                return SingleThreadCPU.BatchDotProduct(weights, inputMatrix, rowStart, rowCount);
+                return result;
             }
 
-            int cellCount = (int)cellCountLong;
-            Parallel.For(0, cellCount, _parallelOptions, flat =>
+            // Parallelize by output row instead of by individual cell. This avoids
+            // millions of tiny work items and repeated flat-index division/modulo on
+            // transformer projections.
+            Parallel.For(0, rowCount, _parallelOptions, i =>
             {
-                int i = flat / outputDim;
-                int j = flat - i * outputDim;
                 int srcRow = rowStart + i;
-                float sum = 0.0f;
-                for (int k = 0; k < inputDim; k++)
+                for (int j = 0; j < outputDim; j++)
                 {
-                    sum += weights[j, k] * inputMatrix[srcRow, k];
+                    float sum = 0.0f;
+                    for (int k = 0; k < inputDim; k++)
+                    {
+                        sum += weights[j, k] * inputMatrix[srcRow, k];
+                    }
+                    result[i, j] = sum;
                 }
-                result[i, j] = sum;
             });
 
             return result;
@@ -694,30 +807,25 @@ namespace CallaghanDev.ML.AccelerationManagers
             var Q = new float[rows, outputDim];
             var K = new float[rows, outputDim];
             var V = new float[rows, outputDim];
-            long cellsLong = (long)rows * outputDim;
-            if (cellsLong > int.MaxValue)
-            {
-                return SingleThreadCPU.ProjectQKV(input, WQ, biasQ, WK, biasK, WV, biasV);
-            }
 
-            int cells = (int)cellsLong;
-            Parallel.For(0, cells, _parallelOptions, flat =>
+            Parallel.For(0, rows, _parallelOptions, i =>
             {
-                int i = flat / outputDim;
-                int o = flat - i * outputDim;
-                float qSum = biasQ[o];
-                float kSum = biasK[o];
-                float vSum = biasV[o];
-                for (int d = 0; d < inputDim; d++)
+                for (int o = 0; o < outputDim; o++)
                 {
-                    float x = input[i, d];
-                    qSum += WQ[o, d] * x;
-                    kSum += WK[o, d] * x;
-                    vSum += WV[o, d] * x;
+                    float qSum = biasQ[o];
+                    float kSum = biasK[o];
+                    float vSum = biasV[o];
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+                        qSum += WQ[o, d] * x;
+                        kSum += WK[o, d] * x;
+                        vSum += WV[o, d] * x;
+                    }
+                    Q[i, o] = qSum;
+                    K[i, o] = kSum;
+                    V[i, o] = vSum;
                 }
-                Q[i, o] = qSum;
-                K[i, o] = kSum;
-                V[i, o] = vSum;
             });
             return (Q, K, V);
         }
@@ -962,27 +1070,22 @@ namespace CallaghanDev.ML.AccelerationManagers
 
             var K = new float[rows, outputDim];
             var V = new float[rows, outputDim];
-            long cellsLong = (long)rows * outputDim;
-            if (cellsLong > int.MaxValue)
-            {
-                return SingleThreadCPU.ProjectKV(input, WK, biasK, WV, biasV);
-            }
 
-            int cells = (int)cellsLong;
-            Parallel.For(0, cells, _parallelOptions, flat =>
+            Parallel.For(0, rows, _parallelOptions, i =>
             {
-                int i = flat / outputDim;
-                int o = flat - i * outputDim;
-                float kSum = biasK[o];
-                float vSum = biasV[o];
-                for (int d = 0; d < inputDim; d++)
+                for (int o = 0; o < outputDim; o++)
                 {
-                    float x = input[i, d];
-                    kSum += WK[o, d] * x;
-                    vSum += WV[o, d] * x;
+                    float kSum = biasK[o];
+                    float vSum = biasV[o];
+                    for (int d = 0; d < inputDim; d++)
+                    {
+                        float x = input[i, d];
+                        kSum += WK[o, d] * x;
+                        vSum += WV[o, d] * x;
+                    }
+                    K[i, o] = kSum;
+                    V[i, o] = vSum;
                 }
-                K[i, o] = kSum;
-                V[i, o] = vSum;
             });
             return (K, V);
         }
@@ -1588,6 +1691,112 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (output, means, variances, normalized);
         }
 
+        public float[,] ResidualLayerNorm(float[,] input, float[,] subLayer, float[] gamma, float[] beta, float epsilon = 1e-5f)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (subLayer == null) throw new ArgumentNullException(nameof(subLayer));
+            if (gamma == null) throw new ArgumentNullException(nameof(gamma));
+            if (beta == null) throw new ArgumentNullException(nameof(beta));
+
+            int batchSize = input.GetLength(0);
+            int features = input.GetLength(1);
+            if (subLayer.GetLength(0) != batchSize || subLayer.GetLength(1) != features)
+            {
+                throw new ArgumentException("Residual input dimensions must match.", nameof(subLayer));
+            }
+
+            if (!ShouldParallelize((long)batchSize * features * 3L))
+            {
+                return SingleThreadCPU.ResidualLayerNorm(input, subLayer, gamma, beta, epsilon);
+            }
+
+            var output = new float[batchSize, features];
+            Parallel.For(0, batchSize, _parallelOptions, i =>
+            {
+                float mean = 0f;
+                for (int j = 0; j < features; j++)
+                {
+                    mean += input[i, j] + subLayer[i, j];
+                }
+                mean /= features;
+
+                float variance = 0f;
+                for (int j = 0; j < features; j++)
+                {
+                    float diff = (input[i, j] + subLayer[i, j]) - mean;
+                    variance += diff * diff;
+                }
+                variance /= features;
+
+                float invStd = 1f / MathF.Sqrt(variance + epsilon);
+                for (int j = 0; j < features; j++)
+                {
+                    float n = ((input[i, j] + subLayer[i, j]) - mean) * invStd;
+                    output[i, j] = gamma[j] * n + beta[j];
+                }
+            });
+
+            return output;
+        }
+
+        public (float[,] output, float[] means, float[] variances, float[,] normalized, float[,] residual) ResidualLayerNormForward(float[,] input, float[,] subLayer, float[] gamma, float[] beta, float epsilon = 1e-5f)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (subLayer == null) throw new ArgumentNullException(nameof(subLayer));
+            if (gamma == null) throw new ArgumentNullException(nameof(gamma));
+            if (beta == null) throw new ArgumentNullException(nameof(beta));
+
+            int batchSize = input.GetLength(0);
+            int features = input.GetLength(1);
+            if (subLayer.GetLength(0) != batchSize || subLayer.GetLength(1) != features)
+            {
+                throw new ArgumentException("Residual input dimensions must match.", nameof(subLayer));
+            }
+
+            if (!ShouldParallelize((long)batchSize * features * 3L))
+            {
+                return SingleThreadCPU.ResidualLayerNormForward(input, subLayer, gamma, beta, epsilon);
+            }
+
+            var means = new float[batchSize];
+            var variances = new float[batchSize];
+            var normalized = new float[batchSize, features];
+            var output = new float[batchSize, features];
+            var residual = new float[batchSize, features];
+
+            Parallel.For(0, batchSize, _parallelOptions, i =>
+            {
+                float mean = 0f;
+                for (int j = 0; j < features; j++)
+                {
+                    float value = input[i, j] + subLayer[i, j];
+                    residual[i, j] = value;
+                    mean += value;
+                }
+                mean /= features;
+                means[i] = mean;
+
+                float variance = 0f;
+                for (int j = 0; j < features; j++)
+                {
+                    float diff = residual[i, j] - mean;
+                    variance += diff * diff;
+                }
+                variance /= features;
+                variances[i] = variance;
+
+                float invStd = 1f / MathF.Sqrt(variance + epsilon);
+                for (int j = 0; j < features; j++)
+                {
+                    float n = (residual[i, j] - mean) * invStd;
+                    normalized[i, j] = n;
+                    output[i, j] = gamma[j] * n + beta[j];
+                }
+            });
+
+            return (output, means, variances, normalized, residual);
+        }
+
         public (float[,] dInput, float[] dGamma, float[] dBeta) LayerNormBackward(float[,] dOut, float[,] normalized, float[] gamma, float[,] input, float[] mean, float[] variance, float epsilon = 1e-5f)
         {
             if (dOut == null) throw new ArgumentNullException(nameof(dOut));
@@ -1890,154 +2099,66 @@ namespace CallaghanDev.ML.AccelerationManagers
 
         public void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int seqLen, int embeddingDim)
         {
+            AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, 0, seqLen, embeddingDim);
+        }
+
+        public void AccumulateTokenEmbeddingGrad(float[,] embeddingGrad, float[,] dX, int[] tokenIds, int tokenStart, int seqLen, int embeddingDim)
+        {
             if (embeddingGrad == null) throw new ArgumentNullException(nameof(embeddingGrad));
             if (dX == null) throw new ArgumentNullException(nameof(dX));
             if (tokenIds == null) throw new ArgumentNullException(nameof(tokenIds));
+            if (tokenStart < 0 || seqLen < 0 || tokenStart + seqLen > tokenIds.Length) throw new ArgumentOutOfRangeException(nameof(tokenStart));
 
-            long workUnits = (long)seqLen * embeddingDim;
-            if (!ShouldParallelize(workUnits))
+            if (!ShouldParallelize((long)seqLen * embeddingDim))
             {
-                SingleThreadCPU.AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, seqLen, embeddingDim);
+                SingleThreadCPU.AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, tokenStart, seqLen, embeddingDim);
                 return;
             }
 
-            int vocabSize = embeddingGrad.GetLength(0);
-            var positionsByToken = new Dictionary<int, List<int>>();
-            for (int i = 0; i < seqLen; i++)
-            {
-                int tokenId = tokenIds[i];
-                if ((uint)tokenId >= (uint)vocabSize)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(tokenIds), $"Token out of range: {tokenId}");
-                }
-
-                if (!positionsByToken.TryGetValue(tokenId, out var positions))
-                {
-                    positions = new List<int>();
-                    positionsByToken[tokenId] = positions;
-                }
-                positions.Add(i);
-            }
-
-            var groups = new List<KeyValuePair<int, List<int>>>(positionsByToken);
-            if (!ShouldParallelize((long)groups.Count * embeddingDim))
-            {
-                SingleThreadCPU.AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, seqLen, embeddingDim);
-                return;
-            }
-
-            Parallel.For(0, groups.Count, _parallelOptions, g =>
-            {
-                int tokenId = groups[g].Key;
-                List<int> positions = groups[g].Value;
-
-                for (int p = 0; p < positions.Count; p++)
-                {
-                    int srcRow = positions[p];
-                    for (int j = 0; j < embeddingDim; j++)
-                    {
-                        embeddingGrad[tokenId, j] += dX[srcRow, j];
-                    }
-                }
-            });
+            // Parallelizing directly into embeddingGrad is unsafe when duplicate tokens occur,
+            // so keep deterministic accumulation serial for correctness.
+            SingleThreadCPU.AccumulateTokenEmbeddingGrad(embeddingGrad, dX, tokenIds, tokenStart, seqLen, embeddingDim);
         }
 
         public (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int effectiveLen)
         {
+            return CrossEntropyLossAndGradient(logits, targets, 0, effectiveLen);
+        }
+
+        public (float loss, float[,] dLogits) CrossEntropyLossAndGradient(float[,] logits, int[] targets, int targetStart, int effectiveLen)
+        {
             if (logits == null) throw new ArgumentNullException(nameof(logits));
             if (targets == null) throw new ArgumentNullException(nameof(targets));
+            if (targetStart < 0 || effectiveLen < 0 || targetStart + effectiveLen > targets.Length) throw new ArgumentOutOfRangeException(nameof(targetStart));
 
-            int outputDim = logits.GetLength(1);
-            long workUnits = (long)effectiveLen * outputDim;
+            long workUnits = (long)effectiveLen * logits.GetLength(1);
             if (!ShouldParallelize(workUnits))
             {
-                return SingleThreadCPU.CrossEntropyLossAndGradient(logits, targets, effectiveLen);
+                return SingleThreadCPU.CrossEntropyLossAndGradient(logits, targets, targetStart, effectiveLen);
             }
 
-            var dLogits = new float[logits.GetLength(0), outputDim];
-            var rowLoss = new float[effectiveLen];
-            float invLen = 1f / effectiveLen;
-
-            Parallel.For(0, effectiveLen, _parallelOptions, i =>
-            {
-                float max = float.NegativeInfinity;
-                for (int j = 0; j < outputDim; j++)
-                {
-                    max = Math.Max(max, logits[i, j]);
-                }
-
-                float sum = 0f;
-                for (int j = 0; j < outputDim; j++)
-                {
-                    float p = MathF.Exp(logits[i, j] - max);
-                    dLogits[i, j] = p;
-                    sum += p;
-                }
-
-                float invSum = 1f / sum;
-                int targetToken = targets[i];
-                rowLoss[i] = -MathF.Log((dLogits[i, targetToken] * invSum) + 1e-10f);
-
-                for (int j = 0; j < outputDim; j++)
-                {
-                    float grad = (dLogits[i, j] * invSum) * invLen;
-                    if (j == targetToken)
-                    {
-                        grad -= invLen;
-                    }
-                    dLogits[i, j] = grad;
-                }
-            });
-
-            float loss = 0f;
-            for (int i = 0; i < effectiveLen; i++)
-            {
-                loss += rowLoss[i];
-            }
-
-            loss /= effectiveLen;
-            return (loss, dLogits);
+            // Keep the loss reduction deterministic and avoid per-row temporary reductions.
+            return SingleThreadCPU.CrossEntropyLossAndGradient(logits, targets, targetStart, effectiveLen);
         }
 
         public (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int effectiveLen)
         {
+            return MSELossAndGradient(predictions, targets, 0, effectiveLen);
+        }
+
+        public (float loss, float[,] dOutput) MSELossAndGradient(float[,] predictions, float[,] targets, int targetStart, int effectiveLen)
+        {
             if (predictions == null) throw new ArgumentNullException(nameof(predictions));
             if (targets == null) throw new ArgumentNullException(nameof(targets));
+            if (targetStart < 0 || effectiveLen < 0 || targetStart + effectiveLen > targets.GetLength(0)) throw new ArgumentOutOfRangeException(nameof(targetStart));
 
-            int outputDim = predictions.GetLength(1);
-            if (targets.GetLength(0) < effectiveLen || targets.GetLength(1) != outputDim)
+            long workUnits = (long)effectiveLen * predictions.GetLength(1);
+            if (!ShouldParallelize(workUnits))
             {
-                throw new ArgumentException("Target shape must match predictions for the effective length.", nameof(targets));
+                return SingleThreadCPU.MSELossAndGradient(predictions, targets, targetStart, effectiveLen);
             }
 
-            long lengthLong = (long)effectiveLen * outputDim;
-            if (!ShouldParallelize(lengthLong) || lengthLong > int.MaxValue)
-            {
-                return SingleThreadCPU.MSELossAndGradient(predictions, targets, effectiveLen);
-            }
-
-            int length = (int)lengthLong;
-            var dOutput = new float[predictions.GetLength(0), outputDim];
-            var losses = new float[length];
-            float invLen = 1f / length;
-
-            Parallel.For(0, length, _parallelOptions, index =>
-            {
-                int row = index / outputDim;
-                int col = index - row * outputDim;
-                float diff = predictions[row, col] - targets[row, col];
-                losses[index] = diff * diff;
-                dOutput[row, col] = 2f * diff * invLen;
-            });
-
-            float loss = 0f;
-            for (int i = 0; i < length; i++)
-            {
-                loss += losses[i];
-            }
-
-            loss /= length;
-            return (loss, dOutput);
+            return SingleThreadCPU.MSELossAndGradient(predictions, targets, targetStart, effectiveLen);
         }
 
         public float MatrixSquaredNorm(float[,] matrix)
@@ -2237,7 +2358,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return pred;
         }
 
-        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        public float[,] ContentAwareCrossAttentionForward(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax, bool needBackwardCache = true)
         {
             if (Q == null) throw new ArgumentNullException(nameof(Q));
             if (K == null) throw new ArgumentNullException(nameof(K));
@@ -2252,10 +2373,10 @@ namespace CallaghanDev.ML.AccelerationManagers
             long workUnits = (long)numHeads * queryLen * keyLen * Math.Max(1, headDim);
             if (!ShouldParallelize(workUnits))
             {
-                return SingleThreadCPU.ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, out attentionWeights, out scoresPreSoftmax);
+                return SingleThreadCPU.ContentAwareCrossAttentionForward(Q, K, V, numHeads, scale, decayBias, out attentionWeights, out scoresPreSoftmax, needBackwardCache);
             }
 
-            return ContentAwareCrossAttentionForwardCoreParallel(Q, K, V, numHeads, scale, decayBias, timeDiffs: null, out attentionWeights, out scoresPreSoftmax);
+            return ContentAwareCrossAttentionForwardCoreParallel(Q, K, V, numHeads, scale, decayBias, timeDiffs: null, out attentionWeights, out scoresPreSoftmax, needBackwardCache);
         }
 
         public float[,] ContentAwareCrossAttentionWithCache(float[,] Q, float[,] K, float[,] V, float[,] timeDiffs, float[] keyTimesFromRef, float[,] queryEmbeddings, float[,] keyEmbeddings, TacamtBlock block, BlockCache bc, int PriceEmbeddingDim, int PriceNumHeads, bool enableDecayBias = true, bool isTraining = false, Random dropoutRng = null)
@@ -2291,7 +2412,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             }
 
             float scale = 1f / MathF.Sqrt(hd);
-            var output = ContentAwareCrossAttentionForwardCoreParallel(Q, K, V, nh, scale, decayBias, timeDiffs, out var attentionWeights, out var scoresPreSoftmax);
+            var output = ContentAwareCrossAttentionForwardCoreParallel(Q, K, V, nh, scale, decayBias, timeDiffs, out var attentionWeights, out var scoresPreSoftmax, needBackwardCache: true);
             bc.CrossAttentionWeights = attentionWeights;
             bc.CrossScoresPreSoftmax = scoresPreSoftmax;
             return output;
@@ -2383,7 +2504,18 @@ namespace CallaghanDev.ML.AccelerationManagers
             {
                 return new float[0, embeddingDim];
             }
+
+            return EmbedTokenIds(tokenIds, 0, tokenIds.Length, embedding, embeddingDim);
+        }
+
+        public float[,] EmbedTokenIds(int[] tokenIds, int tokenStart, int tokenCount, float[,] embedding, int embeddingDim)
+        {
+            if (tokenIds == null || tokenIds.Length == 0 || tokenCount == 0)
+            {
+                return new float[0, embeddingDim];
+            }
             if (embedding == null) throw new ArgumentNullException(nameof(embedding));
+            if (tokenStart < 0 || tokenCount < 0 || tokenStart + tokenCount > tokenIds.Length) throw new ArgumentOutOfRangeException(nameof(tokenStart));
 
             int vocabSize = embedding.GetLength(0);
             if (embedding.GetLength(1) != embeddingDim)
@@ -2391,26 +2523,25 @@ namespace CallaghanDev.ML.AccelerationManagers
                 throw new ArgumentException("Embedding dimension mismatch.", nameof(embedding));
             }
 
-            long workUnits = (long)tokenIds.Length * embeddingDim;
+            long workUnits = (long)tokenCount * embeddingDim;
             if (!ShouldParallelize(workUnits))
             {
-                return SingleThreadCPU.EmbedTokenIds(tokenIds, embedding, embeddingDim);
+                return SingleThreadCPU.EmbedTokenIds(tokenIds, tokenStart, tokenCount, embedding, embeddingDim);
             }
 
-            for (int i = 0; i < tokenIds.Length; i++)
+            var output = new float[tokenCount, embeddingDim];
+            Parallel.For(0, tokenCount, _parallelOptions, i =>
             {
-                int tokenId = tokenIds[i];
+                int tokenId = tokenIds[tokenStart + i];
                 if ((uint)tokenId >= (uint)vocabSize)
                 {
                     throw new ArgumentOutOfRangeException(nameof(tokenIds), $"Token out of range: {tokenId}");
                 }
-            }
 
-            var output = new float[tokenIds.Length, embeddingDim];
-            int bytesPerRow = embeddingDim * sizeof(float);
-            Parallel.For(0, tokenIds.Length, _parallelOptions, i =>
-            {
-                Buffer.BlockCopy(embedding, tokenIds[i] * bytesPerRow, output, i * bytesPerRow, bytesPerRow);
+                for (int j = 0; j < embeddingDim; j++)
+                {
+                    output[i, j] = embedding[tokenId, j];
+                }
             });
 
             return output;
@@ -3577,7 +3708,7 @@ namespace CallaghanDev.ML.AccelerationManagers
             return (dQFull, dKFull, dVFull);
         }
 
-        private float[,] ContentAwareCrossAttentionForwardCoreParallel(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, float[,] timeDiffs, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax)
+        private float[,] ContentAwareCrossAttentionForwardCoreParallel(float[,] Q, float[,] K, float[,] V, int numHeads, float scale, float[,,] decayBias, float[,] timeDiffs, out float[][,] attentionWeights, out float[][,] scoresPreSoftmax, bool needBackwardCache = true)
         {
             int queryLen = Q.GetLength(0);
             int keyLen = K.GetLength(0);
@@ -3585,8 +3716,8 @@ namespace CallaghanDev.ML.AccelerationManagers
             int headDim = embDim / numHeads;
 
             var output = new float[queryLen, embDim];
-            attentionWeights = new float[numHeads][,];
-            scoresPreSoftmax = new float[numHeads][,];
+            attentionWeights = needBackwardCache ? new float[numHeads][,] : null;
+            scoresPreSoftmax = needBackwardCache ? new float[numHeads][,] : null;
 
             var localWeights = attentionWeights;
             var localScores = scoresPreSoftmax;
@@ -3594,80 +3725,169 @@ namespace CallaghanDev.ML.AccelerationManagers
             Parallel.For(0, numHeads, _parallelOptions, h =>
             {
                 int offset = h * headDim;
-                var scores = new float[queryLen, keyLen];
-                var weights = new float[queryLen, keyLen];
 
-                for (int q = 0; q < queryLen; q++)
+                if (needBackwardCache)
                 {
-                    float max = float.NegativeInfinity;
+                    var scores = new float[queryLen, keyLen];
+                    var weights = new float[queryLen, keyLen];
 
-                    for (int s = 0; s < keyLen; s++)
+                    for (int q = 0; q < queryLen; q++)
                     {
-                        if (timeDiffs != null && timeDiffs[q, s] < 0f)
-                        {
-                            scores[q, s] = float.NegativeInfinity;
-                            continue;
-                        }
+                        float max = float.NegativeInfinity;
 
-                        float score = DotHeadRows(Q, q, K, s, offset, headDim) * scale;
-                        if (decayBias != null)
-                        {
-                            score += decayBias[q, s, h];
-                        }
-
-                        scores[q, s] = score;
-                        if (!float.IsNegativeInfinity(score) && score > max)
-                        {
-                            max = score;
-                        }
-                    }
-
-                    if (float.IsNegativeInfinity(max))
-                    {
-                        continue;
-                    }
-
-                    float sum = 0f;
-                    for (int s = 0; s < keyLen; s++)
-                    {
-                        float score = scores[q, s];
-                        if (float.IsNegativeInfinity(score))
-                        {
-                            weights[q, s] = 0f;
-                            continue;
-                        }
-
-                        float w = MathF.Exp(score - max);
-                        weights[q, s] = w;
-                        sum += w;
-                    }
-
-                    if (sum > 0f)
-                    {
-                        float inv = 1f / sum;
                         for (int s = 0; s < keyLen; s++)
                         {
-                            weights[q, s] *= inv;
-                        }
-                    }
-
-                    for (int d = 0; d < headDim; d++)
-                    {
-                        float value = 0f;
-                        for (int s = 0; s < keyLen; s++)
-                        {
-                            float w = weights[q, s];
-                            if (w != 0f)
+                            if (timeDiffs != null && timeDiffs[q, s] < 0f)
                             {
-                                value += w * V[s, offset + d];
+                                scores[q, s] = float.NegativeInfinity;
+                                continue;
+                            }
+
+                            float score = DotHeadRows(Q, q, K, s, offset, headDim) * scale;
+                            if (decayBias != null)
+                            {
+                                score += decayBias[q, s, h];
+                            }
+
+                            scores[q, s] = score;
+                            if (!float.IsNegativeInfinity(score) && score > max)
+                            {
+                                max = score;
                             }
                         }
-                        output[q, offset + d] = value;
+
+                        if (float.IsNegativeInfinity(max))
+                        {
+                            continue;
+                        }
+
+                        float sum = 0f;
+                        for (int s = 0; s < keyLen; s++)
+                        {
+                            float score = scores[q, s];
+                            if (float.IsNegativeInfinity(score))
+                            {
+                                weights[q, s] = 0f;
+                                continue;
+                            }
+
+                            float w = MathF.Exp(score - max);
+                            weights[q, s] = w;
+                            sum += w;
+                        }
+
+                        if (sum > 0f)
+                        {
+                            float inv = 1f / sum;
+                            for (int s = 0; s < keyLen; s++)
+                            {
+                                weights[q, s] *= inv;
+                            }
+                        }
+
+                        for (int d = 0; d < headDim; d++)
+                        {
+                            float value = 0f;
+                            for (int s = 0; s < keyLen; s++)
+                            {
+                                float w = weights[q, s];
+                                if (w != 0f)
+                                {
+                                    value += w * V[s, offset + d];
+                                }
+                            }
+                            output[q, offset + d] = value;
+                        }
+                    }
+
+                    localWeights[h] = weights;
+                    localScores[h] = scores;
+                }
+                else
+                {
+                    float[] scoreRent = ArrayPool<float>.Shared.Rent(keyLen);
+                    float[] weightRent = ArrayPool<float>.Shared.Rent(keyLen);
+
+                    try
+                    {
+                        Span<float> scoreRow = scoreRent.AsSpan(0, keyLen);
+                        Span<float> weightRow = weightRent.AsSpan(0, keyLen);
+
+                        for (int q = 0; q < queryLen; q++)
+                        {
+                            float max = float.NegativeInfinity;
+
+                            for (int s = 0; s < keyLen; s++)
+                            {
+                                if (timeDiffs != null && timeDiffs[q, s] < 0f)
+                                {
+                                    scoreRow[s] = float.NegativeInfinity;
+                                    continue;
+                                }
+
+                                float score = DotHeadRows(Q, q, K, s, offset, headDim) * scale;
+                                if (decayBias != null)
+                                {
+                                    score += decayBias[q, s, h];
+                                }
+
+                                scoreRow[s] = score;
+                                if (!float.IsNegativeInfinity(score) && score > max)
+                                {
+                                    max = score;
+                                }
+                            }
+
+                            if (float.IsNegativeInfinity(max))
+                            {
+                                continue;
+                            }
+
+                            float sum = 0f;
+                            for (int s = 0; s < keyLen; s++)
+                            {
+                                float score = scoreRow[s];
+                                if (float.IsNegativeInfinity(score))
+                                {
+                                    weightRow[s] = 0f;
+                                    continue;
+                                }
+
+                                float w = MathF.Exp(score - max);
+                                weightRow[s] = w;
+                                sum += w;
+                            }
+
+                            if (sum > 0f)
+                            {
+                                float inv = 1f / sum;
+                                for (int s = 0; s < keyLen; s++)
+                                {
+                                    weightRow[s] *= inv;
+                                }
+                            }
+
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                float value = 0f;
+                                for (int s = 0; s < keyLen; s++)
+                                {
+                                    float w = weightRow[s];
+                                    if (w != 0f)
+                                    {
+                                        value += w * V[s, offset + d];
+                                    }
+                                }
+                                output[q, offset + d] = value;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        ArrayPool<float>.Shared.Return(scoreRent);
+                        ArrayPool<float>.Shared.Return(weightRent);
                     }
                 }
-
-                localWeights[h] = weights;
-                localScores[h] = scores;
             });
 
             return output;

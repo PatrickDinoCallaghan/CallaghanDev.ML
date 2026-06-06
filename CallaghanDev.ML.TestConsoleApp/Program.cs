@@ -1,6 +1,7 @@
 ﻿using CallaghanDev.ML.Enums;
 using CallaghanDev.ML.TestConsoleApp.Tests;
 using ILGPU.Runtime;
+using System.Diagnostics;
 
 namespace CallaghanDev.ML.TestConsoleApp
 {
@@ -8,26 +9,35 @@ namespace CallaghanDev.ML.TestConsoleApp
     {
         public static void Main(string[] args)
         {
-            new AccelerationManagerParityTests().RunAllTests();
 
+            var sw = Stopwatch.StartNew();
             TransformerTestSuite.Run(Enums.AccelerationType.MultiThreadCPU, 0);
-            TransformerTestSuite.Run(Enums.AccelerationType.CPU, 0);
-            TransformerTestSuite.Run(Enums.AccelerationType.GPU, 0);
-
+            sw.Stop();
+            Console.WriteLine($"Finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
             Console.ReadKey();
 
-            Console.WriteLine();
+            sw = Stopwatch.StartNew();
+            TransformerTestSuite.Run(Enums.AccelerationType.CPU, 0);
+            sw.Stop();
+            Console.WriteLine($"Finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
+            Console.ReadKey();
 
-            foreach (var accelerationType in Enum.GetValues<Enums.AccelerationType>())
-            {
-                Console.WriteLine(accelerationType);
-                TransformerTestSuite.Run(accelerationType, 0);
-            }
 
-            Console.WriteLine();
+            sw = Stopwatch.StartNew();
+            TransformerTestSuite.Run(Enums.AccelerationType.GPU, 0);
+            sw.Stop();
+            Console.WriteLine($"Finished in {sw.Elapsed:hh\\:mm\\:ss\\.fff}.Any key to clear for next test");
+            Console.ReadKey();
+
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("  All test suites complete. Press any key to exit.");
             Console.ResetColor();
+            Console.ReadKey();
+
+
+            new AccelerationManagerParityTests().RunAllTests();
+
+            Console.WriteLine("Finished. Any key to clear for next test");
             Console.ReadKey();
         }
     }
@@ -39,7 +49,7 @@ namespace CallaghanDev.ML.TestConsoleApp
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             PrintBanner("TRANSFORMER TEST SUITE", '=');
-
+            new PriceTacTests(accelerationType, deviceId).RunAllTests();
             new MmtacTests(accelerationType, deviceId).RunAllTests();
             new BPETokenizerTests(accelerationType).RunAllTests();
             new RotaryPositionEmbeddingTests(accelerationType).RunAllTests();

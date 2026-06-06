@@ -13,6 +13,9 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
         private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> input, MemoryBuffer1D<float, Stride1D.Dense> bias, MemoryBuffer2D<float, Stride2D.DenseX> output)> _matrixAddBiasCache = new();
         private readonly Dictionary<(int rows, int cols, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> input, MemoryBuffer2D<float, Stride2D.DenseX> output)> _sliceRowsCache = new();
         private readonly Dictionary<(int outputDim, int inputDim, int inputRows, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotCache = new();
+        private readonly Dictionary<(int outputDim, int inputDim, int inputRows, int rowCount), (MemoryBuffer2D<float, Stride2D.DenseX> w, MemoryBuffer2D<float, Stride2D.DenseX> inp, MemoryBuffer1D<float, Stride1D.Dense> bias, MemoryBuffer2D<float, Stride2D.DenseX> res)> _batchDotAddBiasCache = new();
+        private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> input, MemoryBuffer2D<float, Stride2D.DenseX> subLayer, MemoryBuffer1D<float, Stride1D.Dense> gamma, MemoryBuffer1D<float, Stride1D.Dense> beta, MemoryBuffer2D<float, Stride2D.DenseX> output)> _residualLayerNormCache = new();
+        private readonly Dictionary<(int rows, int cols), (MemoryBuffer2D<float, Stride2D.DenseX> input, MemoryBuffer2D<float, Stride2D.DenseX> subLayer, MemoryBuffer1D<float, Stride1D.Dense> gamma, MemoryBuffer1D<float, Stride1D.Dense> beta, MemoryBuffer2D<float, Stride2D.DenseX> output, MemoryBuffer1D<float, Stride1D.Dense> means, MemoryBuffer1D<float, Stride1D.Dense> variances, MemoryBuffer2D<float, Stride2D.DenseX> normalized, MemoryBuffer2D<float, Stride2D.DenseX> residual)> _residualLayerNormForwardCache = new();
 
         private void InitSharedTensorKernels()
         {
@@ -28,6 +31,7 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
             _matAddBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, ArrayView2D<float, Stride2D.DenseX>>(MatAddBiasKernel);
             //BatchDotProduct
             _batchDotKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, ArrayView2D<float, Stride2D.DenseX>>(BatchDotKernel);
+            _batchDotAddBiasKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int, ArrayView2D<float, Stride2D.DenseX>>(BatchDotAddBiasKernel);
 
             //SliceRows, ExtractRow and SetRow
             _sliceRowsKernel = _accelerator.LoadAutoGroupedStreamKernel<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int>(SliceRowsKernel);
@@ -269,6 +273,94 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
 
         #endregion
 
+        #region BatchDotProductAddBias
+
+        private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, ArrayView1D<float, Stride1D.Dense>, int, ArrayView2D<float, Stride2D.DenseX>> _batchDotAddBiasKernel;
+
+        public float[,] BatchDotProductAddBias(float[,] weights, float[,] inputMatrix, float[] bias)
+        {
+            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+            return BatchDotProductAddBias(weights, inputMatrix, 0, inputMatrix.GetLength(0), bias);
+        }
+
+        public float[,] BatchDotProductAddBias(float[,] weights, float[,] inputMatrix, int rowStart, int rowCount, float[] bias)
+        {
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (inputMatrix == null) throw new ArgumentNullException(nameof(inputMatrix));
+            if (bias == null) throw new ArgumentNullException(nameof(bias));
+            if (rowStart < 0 || rowCount < 0) throw new ArgumentOutOfRangeException();
+
+            int outputDim = weights.GetLength(0);
+            int inputDim = weights.GetLength(1);
+            if (inputMatrix.GetLength(1) != inputDim)
+            {
+                throw new ArgumentException($"Expected input columns {inputDim}, got {inputMatrix.GetLength(1)}");
+            }
+            if (rowStart + rowCount > inputMatrix.GetLength(0))
+            {
+                throw new ArgumentException("Invalid row slice.");
+            }
+            if (bias.Length != outputDim)
+            {
+                throw new ArgumentException("Bias length must match output dimension.", nameof(bias));
+            }
+
+            if (!ShouldUseGpu((long)rowCount * outputDim * inputDim, GPU_MATMUL_OP_THRESHOLD))
+            {
+                return _mutliThreadCPU.BatchDotProductAddBias(weights, inputMatrix, rowStart, rowCount, bias);
+            }
+
+            int inputRows = inputMatrix.GetLength(0);
+            var key = (outputDim, inputDim, inputRows, rowCount);
+
+            if (!_batchDotAddBiasCache.TryGetValue(key, out var bufs))
+            {
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(outputDim, inputDim)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(inputRows, inputDim)),
+                    _accelerator.Allocate1D<float>(outputDim),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rowCount, outputDim))
+                );
+
+                _batchDotAddBiasCache[key] = bufs;
+            }
+
+            var residentWeights = GetResidentMatrixReadOnly(weights);
+            var residentBias = GetResidentVectorReadOnly(bias);
+            bufs.inp.CopyFromCPU(inputMatrix);
+
+            _batchDotAddBiasKernel(
+                new Index2D(rowCount, outputDim),
+                residentWeights.View,
+                bufs.inp.View,
+                residentBias.View,
+                rowStart,
+                bufs.res.View);
+
+            var result = new float[rowCount, outputDim];
+            bufs.res.CopyToCPU(result);
+
+            return result;
+        }
+
+        private static void BatchDotAddBiasKernel(Index2D idx, ArrayView2D<float, Stride2D.DenseX> weights, ArrayView2D<float, Stride2D.DenseX> input, ArrayView1D<float, Stride1D.Dense> bias, int rowStart, ArrayView2D<float, Stride2D.DenseX> result)
+        {
+            int seq = idx.X;
+            int outDim = idx.Y;
+            int inputDim = (int)weights.Extent.Y;
+            int srcRow = rowStart + seq;
+            float sum = 0.0f;
+
+            for (int k = 0; k < inputDim; k++)
+            {
+                sum += weights[outDim, k] * input[srcRow, k];
+            }
+
+            result[seq, outDim] = sum + bias[outDim];
+        }
+
+        #endregion
+
         #region BatchDotProduct
 
         private Action<Index2D, ArrayView2D<float, Stride2D.DenseX>, ArrayView2D<float, Stride2D.DenseX>, int, ArrayView2D<float, Stride2D.DenseX>> _batchDotKernel;
@@ -317,12 +409,12 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 _batchDotCache[key] = bufs;
             }
 
-            bufs.w.CopyFromCPU(weights);
+            var residentWeights = GetResidentMatrixReadOnly(weights);
             bufs.inp.CopyFromCPU(inputMatrix);
 
             _batchDotKernel(
                 new Index2D(rowCount, outputDim),
-                bufs.w.View,
+                residentWeights.View,
                 bufs.inp.View,
                 rowStart,
                 bufs.res.View);
@@ -727,6 +819,108 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 buf.Dispose();
             }
         }
+        public float[,] ResidualLayerNorm(float[,] input, float[,] subLayer, float[] gamma, float[] beta, float epsilon = 1e-5f)
+        {
+            ValidateResidualLayerNormInputs(input, subLayer, gamma, beta, out int rows, out int cols);
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.ResidualLayerNorm(input, subLayer, gamma, beta, epsilon);
+            }
+
+            var key = (rows, cols);
+            if (!_residualLayerNormCache.TryGetValue(key, out var bufs))
+            {
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols))
+                );
+                _residualLayerNormCache[key] = bufs;
+            }
+
+            bufs.input.CopyFromCPU(input);
+            bufs.subLayer.CopyFromCPU(subLayer);
+            bufs.gamma.CopyFromCPU(gamma);
+            bufs.beta.CopyFromCPU(beta);
+
+            _residualLayerNormKernel(new Index1D(rows), bufs.input.View, bufs.subLayer.View, bufs.gamma.View, bufs.beta.View, bufs.output.View, epsilon);
+
+            var output = new float[rows, cols];
+            bufs.output.CopyToCPU(output);
+            return output;
+        }
+
+        public (float[,] output, float[] means, float[] variances, float[,] normalized, float[,] residual) ResidualLayerNormForward(float[,] input, float[,] subLayer, float[] gamma, float[] beta, float epsilon = 1e-5f)
+        {
+            ValidateResidualLayerNormInputs(input, subLayer, gamma, beta, out int rows, out int cols);
+
+            if (!ShouldUseGpu((long)rows * cols))
+            {
+                return _mutliThreadCPU.ResidualLayerNormForward(input, subLayer, gamma, beta, epsilon);
+            }
+
+            var key = (rows, cols);
+            if (!_residualLayerNormForwardCache.TryGetValue(key, out var bufs))
+            {
+                bufs = (
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate1D<float>(cols),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate1D<float>(rows),
+                    _accelerator.Allocate1D<float>(rows),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols)),
+                    _accelerator.Allocate2DDenseX<float>(new Index2D(rows, cols))
+                );
+                _residualLayerNormForwardCache[key] = bufs;
+            }
+
+            bufs.input.CopyFromCPU(input);
+            bufs.subLayer.CopyFromCPU(subLayer);
+            bufs.gamma.CopyFromCPU(gamma);
+            bufs.beta.CopyFromCPU(beta);
+
+            _residualLayerNormForwardKernel(new Index1D(rows), bufs.input.View, bufs.subLayer.View, bufs.gamma.View, bufs.beta.View, bufs.output.View, bufs.means.View, bufs.variances.View, bufs.normalized.View, bufs.residual.View, epsilon);
+
+            var output = new float[rows, cols];
+            var means = new float[rows];
+            var variances = new float[rows];
+            var normalized = new float[rows, cols];
+            var residual = new float[rows, cols];
+
+            bufs.output.CopyToCPU(output);
+            bufs.means.CopyToCPU(means);
+            bufs.variances.CopyToCPU(variances);
+            bufs.normalized.CopyToCPU(normalized);
+            bufs.residual.CopyToCPU(residual);
+
+            return (output, means, variances, normalized, residual);
+        }
+
+        private static void ValidateResidualLayerNormInputs(float[,] input, float[,] subLayer, float[] gamma, float[] beta, out int rows, out int cols)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (subLayer == null) throw new ArgumentNullException(nameof(subLayer));
+            if (gamma == null) throw new ArgumentNullException(nameof(gamma));
+            if (beta == null) throw new ArgumentNullException(nameof(beta));
+
+            rows = input.GetLength(0);
+            cols = input.GetLength(1);
+
+            if (subLayer.GetLength(0) != rows || subLayer.GetLength(1) != cols)
+            {
+                throw new ArgumentException("Residual input dimensions must match.", nameof(subLayer));
+            }
+            if (gamma.Length != cols || beta.Length != cols)
+            {
+                throw new ArgumentException("Layer norm gamma/beta must match the feature dimension.");
+            }
+        }
+
         private void DisposeSharedTensorBuffers()
         {
             foreach (var v in _matMulCache.Values)
@@ -770,12 +964,45 @@ namespace CallaghanDev.ML.AccelerationManagers.GPU
                 v.res.Dispose();
             }
 
+            foreach (var v in _batchDotAddBiasCache.Values)
+            {
+                v.w.Dispose();
+                v.inp.Dispose();
+                v.bias.Dispose();
+                v.res.Dispose();
+            }
+
+            foreach (var v in _residualLayerNormCache.Values)
+            {
+                v.input.Dispose();
+                v.subLayer.Dispose();
+                v.gamma.Dispose();
+                v.beta.Dispose();
+                v.output.Dispose();
+            }
+
+            foreach (var v in _residualLayerNormForwardCache.Values)
+            {
+                v.input.Dispose();
+                v.subLayer.Dispose();
+                v.gamma.Dispose();
+                v.beta.Dispose();
+                v.output.Dispose();
+                v.means.Dispose();
+                v.variances.Dispose();
+                v.normalized.Dispose();
+                v.residual.Dispose();
+            }
+
             _matMulCache.Clear();
             _matMulTransposeCache.Clear();
             _matrixAddCache.Clear();
             _matrixAddBiasCache.Clear();
             _sliceRowsCache.Clear();
             _batchDotCache.Clear();
+            _batchDotAddBiasCache.Clear();
+            _residualLayerNormCache.Clear();
+            _residualLayerNormForwardCache.Clear();
         }
 
     }

@@ -77,7 +77,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 {
                     Console.WriteLine($"\n=== Epoch {ep + 1}/{_trainConfig.Epochs} ===");
                 }
-                var sh = Enumerable.Range(0, n).ToArray();
+                var sh = CreateSequentialIndices(n);
 
                 float el = 0f;
                 int nb = 0;
@@ -87,7 +87,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                     int bs = Math.Min(_trainConfig.BatchSize, sh.Length - i);
 
                     float bl = TrainBatch(
-                        sh.Skip(i).Take(bs).ToArray(),
+                        sh,
+                        i,
+                        bs,
                         storiesPerSample,
                         priceInputs,
                         priceTargets,
@@ -403,6 +405,19 @@ namespace CallaghanDev.ML.Transformers.TACAMT
        
         private float TrainBatch(int[] batchIndices, NewsStory[][] allStories, float[][,] allPriceInputs, float[][,] allPriceTargets, float[][] allConfidenceTargets, float lr, int epoch)
         {
+            if (batchIndices == null)
+                throw new ArgumentNullException(nameof(batchIndices));
+
+            return TrainBatch(batchIndices, 0, batchIndices.Length, allStories, allPriceInputs, allPriceTargets, allConfidenceTargets, lr, epoch);
+        }
+
+        private float TrainBatch(int[] batchIndices, int start, int count, NewsStory[][] allStories, float[][,] allPriceInputs, float[][,] allPriceTargets, float[][] allConfidenceTargets, float lr, int epoch)
+        {
+            if (batchIndices == null)
+                throw new ArgumentNullException(nameof(batchIndices));
+            if (start < 0 || count < 0 || start + count > batchIndices.Length)
+                throw new ArgumentOutOfRangeException(nameof(start));
+
             var batchGradients = new Gradients(_config);
             var (batchTextFFNWeightGrads, batchTextFFNBiasGrads) = CreateTextFFNGradientStorage();
             var (batchPriceFFNWeightGrads, batchPriceFFNBiasGrads) = CreatePriceFFNGradientStorage();
@@ -415,8 +430,9 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 _config.PriceContext.MinCurrentLength +
                 1;
 
-            foreach (int idx in batchIndices)
+            for (int batchOffset = 0; batchOffset < count; batchOffset++)
             {
+                int idx = batchIndices[start + batchOffset];
                 ZeroAllGradients();
 
                 try
@@ -931,25 +947,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 _accel.VectorAccumulate(blockGrads.LNFFNGrads.GammaGrad, dGammaFfn);
                 _accel.VectorAccumulate(blockGrads.LNFFNGrads.BetaGrad, dBetaFfn);
 
-                var dFfnInput = new float[sequenceLength, embeddingDim];
-
-                for (int i = 0; i < sequenceLength; i++)
-                {
-                    var gradRow = new float[embeddingDim];
-                    for (int j = 0; j < embeddingDim; j++)
-                    {
-                        gradRow[j] = dFfnResidual[i, j];
-                    }
-
-                    block.FeedForwardNetwork.ForwardPassOnly(blockCache.FFNInputRows[i]);
-
-                    var inputGrad = block.FeedForwardNetwork.ComputeInputGradient(gradRow, _priceFFNWeightGrads[layer], _priceFFNBiasGrads[layer]);
-
-                    for (int j = 0; j < embeddingDim; j++)
-                    {
-                        dFfnInput[i, j] = inputGrad[j];
-                    }
-                }
+                var dFfnInput = block.FeedForwardNetwork.ComputeInputGradientBatch(
+                    blockCache.NormedCross,
+                    dFfnResidual,
+                    _priceFFNWeightGrads[layer],
+                    _priceFFNBiasGrads[layer]);
 
                 // Residual: dFfnInput += dFfnResidual  - no new matrix alloc
                 _accel.MatrixAddInPlace(dFfnInput, dFfnResidual);
@@ -1082,11 +1084,20 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 var (dQSelf, dKSelf, dVSelf) = _accel.MultiHeadAttentionBackward(blockCache.SelfQ, blockCache.SelfK, blockCache.SelfV, dSelfCombined, numHeads, scale, _config.Price.UseDecoderOnly);
 
                 _rotaryPositionEmbedding.ApplyBackwardInPlace(dQSelf, dKSelf, numHeads);
-                var dBlockInput = new float[sequenceLength, embeddingDim];
-
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dQSelf, block.SelfAttention.WQ, selfAttnGrads.WQ_Grad, selfAttnGrads.BiasQ_Grad, dBlockInput);
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dKSelf, block.SelfAttention.WK, selfAttnGrads.WK_Grad, selfAttnGrads.BiasK_Grad, dBlockInput);
-                _accel.BackpropLinearProjection(blockCache.BlockInput, dVSelf, block.SelfAttention.WV, selfAttnGrads.WV_Grad, selfAttnGrads.BiasV_Grad, dBlockInput);
+                var dBlockInput = _accel.BackpropQKV(
+                    blockCache.BlockInput,
+                    dQSelf,
+                    dKSelf,
+                    dVSelf,
+                    block.SelfAttention.WQ,
+                    block.SelfAttention.WK,
+                    block.SelfAttention.WV,
+                    selfAttnGrads.WQ_Grad,
+                    selfAttnGrads.BiasQ_Grad,
+                    selfAttnGrads.WK_Grad,
+                    selfAttnGrads.BiasK_Grad,
+                    selfAttnGrads.WV_Grad,
+                    selfAttnGrads.BiasV_Grad);
 
                 // Residual: dBlockInput += dSelfResidual  - no new matrix alloc
                 _accel.MatrixAddInPlace(dBlockInput, dSelfResidual);
@@ -1308,38 +1319,11 @@ namespace CallaghanDev.ML.Transformers.TACAMT
                 _accel.VectorAccumulate(lg2.BetaGrad, dB2);
 
                 int sl = dFR.GetLength(0);
-                var dFFNInput = new float[sl, ed];
-
-                for (int i = 0; i < sl; i++)
-                {
-                    var rowGrad = new float[ed];
-
-                    for (int j = 0; j < ed; j++)
-                    {
-                        rowGrad[j] = dFR[i, j];
-                    }
-
-
-                    var inputRow = new float[ed];
-
-                    for (int j = 0; j < ed; j++)
-                    {
-                        inputRow[j] = cache.TextFFNInputs[layer][i, j];
-                    }
-
-                    b.FeedForwardNetwork.ForwardPassOnly(inputRow);
-
-                    var di = b.FeedForwardNetwork.ComputeInputGradient(
-                        rowGrad,
-                        _textFFNWeightGrads[layer],
-                        _textFFNBiasGrads[layer]
-                    );
-
-                    for (int j = 0; j < ed; j++)
-                    {
-                        dFFNInput[i, j] = di[j];
-                    }
-                }
+                var dFFNInput = b.FeedForwardNetwork.ComputeInputGradientBatch(
+                    cache.TextFFNInputs[layer],
+                    dFR,
+                    _textFFNWeightGrads[layer],
+                    _textFFNBiasGrads[layer]);
 
                 _accel.MatrixAddInPlace(dFFNInput, dFR);
 
@@ -1362,11 +1346,20 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
                 _rotaryPositionEmbedding.ApplyBackwardInPlace(dQ, dK, nh);
 
-                var dI = new float[sl, ed];
-
-                _accel.BackpropLinearProjection(ac.Input, dQ, b.Attention.WQ, ag.WQ_Grad, ag.BiasQ_Grad, dI);
-                _accel.BackpropLinearProjection(ac.Input, dK, b.Attention.WK, ag.WK_Grad, ag.BiasK_Grad, dI);
-                _accel.BackpropLinearProjection(ac.Input, dV, b.Attention.WV, ag.WV_Grad, ag.BiasV_Grad, dI);
+                var dI = _accel.BackpropQKV(
+                    ac.Input,
+                    dQ,
+                    dK,
+                    dV,
+                    b.Attention.WQ,
+                    b.Attention.WK,
+                    b.Attention.WV,
+                    ag.WQ_Grad,
+                    ag.BiasQ_Grad,
+                    ag.WK_Grad,
+                    ag.BiasK_Grad,
+                    ag.WV_Grad,
+                    ag.BiasV_Grad);
 
                 // Residual: dI += dAR  - no new matrix alloc
                 _accel.MatrixAddInPlace(dI, dAR);
@@ -1375,6 +1368,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
             }
 
             // Token embedding scatter - via accelerator instead of manual loop
+            _gradients.MarkTextRows(cache.TextTokenIds, dX.GetLength(0));
             _accel.AccumulateTokenEmbeddingGrad(_gradients.TextEmbeddingGrad, dX, cache.TextTokenIds, dX.GetLength(0), ed);
         }
 
@@ -1382,7 +1376,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             if (!_config.Text.Freeze)
             {
-                _accel.MatrixUpdate(_model.TextTokenEmbedding, _gradients.TextEmbeddingGrad, lr);
+                _gradients.UpdateTextEmbedding(_model.TextTokenEmbedding, lr);
 
                 for (int i = 0; i < _config.Text.NumLayers; i++)
                 {
@@ -1549,7 +1543,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             if (!_config.Text.Freeze)
             {
-                sum += _accel.MatrixSquaredNorm(_gradients.TextEmbeddingGrad);
+                sum += _gradients.TextEmbeddingSquaredNorm();
 
                 foreach (var g in _gradients.TextAttnGrads)
                 {
@@ -1653,7 +1647,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             if (!_config.Text.Freeze)
             {
-                _accel.MatrixScaleInPlace(_gradients.TextEmbeddingGrad, s);
+                _gradients.ScaleTextEmbeddingGrad(s);
 
                 foreach (var g in _gradients.TextAttnGrads)
                 {
@@ -1843,7 +1837,7 @@ namespace CallaghanDev.ML.Transformers.TACAMT
         {
             if (!_config.Text.Freeze)
             {
-                _accel.MatrixAddInPlace(target.TextEmbeddingGrad, source.TextEmbeddingGrad);
+                target.AddSparseTextEmbeddingRowsFrom(source);
 
                 for (int i = 0; i < _config.Text.NumLayers; i++)
                 {
@@ -2039,6 +2033,16 @@ namespace CallaghanDev.ML.Transformers.TACAMT
 
             return BitConverter.ToInt32(BitConverter.GetBytes(value), 0);
         }
+
+        private static int[] CreateSequentialIndices(int count)
+        {
+            var indices = new int[count];
+            for (int i = 0; i < count; i++)
+                indices[i] = i;
+            return indices;
+        }
+
+
         private float[,] SliceRows(float[,] m, int s, int e)
         {
             int c = m.GetLength(1);

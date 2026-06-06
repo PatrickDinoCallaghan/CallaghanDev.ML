@@ -93,7 +93,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
         public List<LayerNormCache> TextLN1Caches { get; set; }
         public List<LayerNormCache> TextLN2Caches { get; set; }
         public List<float[,]> TextFFNOutputs { get; set; }
-        public List<float[][]> TextFFNInputs { get; set; }
+        public List<float[,]> TextFFNInputs { get; set; }
         public float[,] TextFinalHidden { get; set; }
 
         // === Price Decoder (with cross-attention) ===
@@ -109,7 +109,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
             TextLN1Caches = new List<LayerNormCache>();
             TextLN2Caches = new List<LayerNormCache>();
             TextFFNOutputs = new List<float[,]>();
-            TextFFNInputs = new List<float[][]>();
+            TextFFNInputs = new List<float[,]>();
 
             for (int i = 0; i < textNumLayers; i++)
             {

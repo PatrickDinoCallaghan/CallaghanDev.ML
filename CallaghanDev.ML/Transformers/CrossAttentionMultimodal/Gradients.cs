@@ -1,4 +1,5 @@
-﻿using CallaghanDev.ML.Transformers.Configuration;
+﻿using CallaghanDev.ML.Transformers;
+using CallaghanDev.ML.Transformers.Configuration;
 using CallaghanDev.ML.Transformers.MultiTypeTransformer;
 using System;
 using System.Collections.Generic;
@@ -24,6 +25,9 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         public float[,] ConfidenceProjectionGrad { get; set; }
         public float[] ConfidenceBiasGrad { get; set; }
+
+        private readonly SparseRowGradientTracker _textEmbeddingRows = new SparseRowGradientTracker();
+        internal SparseRowGradientTracker TextEmbeddingRows => _textEmbeddingRows;
 
         public Gradients(MultimodalTransformerConfig config)
         {
@@ -61,7 +65,7 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
 
         public void Zero()
         {
-            ZeroMatrix(TextEmbeddingGrad);
+            _textEmbeddingRows.ZeroTrackedRowsAndClear(TextEmbeddingGrad);
             foreach (var g in TextAttnGrads) g.Zero();
             foreach (var g in TextLN1Grads) g.Zero();
             foreach (var g in TextLN2Grads) g.Zero();
@@ -78,6 +82,26 @@ namespace CallaghanDev.ML.Transformers.CrossAttentionMultimodal
                 ZeroMatrix(ConfidenceProjectionGrad);
                 System.Array.Clear(ConfidenceBiasGrad, 0, ConfidenceBiasGrad.Length);
             }
+        }
+
+        public void MarkTextRows(int[] tokenIds, int tokenCount)
+        {
+            _textEmbeddingRows.MarkRows(tokenIds, 0, tokenCount, TextEmbeddingGrad.GetLength(0));
+        }
+
+        public float TextEmbeddingSquaredNorm()
+        {
+            return _textEmbeddingRows.SquaredNorm(TextEmbeddingGrad);
+        }
+
+        public void ScaleTextEmbeddingGrad(float scale)
+        {
+            _textEmbeddingRows.Scale(TextEmbeddingGrad, scale);
+        }
+
+        public void UpdateTextEmbedding(float[,] embedding, float learningRate)
+        {
+            _textEmbeddingRows.UpdateRows(embedding, TextEmbeddingGrad, learningRate);
         }
 
         private void ZeroMatrix(float[,] matrix)

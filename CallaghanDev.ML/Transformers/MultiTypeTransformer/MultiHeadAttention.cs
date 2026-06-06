@@ -10,6 +10,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
         private readonly int _headDim;
         private readonly IAccelerationManager _accel;
         private readonly RotaryPositionEmbedding _rotaryPositionEmbedding;
+
         public float[,] WQ { get; set; }
         public float[,] WK { get; set; }
         public float[,] WV { get; set; }
@@ -47,6 +48,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
             random ??= new Random();
             _rotaryPositionEmbedding = new RotaryPositionEmbedding(accel);
+
             WQ = InitWeights(embeddingDim, embeddingDim, random);
             WK = InitWeights(embeddingDim, embeddingDim, random);
             WV = InitWeights(embeddingDim, embeddingDim, random);
@@ -86,7 +88,12 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             return weights;
         }
 
-        public float[,] Forward(float[,] input, bool[,] mask = null)
+        /// <summary>
+        /// Self-attention. For decoder-only attention, prefer causal: true instead of
+        /// passing a preallocated causal bool[,] mask. That avoids an O(seqLen^2)
+        /// mask allocation on every forward pass.
+        /// </summary>
+        public float[,] Forward(float[,] input, bool[,] mask = null, bool causal = false)
         {
             if (input == null)
             {
@@ -98,15 +105,17 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             ValidateNonEmptySequence(seqLen, nameof(input));
             ValidateMask(mask, seqLen, seqLen);
 
-            var Q = MatMulWithBias(input, WQ, BiasQ);
-            var K = MatMulWithBias(input, WK, BiasK);
-            var V = MatMulWithBias(input, WV, BiasV);
+            var (Q, K, V) = _accel.ProjectQKV(input, WQ, BiasQ, WK, BiasK, WV, BiasV);
 
             _rotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
-            return AttentionCore(Q, K, V, mask);
+            return AttentionCore(Q, K, V, mask, causal);
         }
 
-        public float[,] Forward(float[,] query, float[,] keyValue, bool[,] mask = null)
+        /// <summary>
+        /// Cross-attention. This still accepts causal for completeness, but callers should
+        /// normally leave it false unless the query/key layout is intentionally causal.
+        /// </summary>
+        public float[,] Forward(float[,] query, float[,] keyValue, bool[,] mask = null, bool causal = false)
         {
             if (query == null)
             {
@@ -125,49 +134,28 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             ValidateNonEmptySequence(keyLen, nameof(keyValue));
             ValidateMask(mask, queryLen, keyLen);
 
-            var Q = MatMulWithBias(query, WQ, BiasQ);
-            var K = MatMulWithBias(keyValue, WK, BiasK);
-            var V = MatMulWithBias(keyValue, WV, BiasV);
+            var Q = ProjectQuery(query);
+            var (K, V) = _accel.ProjectKV(keyValue, WK, BiasK, WV, BiasV);
 
             _rotaryPositionEmbedding.ApplyInPlace(Q, K, _numHeads);
-            return AttentionCore(Q, K, V, mask);
+            return AttentionCore(Q, K, V, mask, causal);
         }
 
-        private float[,] AttentionCore(float[,] Q, float[,] K, float[,] V, bool[,] mask)
+        private float[,] ProjectQuery(float[,] query)
         {
-            var concatenated = _accel.ScaledDotProductAttention(Q, K, V, _numHeads, mask, causal: false);
-
-            return MatMulWithBias(concatenated, WO, BiasO);
+            return _accel.ProjectOutputBatch(query, WQ, BiasQ, query.GetLength(0), _embeddingDim);
         }
-        private float[,] MatMulWithBias(float[,] input, float[,] weights, float[] bias)
+
+        private float[,] AttentionCore(float[,] Q, float[,] K, float[,] V, bool[,] mask, bool causal)
         {
-            if (input == null)
-            {
-                throw new ArgumentNullException(nameof(input));
-            }
-            if (weights == null)
-            {
-                throw new ArgumentNullException(nameof(weights));
-            }
-            if (bias == null)
-            {
-                throw new ArgumentNullException(nameof(bias));
-            }
+            var concatenated = _accel.ScaledDotProductAttention(Q, K, V, _numHeads, mask, causal);
 
-            int inputDim = input.GetLength(1);
-            int weightInputDim = weights.GetLength(1);
-            int outputDim = weights.GetLength(0);
-
-            if (inputDim != weightInputDim)
-            {
-                throw new ArgumentException($"Input width {inputDim} does not match weight input width {weightInputDim}.");
-            }
-            if (bias.Length != outputDim)
-            {
-                throw new ArgumentException($"Bias length {bias.Length} does not match output dimension {outputDim}.", nameof(bias));
-            }
-
-            return _accel.MatrixAddBias(_accel.BatchDotProduct(weights, input), bias);
+            return _accel.ProjectOutputBatch(
+                concatenated,
+                WO,
+                BiasO,
+                concatenated.GetLength(0),
+                _embeddingDim);
         }
 
         private void ValidateInputWidth(float[,] matrix, string name)
@@ -191,7 +179,8 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             if (mask == null)
             {
                 return;
-            } 
+            }
+
             if (mask.GetLength(0) != expectedRows || mask.GetLength(1) != expectedCols)
             {
                 throw new ArgumentException($"Mask shape must be [{expectedRows},{expectedCols}], got [{mask.GetLength(0)},{mask.GetLength(1)}].", nameof(mask));

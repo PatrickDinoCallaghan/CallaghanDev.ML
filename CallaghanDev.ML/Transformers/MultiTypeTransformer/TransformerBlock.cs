@@ -32,9 +32,9 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             Accel = accel;
         }
 
-        public float[,] Forward(float[,] x, bool[,] selfMask = null)
+        public float[,] Forward(float[,] x, bool[,] selfMask = null, bool causal = false)
         {
-            var selfOut = SelfAttentionForward(x, selfMask);
+            var selfOut = SelfAttentionForward(x, selfMask, causal);
             var normedSelf = ApplyResidualNorm(x, selfOut, LNSelfGamma, LNSelfBeta);
 
             var afterCross = CrossAttentionForward(normedSelf);
@@ -43,9 +43,9 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
             return ApplyResidualNorm(afterCross, ffOut, LNFFNGamma, LNFFNBeta);
         }
 
-        protected virtual float[,] SelfAttentionForward(float[,] x, bool[,] mask)
+        protected virtual float[,] SelfAttentionForward(float[,] x, bool[,] mask, bool causal)
         {
-            return SelfAttention.Forward(x, mask);
+            return SelfAttention.Forward(x, mask, causal);
         }
 
         protected abstract float[,] CrossAttentionForward(float[,] x);
@@ -58,8 +58,7 @@ namespace CallaghanDev.ML.Transformers.MultiTypeTransformer
 
         protected float[,] ApplyResidualNorm(float[,] input, float[,] subLayer, float[] gamma, float[] beta)
         {
-            var residual = Accel.MatrixAdd(input, subLayer);
-            return Accel.LayerNorm(residual, gamma, beta);
+            return Accel.ResidualLayerNorm(input, subLayer, gamma, beta);
         }
     }
 
